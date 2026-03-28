@@ -2,7 +2,17 @@
   "expo": {
     "plugins": [
       [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
+      [
         "@react-native-tvos/config-tv",
+
         {
           "androidTVBanner": "./assets/logo.png",
           "appleTVImages": {

@@ -16,12 +16,11 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import Screensaver from '../components/Screensaver';
+import { SplashAnimation } from '../components/SplashAnimation';
 
 // Hide native splash immediately — we use our own animated one
 SplashScreen.preventAutoHideAsync();
 const { width, height } = Dimensions.get('window');
-
-const AnimatedImage = Animated.createAnimatedComponent(Image);
 
 import { auth } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -35,14 +34,6 @@ function RootLayoutContent() {
   const [initialRoute, setInitialRoute] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(true);
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
-
-  // Netflix N Logo Animation (ported from Phone app)
-  // Phase 1: Start huge (10×), zoom down to normal
-  // Phase 2: Hold for 1.2s
-  // Phase 3: Zoom way past camera (40×) to reveal app
-  const splashScale = useSharedValue(10);
-  const splashOpacity = useSharedValue(0);
-  const bgOpacity = useSharedValue(1);
 
   // Idle Timer for Screensaver (5 minutes = 300000ms)
   const [isIdle, setIsIdle] = useState(false);
@@ -67,10 +58,6 @@ function RootLayoutContent() {
       if (idleTimer.current) clearTimeout(idleTimer.current);
     };
   }, [resetIdleTimer]);
-
-  const hideSplash = useCallback(() => {
-    setShowSplash(false);
-  }, []);
 
   useEffect(() => {
     let subUnsubscribe = () => {};
@@ -97,28 +84,6 @@ function RootLayoutContent() {
         // Hide native Expo splash immediately — our animation takes over
         await SplashScreen.hideAsync();
 
-        // Phase 1: Fade in the N logo while zooming from 10× → 1×
-        splashOpacity.value = withTiming(1, { duration: 600 });
-        splashScale.value = withSequence(
-          // Zoom down from 10× to 1× (the dramatic "N appears" effect)
-          withTiming(1, { duration: 800, easing: Easing.out(Easing.exp) }),
-          // Phase 2: Hold at normal size for 1.2s
-          withDelay(1200,
-            // Phase 3: Zoom way past the camera to reveal app
-            withTiming(40, { duration: 700, easing: Easing.in(Easing.poly(4)) })
-          )
-        );
-
-        // Fade out the black background during the final zoom
-        bgOpacity.value = withDelay(
-          2200,
-          withTiming(0, { duration: 400 }, (finished) => {
-            if (finished) {
-              runOnJS(hideSplash)();
-            }
-          })
-        );
-
         return () => {
           unsubscribe();
           subUnsubscribe();
@@ -141,27 +106,11 @@ function RootLayoutContent() {
     }
   }, [appIsReady, initialRoute]);
 
-  const animatedLogoStyle = useAnimatedStyle(() => ({
-    opacity: splashOpacity.value,
-    transform: [{ scale: splashScale.value }],
-  }));
-
-  const animatedBgStyle = useAnimatedStyle(() => ({
-    opacity: bgOpacity.value,
-  }));
-
   if (!appIsReady || !initialRoute) {
-    // Show black screen with animated N logo while loading
-    return (
-      <View style={styles.splashContainer}>
-        <AnimatedImage 
-          source={require('../assets/images/netflix-n-logo.svg')} 
-          style={[styles.splashIcon, animatedLogoStyle]} 
-          contentFit="contain"
-        />
-      </View>
-    );
+    // Show black screen while loading (SplashAnimation will show on top or after)
+    return <View style={styles.splashContainer} />;
   }
+
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
@@ -176,7 +125,7 @@ function RootLayoutContent() {
       {/* Subscription Lockdown Overlay */}
       {initialRoute !== '/' && subscription && (subscription.status === 'none' || subscription.status === 'past_due') && (
         <View style={styles.subscribeOverlay}>
-          <AnimatedImage 
+          <Image 
             source={require('../assets/images/netflix-n-logo.svg')} 
             style={[styles.splashIcon, { marginBottom: 30 }]} 
             contentFit="contain"
@@ -190,13 +139,7 @@ function RootLayoutContent() {
 
       {/* Animated Netflix Splash Overlay — fades out to reveal app */}
       {showSplash && (
-        <Animated.View style={[styles.splashOverlay, animatedBgStyle]} pointerEvents="none">
-          <AnimatedImage 
-            source={require('../assets/images/netflix-n-logo.svg')} 
-            style={[styles.splashIcon, animatedLogoStyle]} 
-            contentFit="contain"
-          />
-        </Animated.View>
+        <SplashAnimation onFinish={() => setShowSplash(false)} />
       )}
       
       {/* Global Screensaver Overlay */}
@@ -204,6 +147,7 @@ function RootLayoutContent() {
     </View>
   );
 }
+
 
 export default function RootLayout() {
   return (
