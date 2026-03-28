@@ -1,39 +1,77 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Image, TextInput, Switch, ScrollView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Image, TextInput, Switch, ScrollView, Dimensions, Alert } from 'react-native';
 import { useRouter, Stack, useLocalSearchParams } from 'expo-router';
 import { COLORS, SPACING } from '../constants/theme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { useProfile } from '../context/ProfileContext';
 
 const { width } = Dimensions.get('window');
 
 const AVATARS = [
-  { id: 'avatar1', source: require('../assets/avatars/avatar1.png') },
-  { id: 'avatar2', source: require('../assets/avatars/avatar2.png') },
-  { id: 'avatar3', source: require('../assets/avatars/avatar3.png') },
-  { id: 'avatar4', source: require('../assets/avatars/avatar4.png') },
-  { id: 'avatar5', source: require('../assets/avatars/avatar5.png') },
-  { id: 'avatar6', source: require('../assets/avatars/avatar6.png') },
-  { id: 'avatar7', source: require('../assets/avatars/avatar7.png') },
-  { id: 'avatar8', source: require('../assets/avatars/avatar8.png') },
-  { id: 'avatar9', source: require('../assets/avatars/avatar9.png') },
-  { id: 'avatar10', source: require('../assets/avatars/avatar10.png') },
+  { id: 'avatar1', source: require('../assets/avatars/avatar1.png'), isKids: false },
+  { id: 'avatar2', source: require('../assets/avatars/avatar2.png'), isKids: false },
+  { id: 'avatar3', source: require('../assets/avatars/avatar3.png'), isKids: false },
+  { id: 'avatar4', source: require('../assets/avatars/avatar4.png'), isKids: false },
+  { id: 'avatar5', source: require('../assets/avatars/avatar5.png'), isKids: true },
+  { id: 'avatar6', source: require('../assets/avatars/avatar6.png'), isKids: false },
+  { id: 'avatar7', source: require('../assets/avatars/avatar7.png'), isKids: false },
+  { id: 'avatar8', source: require('../assets/avatars/avatar8.png'), isKids: true },
+  { id: 'avatar9', source: require('../assets/avatars/avatar9.png'), isKids: true },
+  { id: 'avatar10', source: require('../assets/avatars/avatar10.png'), isKids: true },
 ];
+
+const STANDARD_AVATARS = AVATARS.filter(a => !a.isKids);
+const KIDS_AVATARS = AVATARS.filter(a => a.isKids);
 
 export default function EditProfileScreen() {
   const router = useRouter();
-  const { id, name: initialName, avatar: initialAvatarId } = useLocalSearchParams();
+  const { id, name: initialName, avatarId: initialAvatarId } = useLocalSearchParams();
+  const { addProfile, updateProfile, deleteProfile, canAddProfile, maxProfilesAllowed, profiles } = useProfile();
   
-  const [name, setName] = useState((initialName as string) || 'Saurabh');
-  const [selectedAvatarId, setSelectedAvatarId] = useState((initialAvatarId as string) || 'avatar1');
-  const [isKids, setIsKids] = useState(false);
+  const existingProfile = React.useMemo(() => profiles.find(p => p.id === id), [profiles, id]);
+  
+  const [name, setName] = useState(existingProfile?.name || (initialName as string) || '');
+  const [selectedAvatarId, setSelectedAvatarId] = useState(existingProfile?.avatarId || (initialAvatarId as string) || 'avatar1');
+  const [isKids, setIsKids] = useState(existingProfile?.isKids || false);
+  const [isLocked, setIsLocked] = useState(existingProfile?.isLocked || false);
+  const [pin, setPin] = useState(existingProfile?.pin || '');
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+
+  // Protect against direct navigation when limit is reached
+  React.useEffect(() => {
+    if (!id && !canAddProfile) {
+      Alert.alert(
+        'Profile Limit Reached',
+        `Your plan only allows ${maxProfilesAllowed} profiles.\nUpgrade to add more.`,
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
+    }
+  }, [id, canAddProfile]);
 
   const selectedAvatar = AVATARS.find(a => a.id === selectedAvatarId)?.source || AVATARS[0].source;
 
   const handleSave = () => {
-    // In a real app, update state/DB here
+    if (!name.trim()) return;
+    
+    if (isLocked && pin.length !== 4) {
+      Alert.alert('Invalid PIN', 'Please enter a 4-digit PIN to lock this profile.');
+      return;
+    }
+
+    if (id) {
+      updateProfile(id as string, name, selectedAvatarId, isLocked, pin, isKids);
+    } else {
+      addProfile(name, selectedAvatarId, isLocked, pin, isKids);
+    }
     router.back();
+  };
+
+  const handleDelete = () => {
+    if (id) {
+      deleteProfile(id as string);
+      router.back();
+    }
   };
 
   if (showAvatarPicker) {
@@ -47,22 +85,44 @@ export default function EditProfileScreen() {
           <View style={{ width: 40 }} />
         </View>
         
-        <ScrollView contentContainerStyle={styles.avatarGrid}>
-          {AVATARS.map((avatar) => (
-            <Pressable 
-              key={avatar.id} 
-              onPress={() => {
-                setSelectedAvatarId(avatar.id);
-                setShowAvatarPicker(false);
-              }}
-              style={[
-                styles.avatarOption,
-                selectedAvatarId === avatar.id && styles.selectedAvatarOption
-              ]}
-            >
-              <Image source={avatar.source} style={styles.avatarLarge} />
-            </Pressable>
-          ))}
+        <ScrollView>
+          <Text style={styles.avatarSectionTitle}>Standard</Text>
+          <View style={styles.avatarGrid}>
+            {STANDARD_AVATARS.map((avatar) => (
+              <Pressable 
+                key={avatar.id} 
+                onPress={() => {
+                  setSelectedAvatarId(avatar.id);
+                  setShowAvatarPicker(false);
+                }}
+                style={[
+                  styles.avatarOption,
+                  selectedAvatarId === avatar.id && styles.selectedAvatarOption
+                ]}
+              >
+                <Image source={avatar.source} style={styles.avatarLarge} />
+              </Pressable>
+            ))}
+          </View>
+          
+          <Text style={styles.avatarSectionTitle}>Kids Theme</Text>
+          <View style={[styles.avatarGrid, { paddingTop: 0 }]}>
+            {KIDS_AVATARS.map((avatar) => (
+              <Pressable 
+                key={avatar.id} 
+                onPress={() => {
+                  setSelectedAvatarId(avatar.id);
+                  setShowAvatarPicker(false);
+                }}
+                style={[
+                  styles.avatarOption,
+                  selectedAvatarId === avatar.id && styles.selectedAvatarOption
+                ]}
+              >
+                <Image source={avatar.source} style={styles.avatarLarge} />
+              </Pressable>
+            ))}
+          </View>
         </ScrollView>
       </SafeAreaView>
     );
@@ -71,7 +131,7 @@ export default function EditProfileScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <Stack.Screen options={{ 
-        title: 'Edit Profile',
+        title: id ? 'Edit Profile' : 'Create Profile',
         headerStyle: { backgroundColor: COLORS.background },
         headerTintColor: 'white',
         headerShown: true,
@@ -129,10 +189,43 @@ export default function EditProfileScreen() {
           <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
         </View>
 
-        <Pressable style={styles.deleteBtn}>
-          <Ionicons name="trash-outline" size={20} color={COLORS.textSecondary} />
-          <Text style={styles.deleteText}>Delete Profile</Text>
-        </Pressable>
+        <View style={styles.settingRow}>
+          <View style={styles.settingInfo}>
+            <Text style={styles.settingTitle}>Profile Lock</Text>
+            <Text style={styles.settingDesc}>Require a 4-digit PIN to access this profile.</Text>
+          </View>
+          <Switch
+            value={isLocked}
+            onValueChange={(val) => {
+              setIsLocked(val);
+              if (!val) setPin(''); 
+            }}
+            trackColor={{ false: '#333', true: '#E50914' }}
+            thumbColor="white"
+          />
+        </View>
+
+        {isLocked && (
+          <View style={styles.pinInputContainer}>
+            <TextInput
+              style={styles.pinInput}
+              value={pin}
+              onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
+              placeholder="Enter 4-digit PIN"
+              placeholderTextColor={COLORS.textSecondary}
+              keyboardType="number-pad"
+              maxLength={4}
+              secureTextEntry
+            />
+          </View>
+        )}
+
+        {id && (
+          <Pressable style={styles.deleteBtn} onPress={handleDelete}>
+            <Ionicons name="trash-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.deleteText}>Delete Profile</Text>
+          </Pressable>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -203,9 +296,16 @@ const styles = StyleSheet.create({
   avatarGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'center',
     padding: 20,
     gap: 20,
+  },
+  avatarSectionTitle: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 'bold',
+    paddingHorizontal: 20,
+    marginTop: 20,
+    marginBottom: -5,
   },
   avatarOption: {
     width: (width - 80) / 3,
@@ -264,5 +364,21 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 14,
     fontWeight: '600',
+  },
+  pinInputContainer: {
+    width: '100%',
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a1a',
+  },
+  pinInput: {
+    backgroundColor: '#333',
+    padding: 15,
+    borderRadius: 8,
+    color: 'white',
+    fontSize: 18,
+    textAlign: 'center',
+    letterSpacing: 20,
+    fontWeight: 'bold',
   }
 });

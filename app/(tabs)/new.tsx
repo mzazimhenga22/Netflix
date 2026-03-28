@@ -1,63 +1,30 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, StyleSheet, Text, ScrollView, Image, Pressable, FlatList, StatusBar } from 'react-native';
 import { COLORS, SPACING } from '../../constants/theme';
-import { fetchUpcoming, getBackdropUrl } from '../../services/tmdb';
+import { fetchUpcoming, getBackdropUrl, fetchTrending } from '../../services/tmdb';
 import { NetflixLoader } from '../../components/NetflixLoader';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { VerticalVideoFeed } from '../../components/VerticalVideoFeed';
-
-const MOCK_VIDEOS = [
-  {
-    id: 'v1',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-    title: 'One Piece',
-    description: 'Adventure on the high seas with the Straw Hat crew!',
-    showId: '37854', // One Piece Anime
-    type: 'tv'
-  },
-  {
-    id: 'v2',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-    title: 'Stranger Things',
-    description: 'Small town mysteries and supernatural forces.',
-    showId: '66732',
-    type: 'tv'
-  },
-  {
-    id: 'v3',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    title: 'Wednesday',
-    description: 'Smart, sarcastic and a little dead inside.',
-    showId: '119051',
-    type: 'tv'
-  }
-];
+import { useRouter, useFocusEffect } from 'expo-router';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring, withSequence } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import { useTheme } from '../_layout';
 
 export default function NewAndHotScreen() {
   const router = useRouter();
-  const { tab } = useLocalSearchParams();
+  const { setThemeColor } = useTheme();
   const [upcoming, setUpcoming] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'discovery' | 'coming' | 'everyone'>('coming');
+  const [activeTab, setActiveTab] = useState<'coming' | 'everyone'>('coming');
 
-  useEffect(() => {
-    if (tab === 'discovery') {
-      setActiveTab('discovery');
-    }
-  }, [tab]);
 
   useFocusEffect(
     useCallback(() => {
-      if (activeTab === 'discovery') {
-        StatusBar.setHidden(true, 'fade');
-      } else {
-        StatusBar.setHidden(false, 'fade');
-      }
-      return () => StatusBar.setHidden(false, 'fade');
-    }, [activeTab])
+      setThemeColor('#000000');
+      return () => {};
+    }, [])
   );
+
 
   useEffect(() => {
     const loadData = async () => {
@@ -84,40 +51,27 @@ export default function NewAndHotScreen() {
 
   return (
     <View style={styles.container}>
-      {activeTab !== 'discovery' && (
-        <SafeAreaView style={styles.safeHeader} edges={['top']}>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>New & Hot</Text>
-            <View style={styles.headerIcons}>
-              <Pressable style={styles.iconButton}>
-                <MaterialCommunityIcons name="cast" size={24} color="white" />
-              </Pressable>
-              <Pressable style={styles.iconButton} onPress={() => router.push('/search')}>
-                <Ionicons name="search" size={24} color="white" />
-              </Pressable>
-            </View>
+      <SafeAreaView style={styles.safeHeader} edges={['top']}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>New & Hot</Text>
+          <View style={styles.headerIcons}>
+            <Pressable style={styles.iconButton}>
+              <MaterialCommunityIcons name="cast" size={24} color="white" />
+            </Pressable>
+            <Pressable style={styles.iconButton} onPress={() => router.push('/search')}>
+              <Ionicons name="search" size={24} color="white" />
+            </Pressable>
           </View>
-        </SafeAreaView>
-      )}
+        </View>
+      </SafeAreaView>
 
-      <View style={[styles.stickyFilters, activeTab === 'discovery' && styles.discoveryFilters]}>
+      <View style={styles.stickyFilters}>
         <ScrollView 
           horizontal 
           showsHorizontalScrollIndicator={false} 
           style={styles.filtersContainer} 
           contentContainerStyle={styles.filtersContent}
         >
-          <Pressable 
-            onPress={() => setActiveTab('discovery')}
-            style={[styles.filterPill, activeTab === 'discovery' && styles.filterPillActive]}
-          >
-            <MaterialCommunityIcons 
-              name="creation" 
-              size={16} 
-              color={activeTab === 'discovery' ? 'black' : 'white'} 
-            />
-            <Text style={[styles.filterText, activeTab === 'discovery' && styles.filterTextActive]}> Discovery</Text>
-          </Pressable>
           <Pressable 
             onPress={() => setActiveTab('coming')}
             style={[styles.filterPill, activeTab === 'coming' && styles.filterPillActive]}
@@ -134,21 +88,47 @@ export default function NewAndHotScreen() {
       </View>
 
       <View style={styles.content}>
-        {activeTab === 'discovery' ? (
-          <VerticalVideoFeed data={MOCK_VIDEOS} />
-        ) : (
-          <FlatList
-            data={upcoming}
-            keyExtractor={(item) => item.id.toString()}
-            renderItem={({ item }) => <NewAndHotItem item={item} />}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.listContent}
-          />
-        )}
+        <FlatList
+          data={upcoming}
+          keyExtractor={(item) => item.id.toString()}
+          renderItem={({ item }) => <NewAndHotItem item={item} />}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+        />
       </View>
     </View>
   );
 }
+
+const AnimatedActionButton = ({ icon, activeIcon, text, activeText }: any) => {
+  const [isActive, setIsActive] = useState(false);
+  const scale = useSharedValue(1);
+
+  const handlePress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    scale.value = withSequence(
+      withSpring(0.7, { damping: 10, stiffness: 300 }),
+      withSpring(1.2, { damping: 10, stiffness: 300 }),
+      withSpring(1, { damping: 10, stiffness: 300 })
+    );
+    setIsActive(!isActive);
+  };
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }]
+  }));
+
+  return (
+    <Pressable style={styles.actionBtn} onPress={handlePress}>
+      <Animated.View style={animatedStyle}>
+        {isActive && activeIcon ? activeIcon : icon}
+      </Animated.View>
+      <Text style={[styles.actionBtnText, isActive && { color: 'white', fontWeight: 'bold' }]}>
+        {isActive && activeText ? activeText : text}
+      </Text>
+    </Pressable>
+  );
+};
 
 const NewAndHotItem = ({ item }: { item: any }) => {
   const releaseDate = item.release_date ? new Date(item.release_date) : new Date();
@@ -169,17 +149,24 @@ const NewAndHotItem = ({ item }: { item: any }) => {
             style={styles.backdropImage} 
             resizeMode="cover"
           />
+          {parseInt(item.id) % 2 === 0 && (
+            <View style={styles.netflixBadge}>
+              <Text style={styles.nLogo}>N</Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.actionsRow}>
           <Text style={styles.itemTitle} numberOfLines={2}>{item.title}</Text>
           <View style={styles.actionButtons}>
+            <AnimatedActionButton 
+              icon={<Feather name="bell" size={24} color="white" />}
+              activeIcon={<MaterialCommunityIcons name="bell-ring" size={24} color="white" />}
+              text="Remind Me"
+              activeText="Reminded"
+            />
             <Pressable style={styles.actionBtn}>
-              <Feather name="bell" size={22} color="white" />
-              <Text style={styles.actionBtnText}>Remind Me</Text>
-            </Pressable>
-            <Pressable style={styles.actionBtn}>
-              <Feather name="info" size={22} color="white" />
+              <Feather name="info" size={24} color="white" />
               <Text style={styles.actionBtnText}>Info</Text>
             </Pressable>
           </View>
@@ -203,7 +190,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   safeHeader: {
-    backgroundColor: COLORS.background,
+    position: 'absolute',
+    top: 0, left: 0, right: 0, zIndex: 100,
+    backgroundColor: 'transparent',
   },
   header: {
     flexDirection: 'row',
@@ -228,13 +217,6 @@ const styles = StyleSheet.create({
   stickyFilters: {
     backgroundColor: COLORS.background,
     zIndex: 20,
-  },
-  discoveryFilters: {
-    position: 'absolute',
-    top: 50,
-    left: 0,
-    right: 0,
-    backgroundColor: 'transparent',
   },
   filtersContainer: {
     borderBottomWidth: 0,
@@ -270,6 +252,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
+    paddingTop: 120,
     paddingBottom: 40,
   },
   itemContainer: {
@@ -350,5 +333,23 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 12,
     fontWeight: '500',
+  },
+  netflixBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    width: 20,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  nLogo: {
+    color: '#E50914',
+    fontSize: 20,
+    fontWeight: '900',
+    textShadowColor: 'black',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   }
 });

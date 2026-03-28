@@ -1,28 +1,58 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Pressable, ActivityIndicator, Alert, StatusBar, Dimensions, Animated as RNAnimated, FlatList, Modal } from 'react-native';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image as RNImage, Pressable, ActivityIndicator, Alert, StatusBar, Dimensions, Animated as RNAnimated, FlatList, Modal } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather, MaterialIcons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { TrailerResolver } from '../../components/TrailerResolver';
+import { VidLinkResolver } from '../../components/VidLinkResolver';
+import { VidLinkStream } from '../../services/vidlink';
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
   withRepeat, 
-  withTiming, 
   withSequence, 
+  withTiming, 
+  withSequence as withSequence2, 
   Easing, 
   interpolate, 
   useAnimatedScrollHandler,
   runOnJS,
-  useAnimatedRef
+  useAnimatedRef,
+  SharedTransition,
+  FadeInUp,
+  FadeInDown,
+  withSpring,
+  FadeIn,
+  useAnimatedReaction,
 } from 'react-native-reanimated';
+
+const AnimatedExpoImage = Animated.createAnimatedComponent(ExpoImage);
+
+// Custom shared transition - disabled due to version compatibility issues in Reanimated 4
+// const customTransition = (SharedTransition as any).custom((values: any) => {
+//   'worklet';
+//   return {
+//     height: withSpring(values.targetHeight, { damping: 18, stiffness: 120 }),
+//     width: withSpring(values.targetWidth, { damping: 18, stiffness: 120 }),
+//     originX: withSpring(values.targetOriginX, { damping: 18, stiffness: 120 }),
+//     originY: withSpring(values.targetOriginY, { damping: 18, stiffness: 120 }),
+//   };
+// });
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { COLORS, SPACING } from '../../constants/theme';
 import { fetchMovieDetails, getImageUrl, getBackdropUrl, fetchSeasonDetails } from '../../services/tmdb';
 import { HorizontalCarousel } from '../../components/HorizontalCarousel';
-import { fetchStreamingLinks } from '../../services/streaming';
-import { fetchNetMirrorStream, NetMirrorTrack } from '../../services/netmirror';
 import { ModernVideoPlayer } from '../../components/ModernVideoPlayer';
 import { NetflixLoader } from '../../components/NetflixLoader';
+import NetflixRatingButton from '../../components/NetflixRatingButton';
+import { downloadVideo, loadMetadata } from '../../services/downloads';
+import { useProfile } from '../../context/ProfileContext';
+import { MyListService } from '../../services/MyListService';
+import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -68,28 +98,170 @@ function MovieDetailsSkeleton() {
   );
 }
 
+const AnimatedActionButton = ({ icon, activeIcon, text, activeText, initiallyActive = false, onPress }: any) => {
+  const [isActive, setIsActive] = useState(initiallyActive);
+  const scale = useSharedValue(1);
+
+  const handlePress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    scale.value = withSequence(
+      withSpring(0.6, { damping: 10, stiffness: 200 }),
+      withSpring(1.2, { damping: 10, stiffness: 200 }),
+      withSpring(1, { damping: 10, stiffness: 200 })
+    );
+    setIsActive(!isActive);
+    if (onPress) onPress(!isActive);
+  };
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }]
+  }));
+
+  return (
+    <Pressable style={styles.actionItem} onPress={handlePress}>
+      <Animated.View style={animatedStyle}>
+        {isActive && activeIcon ? activeIcon : icon}
+      </Animated.View>
+      <Text style={styles.actionText}>
+        {isActive && activeText ? activeText : text}
+      </Text>
+    </Pressable>
+  );
+};
+
 export default function MovieDetailsScreen() {
   const { id, type } = useLocalSearchParams();
   const router = useRouter();
   const [movie, setMovie] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [loadingStream, setLoadingStream] = useState(false);
   const [episodes, setEpisodes] = useState<any[]>([]);
   const [selectedSeason, setSelectedSeason] = useState(1);
   const [showSeasonModal, setShowSeasonModal] = useState(false);
   const [isTV, setIsTV] = useState(type === 'tv');
+  const { selectedProfile } = useProfile();
+  const [isInMyList, setIsInMyList] = useState(false);
+  
+  // Watch History State
+  const [watchProgress, setWatchProgress] = useState<WatchHistoryItem | null>(null);
+
+  // Subscribe to Watch History for this specific item
+  useEffect(() => {
+    if (!selectedProfile || !id) return;
+    const unsubscribe = WatchHistoryService.subscribeToHistory(selectedProfile.id, (items) => {
+      const historyItem = items.find(item => item.id.toString() === id.toString());
+      if (historyItem) {
+        setWatchProgress(historyItem as WatchHistoryItem);
+      } else {
+        setWatchProgress(null);
+      }
+    });
+    return () => unsubscribe();
+  }, [selectedProfile, id]);
+  
+  // Trailer States
+  const [resolvedTrailerUrl, setResolvedTrailerUrl] = useState<string | null>(null);
+  const [isTrailerMuted, setIsTrailerMuted] = useState(true);
+  const [isTrailerResolving, setIsTrailerResolving] = useState(true);
+  const [trailerHasEnded, setTrailerHasEnded] = useState(false);
+
+  // Download Resolution State
+  const [downloadVidlinkEnabled, setDownloadVidlinkEnabled] = useState(false);
+  const [downloadTarget, setDownloadTarget] = useState<{
+    episodeNum?: number;
+    title: string;
+    image: string;
+  } | null>(null);
+
+  const trailerPlayer = useVideoPlayer(resolvedTrailerUrl ?? '', (p) => {
+    p.loop = false;
+    p.muted = isTrailerMuted;
+  });
+
+  // Listen for trailer end to show replay button
+  useEffect(() => {
+    if (!trailerPlayer || !resolvedTrailerUrl) return;
+    
+    const interval = setInterval(() => {
+      try {
+        if (trailerPlayer.duration > 0 && trailerPlayer.currentTime >= trailerPlayer.duration - 0.5) {
+          setTrailerHasEnded(true);
+          clearInterval(interval);
+        }
+      } catch (_) {
+        // Player may not be ready yet
+      }
+    }, 500);
+    
+    return () => clearInterval(interval);
+  }, [trailerPlayer, resolvedTrailerUrl]);
+
+  // Handle My List Subscription
+  useEffect(() => {
+    if (!selectedProfile || !id) return;
+    
+    // Initial check
+    MyListService.isInList(selectedProfile.id, id as string).then(setIsInMyList);
+
+    // Subscribe for real-time updates
+    const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
+      const exists = items.some(item => item.id.toString() === id.toString());
+      setIsInMyList(exists);
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile, id]);
+
+  const handleToggleMyList = async () => {
+    if (!selectedProfile || !movie) return;
+    
+    // Optimistic UI update
+    const newStatus = !isInMyList;
+    setIsInMyList(newStatus);
+    
+    const wasAdded = await MyListService.toggleItem(selectedProfile.id, {
+      id: movie.id,
+      title: movie.title || movie.name,
+      poster_path: movie.poster_path,
+      backdrop_path: movie.backdrop_path,
+      type: isTV ? 'tv' : 'movie'
+    });
+    
+    // Ensure state matches result
+    if (typeof wasAdded === 'boolean') {
+      setIsInMyList(wasAdded);
+    }
+  };
+
+  // Pause trailer when full-scale player starts
+  useEffect(() => {
+    if (isPlaying && trailerPlayer && resolvedTrailerUrl) {
+      try { trailerPlayer.pause(); } catch (_) {}
+    }
+  }, [isPlaying]);
+
+  const toggleTrailerMute = () => {
+    setIsTrailerMuted(!isTrailerMuted);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
   
   const scrollY = useSharedValue(0);
   const translateY = useSharedValue(0);
   const opacity = useSharedValue(1);
-  const scrollRef = useAnimatedRef<Animated.ScrollView>();
+  const scrollRef = useAnimatedRef<FlatList>();
   
   const [streamConfig, setStreamConfig] = useState<{ 
     url: string; 
     headers?: Record<string, string> | null;
-    tracks?: NetMirrorTrack[];
+    tracks?: any[];
     currentTitle?: string;
+    tmdbId?: string;
+    contentType?: string;
+    releaseYear?: string;
+    episodeNum?: number;
+    seasonNum?: number;
+    primaryId?: string;
+    backdropUrl?: string;
   }>({
     url: '',
     headers: null,
@@ -147,82 +319,115 @@ export default function MovieDetailsScreen() {
     }
   };
 
-  const handleWatchNow = async (episodeNum?: number) => {
-    const url = isTV 
-      ? `https://vidsrc.to/embed/tv/${id}/${selectedSeason}/${episodeNum || 1}`
-      : `https://vidsrc.to/embed/movie/${id}`;
+
+  const handlePlay = async (episodeNum?: number, overrideSeason?: number) => {
+    const movieTitle = movie.title || movie.name;
+    const seasonToPlay = overrideSeason || selectedSeason;
+    const playTitle = isTV && episodeNum ? `${movieTitle} - S${seasonToPlay} E${episodeNum}` : movieTitle;
+    
+    console.log(`[Stream V2] 🎬 Play: "${movieTitle}" (isTV: ${isTV}, Season: ${seasonToPlay}, Ep: ${episodeNum || 'N/A'})`);
+    
+    // Show player IMMEDIATELY to handle loading there
+    setIsPlaying(true);
+
     try {
-      await WebBrowser.openBrowserAsync(url);
-    } catch (error) {
-      Alert.alert("Error", "Could not open the player.");
+      const primaryId = movie.external_ids?.netflix_id;
+      const releaseYear = (movie.release_date || movie.first_air_date || '').split('-')[0];
+      
+      setStreamConfig({
+        url: '', 
+        headers: null,
+        tracks: [],
+        currentTitle: playTitle,
+        tmdbId: id as string,
+        contentType: isTV ? 'tv' : 'movie',
+        releaseYear: releaseYear,
+        episodeNum: episodeNum,
+        seasonNum: seasonToPlay,
+        primaryId: primaryId,
+        backdropUrl: getImageUrl(movie.backdrop_path || movie.poster_path)
+      });
+    } catch (error: any) {
+      console.error(`[Stream] 💥 Setup Error:`, error.message);
     }
   };
 
-  const handlePlay = async (episodeNum?: number) => {
+  const handleDownload = async (episodeNum?: number) => {
     const movieTitle = movie.title || movie.name;
-    
-    // Calculate absolute episode number for TV shows
-    let targetEpisode = episodeNum;
-    if (isTV && episodeNum && movie.seasons) {
-      targetEpisode = 0;
-      for (const s of movie.seasons) {
-        if (s.season_number === 0) continue; 
-        if (s.season_number < selectedSeason) {
-          targetEpisode += s.episode_count;
-        } else if (s.season_number === selectedSeason) {
-          targetEpisode += episodeNum;
-          break;
-        }
-      }
-    }
-
-    const playTitle = isTV && episodeNum ? `${movieTitle} - S${selectedSeason} E${episodeNum}` : movieTitle;
-    
-    console.log(`[Stream V2] 🎬 Play: "${movieTitle}" (isTV: ${isTV}, Ep: ${targetEpisode || 'N/A'})`);
-    setLoadingStream(true);
+    const targetEpisode = episodes.find(e => e.episode_number === episodeNum) || episodes[0];
+    const image = getImageUrl(isTV ? targetEpisode?.still_path : movie.poster_path);
     
     try {
-      // Pass the Netflix ID if available from TMDb external_ids to prioritize the correct version
-      const primaryId = movie.external_ids?.netflix_id;
-      const releaseYear = (movie.release_date || movie.first_air_date || '').split('-')[0];
-      const netMirrorResponse = await fetchNetMirrorStream(movieTitle, isTV ? targetEpisode : undefined, primaryId, releaseYear);
+      // Check if already downloaded/downloading
+      const currentDownloads = await loadMetadata();
+      const downloadId = `${id}_${isTV ? 'tv' : 'movie'}${isTV ? `_s${selectedSeason}` : ''}${episodeNum ? `_e${episodeNum}` : ''}`;
       
-      if (netMirrorResponse && netMirrorResponse.sources.length > 0) {
-        // IMPORTANT: Unified headers for bypass
-        setStreamConfig({
-          url: netMirrorResponse.sources[0].url,
-          headers: {
-            'Referer': 'https://net52.cc/',
-            'User-Agent': 'Mozilla/5.0 (Android) ExoPlayer',
-            'Cookie': netMirrorResponse.cookies
-          },
-          tracks: netMirrorResponse.tracks,
-          currentTitle: playTitle
-        });
-        setIsPlaying(true);
-        setLoadingStream(false);
+      const existing = currentDownloads.find(d => d.id === downloadId);
+      if (existing?.status === 'completed') {
+        Alert.alert("Already Downloaded", "This content is already available in your downloads.");
+        return;
+      }
+      if (existing?.status === 'downloading') {
+        Alert.alert("Downloading", "This content is already being downloaded.");
         return;
       }
 
-      const data = await fetchStreamingLinks(id as string, isTV ? 'tv' : 'movie', selectedSeason, episodeNum);
-      if (data && data.sources.length > 0) {
-        setStreamConfig({ 
-          url: data.sources[0].url, 
-          headers: null, 
-          tracks: [],
-          currentTitle: playTitle
-        });
-        setIsPlaying(true);
-        setLoadingStream(false);
-      } else {
-        setLoadingStream(false);
-        handleWatchNow(episodeNum);
-      }
+      // Instead of starting download immediately, we need to RESOLVE VidLink first
+      console.log(`[Download] 🔍 Initiating VidLink resolution for download...`);
+      Alert.alert(
+        "Preparing Download", 
+        "Resolving high-quality download link...",
+        [{ text: "OK" }]
+      );
+
+      setDownloadTarget({
+        episodeNum,
+        title: movieTitle,
+        image: image || ''
+      });
+      setDownloadVidlinkEnabled(true);
+
     } catch (error: any) {
-      console.error(`[Stream] 💥 Critical Error:`, error.message);
-      setLoadingStream(false);
-      handleWatchNow(episodeNum);
+      Alert.alert("Download Error", "Failed to start download. Please try again.");
+      console.error("[Download] 💥 Error:", error);
     }
+  };
+
+  const handleDownloadStreamResolved = (stream: VidLinkStream) => {
+    if (!downloadTarget) return;
+
+    const { episodeNum, title, image } = downloadTarget;
+    const primaryId = movie.external_ids?.netflix_id;
+    const releaseYear = (movie.release_date || movie.first_air_date || '').split('-')[0];
+
+    console.log(`[Download] ✅ VidLink resolved, starting background download...`);
+    
+    // Start download in background using the resolved stream
+    downloadVideo(
+      id as string,
+      title,
+      isTV ? 'tv' : 'movie',
+      image,
+      isTV ? selectedSeason : undefined,
+      episodeNum,
+      primaryId,
+      releaseYear,
+      undefined, // onProgress
+      stream     // Pass the pre-resolved VidLink stream!
+    ).catch(err => {
+      console.error("[Download] ❌ Background download failed:", err);
+    });
+
+    // Cleanup
+    setDownloadVidlinkEnabled(false);
+    setDownloadTarget(null);
+  };
+
+  const handleDownloadError = (error: string) => {
+    console.error(`[Download] ❌ VidLink Error: ${error}`);
+    Alert.alert("Download Failed", "Could not resolve a valid download link. Please try again.");
+    setDownloadVidlinkEnabled(false);
+    setDownloadTarget(null);
   };
 
   const scrollHandler = useAnimatedScrollHandler({
@@ -232,20 +437,43 @@ export default function MovieDetailsScreen() {
   });
 
   const headerAnimatedStyle = useAnimatedStyle(() => {
-    const headerOpacity = interpolate(scrollY.value, [0, 200], [0, 1]);
+    const opacity = interpolate(scrollY.value, [0, 200], [0, 1]);
     return {
-      opacity: headerOpacity,
-      backgroundColor: `rgba(0,0,0,${headerOpacity})`,
+      backgroundColor: `rgba(0,0,0,${opacity})`,
     };
   });
 
   const backdropAnimatedStyle = useAnimatedStyle(() => {
     const scale = interpolate(scrollY.value, [-100, 0], [1.2, 1], 'clamp');
     const bgTranslateY = interpolate(scrollY.value, [0, 300], [0, 100]);
+
     return {
       transform: [{ scale }, { translateY: bgTranslateY }],
     };
   });
+
+  // Auto-pause/resume trailer based on scroll position (JS thread safe)
+  const pauseTrailer = useCallback(() => {
+    if (!resolvedTrailerUrl) return;
+    try { trailerPlayer.pause(); } catch (_) {}
+  }, [trailerPlayer, resolvedTrailerUrl]);
+
+  const resumeTrailer = useCallback(() => {
+    if (!resolvedTrailerUrl || trailerHasEnded || isPlaying) return;
+    try { trailerPlayer.play(); } catch (_) {}
+  }, [trailerPlayer, resolvedTrailerUrl, trailerHasEnded, isPlaying]);
+
+  useAnimatedReaction(
+    () => scrollY.value,
+    (currentScrollY, previousScrollY) => {
+      if (currentScrollY > 350 && (previousScrollY ?? 0) <= 350) {
+        runOnJS(pauseTrailer)();
+      } else if (currentScrollY < 100 && (previousScrollY ?? 350) >= 100) {
+        runOnJS(resumeTrailer)();
+      }
+    },
+    [pauseTrailer, resumeTrailer]
+  );
 
   const containerAnimatedStyle = useAnimatedStyle(() => {
     return {
@@ -258,7 +486,9 @@ export default function MovieDetailsScreen() {
     .activeOffsetY(5)
     .failOffsetY(-5)
     .onUpdate((event) => {
-      if (scrollY.value <= 0 && event.translationY > 0) {
+      // ONLY allow close-to-dismiss if we are at the very top of the list.
+      // This prevents the gesture from fighting with normal upward scrolling.
+      if (scrollY.value <= 1 && event.translationY > 0) {
         translateY.value = event.translationY;
         opacity.value = interpolate(event.translationY, [0, 300], [1, 0.5]);
       }
@@ -272,6 +502,37 @@ export default function MovieDetailsScreen() {
       }
     });
 
+  const matchScore = React.useMemo(() => Math.floor(85 + Math.random() * 14), [id]);
+  const AnimatedFlatList = React.useMemo(() => Animated.createAnimatedComponent(FlatList), []);
+
+  const renderEpisodeItem = useCallback(({ item: ep }: { item: any }) => (
+    <Pressable key={ep.id} style={styles.episodeItem} onPress={() => handlePlay(ep.episode_number)}>
+      <View style={styles.episodeMain}>
+        <View style={styles.episodeThumbContainer}>
+          <ExpoImage 
+            source={{ uri: getImageUrl(ep.still_path) }} 
+            style={styles.episodeThumb} 
+            contentFit="cover"
+            cachePolicy="memory-disk"
+          />
+          {watchProgress && watchProgress.episode === ep.episode_number && watchProgress.season === selectedSeason && watchProgress.duration > 0 && (
+            <View style={styles.watchProgressBarBg}>
+              <View style={[styles.watchProgressBarFill, { width: `${Math.min(100, Math.max(0, (watchProgress.currentTime / watchProgress.duration) * 100))}%` }]} />
+            </View>
+          )}
+        </View>
+        <View style={styles.episodeInfo}>
+          <Text style={styles.episodeTitle}>{ep.episode_number}. {ep.name}</Text>
+          <Text style={styles.episodeRuntime}>{ep.runtime || 45}m</Text>
+        </View>
+        <Pressable onPress={() => handleDownload(ep.episode_number)}>
+          <Feather name="download" size={20} color="white" style={styles.epDownload} />
+        </Pressable>
+      </View>
+      <Text style={styles.episodeOverview} numberOfLines={3}>{ep.overview || "No description available."}</Text>
+    </Pressable>
+  ), [selectedSeason, id, movie]);
+
   if (loading) return <MovieDetailsSkeleton />;
   if (!movie) return null;
 
@@ -279,24 +540,271 @@ export default function MovieDetailsScreen() {
   const runtime = movie.runtime 
     ? `${Math.floor(movie.runtime / 60)}h ${movie.runtime % 60}m` 
     : (movie.number_of_seasons ? `${movie.number_of_seasons} Seasons` : '');
-  const matchScore = Math.floor(85 + Math.random() * 14);
 
-  if (isPlaying && streamConfig.url) {
+  if (isPlaying) {
     return (
       <View style={styles.fullScreenPlayer}>
         <StatusBar hidden />
         <ModernVideoPlayer 
-          videoUrl={streamConfig.url}
+          videoUrl={streamConfig.url || undefined}
           headers={streamConfig.headers || undefined}
           title={streamConfig.currentTitle || movie.title || movie.name}
           onClose={() => setIsPlaying(false)}
           tracks={streamConfig.tracks}
           episodes={isTV ? episodes : undefined}
           onEpisodeSelect={(epNum) => handlePlay(epNum)}
+          tmdbId={streamConfig.tmdbId}
+          contentType={streamConfig.contentType as any}
+          releaseYear={streamConfig.releaseYear}
+          backdropUrl={streamConfig.backdropUrl}
+          episodeNum={streamConfig.episodeNum}
+          seasonNum={streamConfig.seasonNum}
+          primaryId={streamConfig.primaryId}
+          onNextEpisode={
+            isTV && streamConfig.episodeNum && episodes?.some(e => e.episode_number === (streamConfig.episodeNum || 0) + 1)
+              ? () => handlePlay((streamConfig.episodeNum || 0) + 1)
+              : undefined
+          }
         />
       </View>
     );
   }
+
+  const handleHeroPlay = () => {
+    if (isTV) {
+      let defaultEpisode = 1;
+      let defaultSeason = selectedSeason;
+      if (watchProgress && watchProgress.episode && watchProgress.season) {
+         const progressPercent = watchProgress.currentTime / watchProgress.duration;
+         if (progressPercent > 0.95) {
+            defaultEpisode = watchProgress.episode + 1;
+            defaultSeason = watchProgress.season;
+         } else {
+            defaultEpisode = watchProgress.episode;
+            defaultSeason = watchProgress.season;
+         }
+      }
+      handlePlay(defaultEpisode, defaultSeason);
+    } else {
+      handlePlay();
+    }
+  };
+
+  const renderHeader = () => (
+    <View>
+      {/* Hero Backdrop & Trailer */}
+      <Animated.View style={[styles.posterContainer, backdropAnimatedStyle]}>
+        {/* Hidden Resolver */}
+        {isTrailerResolving && (
+            <TrailerResolver 
+               tmdbId={id as string} 
+               mediaType={isTV ? 'tv' : 'movie'} 
+               enabled={!isPlaying && !isTrailerResolving && !trailerHasEnded}
+              onResolved={(stream) => {
+                setResolvedTrailerUrl(stream.url);
+                setIsTrailerResolving(false);
+              }}
+              onError={() => setIsTrailerResolving(false)}
+            />
+        )}
+
+        {/* Headless VidLink Resolver for Downloads */}
+        <VidLinkResolver
+          tmdbId={id as string}
+          type={isTV ? 'tv' : 'movie'}
+          season={isTV ? selectedSeason : undefined}
+          episode={isTV ? downloadTarget?.episodeNum : undefined}
+          enabled={downloadVidlinkEnabled}
+          onStreamResolved={handleDownloadStreamResolved}
+          onError={handleDownloadError}
+        />
+
+        {resolvedTrailerUrl && !trailerHasEnded ? (
+          <Animated.View entering={FadeIn.duration(1000)} style={StyleSheet.absoluteFill}>
+              <VideoView
+                player={trailerPlayer}
+                style={styles.backdrop}
+                contentFit="cover"
+                nativeControls={false}
+              />
+              <Pressable 
+                style={styles.muteButton} 
+                onPress={toggleTrailerMute}
+                hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+              >
+                <Ionicons 
+                  name={isTrailerMuted ? "volume-mute" : "volume-high"} 
+                  size={20} 
+                  color="white" 
+                />
+              </Pressable>
+          </Animated.View>
+        ) : (
+          <AnimatedExpoImage 
+            source={{ uri: getBackdropUrl(movie.backdrop_path) }} 
+            style={styles.backdrop} 
+            contentFit="cover"
+            priority="high"
+            sharedTransitionTag={`movie-image-${id}`}
+          />
+        )}
+
+        {trailerHasEnded && (
+            <Pressable 
+              style={styles.replayOverlay} 
+              onPress={() => {
+                setTrailerHasEnded(false);
+                trailerPlayer.currentTime = 0;
+                trailerPlayer.play();
+              }}
+            >
+              <Ionicons name="refresh" size={24} color="white" />
+              <Text style={styles.replayText}>Replay</Text>
+            </Pressable>
+        )}
+        <LinearGradient
+          colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.7)', COLORS.background]}
+          style={styles.bottomFadeOverlay}
+          pointerEvents="none"
+        />
+        <Animated.View 
+            entering={FadeInDown.delay(400).duration(800)} 
+            style={styles.heroPlayOverlay}
+            pointerEvents="box-none"
+          >
+          <Pressable style={styles.heroPlayCircle} onPress={handleHeroPlay}>
+            <Ionicons name="play" size={32} color="white" style={{ marginLeft: 4 }} />
+          </Pressable>
+        </Animated.View>
+      </Animated.View>
+
+      {/* Content Info */}
+      <View style={styles.infoContent}>
+        <Animated.View entering={FadeInUp.delay(500).duration(800)} style={styles.matchBadgeRow}>
+          <Text style={styles.matchScore}>{matchScore}% Match</Text>
+          <Text style={styles.metadataText}>{year}</Text>
+          <View style={styles.ratingBadge}>
+            <Text style={styles.ratingText}>M/A 16+</Text>
+          </View>
+          <Text style={styles.metadataText}>{runtime}</Text>
+          <View style={styles.hdBadge}>
+            <Text style={styles.hdText}>4K Ultra HD</Text>
+          </View>
+        </Animated.View>
+
+        <Animated.Text entering={FadeInUp.delay(600).duration(800)} style={styles.title}>{movie.title || movie.name}</Animated.Text>
+        
+        <Animated.View entering={FadeInUp.delay(700).duration(800)} style={styles.top10Row}>
+          <View style={styles.top10Badge}>
+            <Text style={styles.top10Text}>TOP</Text>
+            <Text style={styles.top10Number}>10</Text>
+          </View>
+          <Text style={styles.top10Label}>#1 in {isTV ? 'TV Shows' : 'Movies'} Today</Text>
+        </Animated.View>
+
+        <Animated.View entering={FadeInUp.delay(800).duration(800)}>
+          <Pressable 
+            style={({ pressed }) => [
+              styles.playLargeButton,
+              pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
+            ]} 
+            onPress={handleHeroPlay}
+          >
+            <Ionicons name="play" size={24} color="black" />
+            <Text style={styles.playLargeText}>
+              {watchProgress && watchProgress.currentTime > 0 
+                ? (isTV && watchProgress.episode ? `Resume S${watchProgress.season} E${watchProgress.episode}` : 'Resume') 
+                : 'Play'}
+            </Text>
+          </Pressable>
+          {/* Main sequence progress bar */}
+          {watchProgress && watchProgress.currentTime > 0 && watchProgress.duration > 0 && (
+            <View style={{ width: '100%', height: 4, backgroundColor: 'rgba(255,255,255,0.2)', marginTop: 8, borderRadius: 2, overflow: 'hidden' }}>
+              <View style={{ height: '100%', backgroundColor: COLORS.primary, borderRadius: 2, width: `${Math.min(100, Math.max(0, (watchProgress.currentTime / watchProgress.duration) * 100))}%` }} />
+            </View>
+          )}
+        </Animated.View>
+        
+        <Animated.View entering={FadeInUp.delay(900).duration(800)}>
+          <Pressable 
+            style={styles.downloadLargeButton}
+            onPress={() => isTV ? handleDownload(1) : handleDownload()}
+          >
+            <Feather name="download" size={22} color="white" />
+            <Text style={styles.downloadLargeText}>Download</Text>
+          </Pressable>
+        </Animated.View>
+
+        <Animated.Text entering={FadeInUp.delay(1000).duration(800)} style={styles.synopsis}>
+          {movie.overview}
+        </Animated.Text>
+
+        <Animated.View entering={FadeInUp.delay(1100).duration(800)} style={styles.bentoCard}>
+          <Text style={styles.bentoLabel}>Cast & Crew</Text>
+          <Text style={styles.credits} numberOfLines={2}>
+            {movie.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ')}... more
+          </Text>
+        </Animated.View>
+
+        <Animated.View entering={FadeInUp.delay(1200).duration(800)} style={styles.secondaryActions}>
+          <AnimatedActionButton 
+            icon={<Ionicons name="add" size={28} color="white" />}
+            activeIcon={<Ionicons name="checkmark" size={28} color="white" />}
+            text="My List"
+            activeText="My List"
+            initiallyActive={isInMyList}
+            onPress={handleToggleMyList}
+          />
+          <NetflixRatingButton item={movie} />
+          <AnimatedActionButton 
+            icon={<Feather name="send" size={24} color="white" />}
+            text="Share"
+          />
+        </Animated.View>
+      </View>
+
+      <View style={styles.tabsContainer}>
+        <View style={styles.tabItemActive}>
+          <Text style={styles.tabTextActive}>{isTV ? 'Episodes' : 'More Like This'}</Text>
+          <View style={styles.tabIndicator} />
+        </View>
+        {isTV && (
+          <View style={styles.tabItem}>
+            <Text style={styles.tabText}>More Like This</Text>
+          </View>
+        )}
+      </View>
+
+      {isTV && (
+        <View style={styles.seasonPicker}>
+          <Pressable style={styles.seasonBtn} onPress={() => setShowSeasonModal(true)}>
+            <Text style={styles.seasonBtnText}>Season {selectedSeason}</Text>
+            <Ionicons name="chevron-down" size={16} color="white" />
+          </Pressable>
+        </View>
+      )}
+    </View>
+  );
+
+  const renderFooter = () => (
+    <View style={{ paddingBottom: 100 }}>
+      {/* If it's a Movie, we show similar items at the bottom */}
+      {!isTV && (
+        <View style={styles.similarGrid}>
+          <HorizontalCarousel title="" data={movie.similar?.results?.map((item: any) => ({
+            id: item.id.toString(),
+            title: item.title || item.name,
+            imageUrl: getImageUrl(item.poster_path),
+          })) || []} />
+        </View>
+      )}
+      <View style={{ padding: 20, alignItems: 'center' }}>
+        <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Version 1.0.0 (2026.03.24)</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.2)', fontSize: 11, marginTop: 4 }}>made by mzazimhenga ❤️</Text>
+      </View>
+    </View>
+  );
+
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -325,164 +833,21 @@ export default function MovieDetailsScreen() {
         
         <View style={{ flex: 1 }}>
           <GestureDetector gesture={panGesture}>
-            <Animated.ScrollView 
-              ref={scrollRef}
+            <AnimatedFlatList 
+              ref={scrollRef as any}
+              data={isTV ? episodes : []}
+              renderItem={renderEpisodeItem}
+              keyExtractor={(item: any) => item.id.toString()}
+              ListHeaderComponent={renderHeader}
+              ListFooterComponent={renderFooter}
               showsVerticalScrollIndicator={false}
               onScroll={scrollHandler}
               scrollEventThrottle={16}
-              contentContainerStyle={{ paddingBottom: 100 }}
-            >
-              {/* Hero Backdrop */}
-              <Animated.View style={[styles.posterContainer, backdropAnimatedStyle]}>
-                <Animated.Image 
-                  source={{ uri: getBackdropUrl(movie.backdrop_path) }} 
-                  style={styles.backdrop} 
-                  resizeMode="cover"
-                  sharedTransitionTag={`movie-image-${id}`}
-                />
-                <View style={styles.bottomFadeOverlay} />
-                
-                <Pressable style={styles.heroPlayOverlay} onPress={() => isTV ? handlePlay(1) : handlePlay()}>
-                  <View style={styles.heroPlayCircle}>
-                    {loadingStream ? (
-                      <NetflixLoader size={36} color="white" />
-                    ) : (
-                      <Ionicons name="play" size={32} color="white" style={{ marginLeft: 4 }} />
-                    )}
-                  </View>
-                </Pressable>
-              </Animated.View>
-
-              {/* Content Info */}
-              <View style={styles.infoContent}>
-                <View style={styles.matchBadgeRow}>
-                  <Text style={styles.matchScore}>{matchScore}% Match</Text>
-                  <Text style={styles.metadataText}>{year}</Text>
-                  <View style={styles.ratingBadge}>
-                    <Text style={styles.ratingText}>M/A 16+</Text>
-                  </View>
-                  <Text style={styles.metadataText}>{runtime}</Text>
-                  <View style={styles.hdBadge}>
-                    <Text style={styles.hdText}>4K Ultra HD</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.title}>{movie.title || movie.name}</Text>
-                
-                <View style={styles.top10Row}>
-                  <View style={styles.top10Badge}>
-                    <Text style={styles.top10Text}>TOP</Text>
-                    <Text style={styles.top10Number}>10</Text>
-                  </View>
-                  <Text style={styles.top10Label}>#1 in {isTV ? 'TV Shows' : 'Movies'} Today</Text>
-                </View>
-
-                <Pressable 
-                  style={({ pressed }) => [
-                    styles.playLargeButton,
-                    pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
-                  ]} 
-                  onPress={() => isTV ? handlePlay(1) : handlePlay()}
-                >
-                  {loadingStream ? (
-                    <NetflixLoader size={24} color="black" />
-                  ) : (
-                    <>
-                      <Ionicons name="play" size={24} color="black" />
-                      <Text style={styles.playLargeText}>Play</Text>
-                    </>
-                  )}
-                </Pressable>
-                
-                <Pressable style={styles.downloadLargeButton}>
-                  <Feather name="download" size={22} color="white" />
-                  <Text style={styles.downloadLargeText}>Download</Text>
-                </Pressable>
-
-                <Text style={styles.synopsis}>
-                  {movie.overview}
-                </Text>
-
-                <View style={styles.bentoCard}>
-                  <Text style={styles.bentoLabel}>Cast & Crew</Text>
-                  <Text style={styles.credits} numberOfLines={2}>
-                    {movie.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ')}... more
-                  </Text>
-                </View>
-
-                <View style={styles.secondaryActions}>
-                  <Pressable style={styles.actionItem}>
-                    <Ionicons name="add" size={28} color="white" />
-                    <Text style={styles.actionText}>My List</Text>
-                  </Pressable>
-                  <Pressable style={styles.actionItem}>
-                    <MaterialIcons name="thumb-up-off-alt" size={24} color="white" />
-                    <Text style={styles.actionText}>Rate</Text>
-                  </Pressable>
-                  <Pressable style={styles.actionItem}>
-                    <Feather name="send" size={24} color="white" />
-                    <Text style={styles.actionText}>Share</Text>
-                  </Pressable>
-                </View>
-              </View>
-
-              {/* TV Show Episodes Section */}
-              {isTV && (
-                <View style={styles.episodesSection}>
-                  <View style={styles.tabsContainer}>
-                    <View style={styles.tabItemActive}>
-                      <Text style={styles.tabTextActive}>Episodes</Text>
-                      <View style={styles.tabIndicator} />
-                    </View>
-                    <View style={styles.tabItem}>
-                      <Text style={styles.tabText}>More Like This</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.seasonPicker}>
-                    <Pressable style={styles.seasonBtn} onPress={() => setShowSeasonModal(true)}>
-                      <Text style={styles.seasonBtnText}>Season {selectedSeason}</Text>
-                      <Ionicons name="chevron-down" size={16} color="white" />
-                    </Pressable>
-                  </View>
-
-                  {episodes.map((ep) => (
-                    <Pressable key={ep.id} style={styles.episodeItem} onPress={() => handlePlay(ep.episode_number)}>
-                      <View style={styles.episodeMain}>
-                        <Image 
-                          source={{ uri: getImageUrl(ep.still_path) }} 
-                          style={styles.episodeThumb} 
-                        />
-                        <View style={styles.episodeInfo}>
-                          <Text style={styles.episodeTitle}>{ep.episode_number}. {ep.name}</Text>
-                          <Text style={styles.episodeRuntime}>{ep.runtime || 45}m</Text>
-                        </View>
-                        <Feather name="download" size={20} color="white" style={styles.epDownload} />
-                      </View>
-                      <Text style={styles.episodeOverview} numberOfLines={3}>{ep.overview}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-
-              {!isTV && (
-                <View style={styles.episodesSection}>
-                  <View style={styles.tabsContainer}>
-                    <View style={styles.tabItemActive}>
-                      <Text style={styles.tabTextActive}>More Like This</Text>
-                      <View style={styles.tabIndicator} />
-                    </View>
-                  </View>
-                  <View style={styles.similarGrid}>
-                    <HorizontalCarousel title="" data={movie.similar?.results?.map((item: any) => ({
-                      id: item.id.toString(),
-                      title: item.title || item.name,
-                      imageUrl: getImageUrl(item.poster_path),
-                    })) || []} />
-                  </View>
-                </View>
-              )}
-            </Animated.ScrollView>
+              removeClippedSubviews={false}
+              initialNumToRender={5}
+              maxToRenderPerBatch={5}
+              windowSize={5}
+            />
           </GestureDetector>
         </View>
 
@@ -606,6 +971,7 @@ const styles = StyleSheet.create({
   posterContainer: {
     width: '100%',
     height: 400,
+    backgroundColor: COLORS.background,
   },
   backdrop: {
     width: '100%',
@@ -613,11 +979,10 @@ const styles = StyleSheet.create({
   },
   bottomFadeOverlay: {
     position: 'absolute',
-    bottom: 0,
+    bottom: -1,
     left: 0,
     right: 0,
-    height: 100,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    height: 151,
   },
   heroPlayOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -633,6 +998,38 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  muteButton: {
+    position: 'absolute',
+    right: 16,
+    bottom: 40,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  replayOverlay: {
+    position: 'absolute',
+    right: 16,
+    bottom: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 8,
+    zIndex: 20,
+  },
+  replayText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
   infoContent: {
     padding: SPACING.md,
@@ -856,11 +1253,28 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 10,
   },
-  episodeThumb: {
+  episodeThumbContainer: {
     width: 130,
     height: 75,
     borderRadius: 4,
     backgroundColor: '#1a1a1a',
+    overflow: 'hidden',
+  },
+  episodeThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  watchProgressBarBg: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+  },
+  watchProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#E50914',
   },
   episodeInfo: {
     flex: 1,

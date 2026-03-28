@@ -1,16 +1,24 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image, Dimensions, Pressable } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Dimensions, Pressable } from 'react-native';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, SPACING } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { useProfile } from '../context/ProfileContext';
+import { MyListService } from '../services/MyListService';
+import * as Haptics from 'expo-haptics';
 import Animated, { 
   useAnimatedStyle, 
-  SharedValue
+  SharedValue,
+  interpolate,
+  Extrapolate
 } from 'react-native-reanimated';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
 const POSTER_WIDTH = width * 0.9;
 const POSTER_HEIGHT = POSTER_WIDTH * 1.35;
+
+const AnimatedImage = Animated.createAnimatedComponent(Image);
 
 interface HeroProps {
   item: {
@@ -18,48 +26,141 @@ interface HeroProps {
     title: string;
     imageUrl: string;
     categories: string[];
+    type?: string;
   };
   onPress?: () => void;
   tiltX?: SharedValue<number>;
   tiltY?: SharedValue<number>;
   shineX?: SharedValue<number>;
+  sensor?: any; // Reanimated sensor
+  style?: any;
 }
 
-const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX }: HeroProps) => {
+const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX, sensor, style }: HeroProps) => {
+  const { selectedProfile } = useProfile();
+  const [isInMyList, setIsInMyList] = useState(false);
+
+  useEffect(() => {
+    if (!selectedProfile || !item?.id) return;
+    
+    MyListService.isInList(selectedProfile.id, item.id.toString()).then(setIsInMyList);
+
+    const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
+      const exists = items.some(i => i.id.toString() === item.id.toString());
+      setIsInMyList(exists);
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile, item?.id]);
+
+  const handleToggleMyList = async () => {
+    if (!selectedProfile || !item) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const newStatus = !isInMyList;
+    setIsInMyList(newStatus);
+    
+    const wasAdded = await MyListService.toggleItem(selectedProfile.id, {
+      id: item.id.toString(),
+      title: item.title,
+      poster_path: item.imageUrl,
+      backdrop_path: item.imageUrl,
+      type: item.type || 'movie'
+    });
+    
+    if (typeof wasAdded === 'boolean') {
+      setIsInMyList(wasAdded);
+    }
+  };
+
+  // Consolidated card and content movement
   const animatedStyle = useAnimatedStyle(() => {
+    // Combine manual tilt (touch) with sensor tilt (gyro)
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
     return {
       transform: [
-        { perspective: 1000 },
-        { rotateX: `${tiltX?.value ?? 0}deg` },
-        { rotateY: `${tiltY?.value ?? 0}deg` },
+        { perspective: 1200 },
+        { rotateX: `${tx}deg` },
+        { rotateY: `${ty}deg` },
+      ],
+    };
+  });
+
+  const contentAnimatedStyle = useAnimatedStyle(() => {
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
+    return {
+      transform: [
+        { perspective: 1200 },
+        { translateX: ty * 0.8 },
+        { translateY: -tx * 0.8 },
+        { scale: 1.05 },
+      ],
+    };
+  });
+
+  // Image layer parallax
+  const imageAnimatedStyle = useAnimatedStyle(() => {
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
+    return {
+      transform: [
+        { perspective: 1200 },
+        { scale: 1.15 },
+        { translateX: -ty * 0.3 },
+        { translateY: tx * 0.3 },
       ],
     };
   });
 
   const shineStyle = useAnimatedStyle(() => {
+    const sY = sensor ? sensor.sensor.value.roll * 50 : 0;
+    const tx = tiltX?.value ?? 0;
+    const ty = tiltY?.value ?? 0;
+    
     return {
+      opacity: (tx !== 0 || ty !== 0 || sY !== 0) ? 0.8 : 0.4,
       transform: [
-        { translateX: shineX?.value ?? -width },
-        { skewX: '-20deg' }
+        { translateX: (shineX?.value ?? -width) + sY },
+        { skewX: '-25deg' }
       ],
     };
   });
 
   return (
-    <View style={styles.outerContainer}>
+    <Animated.View style={[styles.outerContainer, style]}>
       <Pressable onPress={onPress} style={{ width: POSTER_WIDTH, height: POSTER_HEIGHT }}>
-        <Animated.View style={[styles.posterContainer, animatedStyle]}>
-          <Animated.Image 
-            source={{ uri: item.imageUrl }} 
-            style={styles.image} 
-            resizeMode="cover"
-            sharedTransitionTag={`movie-image-${item.id}`}
-          />
+        <Animated.View 
+          style={[styles.posterContainer, animatedStyle]}
+          renderToHardwareTextureAndroid={true}
+        >
+          <Animated.View style={[styles.imageLayer, imageAnimatedStyle]}>
+            <AnimatedImage 
+              source={{ uri: item.imageUrl }} 
+              style={styles.image} 
+              contentFit="cover"
+              priority="high"
+              sharedTransitionTag={`movie-image-${item.id}`}
+            />
+          </Animated.View>
 
           {/* Dynamic Glare/Shine Effect */}
           <Animated.View style={[styles.shine, shineStyle]}>
             <LinearGradient
-              colors={['transparent', 'rgba(255,255,255,0.15)', 'transparent']}
+              colors={['transparent', 'rgba(255,255,255,0.25)', 'transparent']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={StyleSheet.absoluteFill}
@@ -67,11 +168,21 @@ const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX }: HeroProps
           </Animated.View>
 
           <LinearGradient
-            colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.85)']}
+            colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.9)']}
             style={styles.gradient}
           />
 
-          <View style={styles.overlayContent}>
+          <Animated.View style={[styles.overlayContent, contentAnimatedStyle]}>
+            {/* N SERIES Logo */}
+            <View style={styles.seriesRow}>
+              <Image 
+                source={require('../assets/images/netflix-n-logo.svg')} 
+                style={styles.nSeriesLogoImage} 
+                contentFit="contain"
+              />
+              <Text style={styles.seriesText}>S E R I E S</Text>
+            </View>
+
             {/* Contextual Callout */}
             <View style={styles.top10Badge}>
               <View style={styles.top10Square}>
@@ -89,15 +200,15 @@ const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX }: HeroProps
                 <Ionicons name="play" size={20} color="black" />
                 <Text style={styles.playButtonText}>Play</Text>
               </Pressable>
-              <Pressable style={styles.listButton}>
-                <Ionicons name="add" size={24} color="white" />
+              <Pressable style={styles.listButton} onPress={handleToggleMyList}>
+                <Ionicons name={isInMyList ? "checkmark" : "add"} size={24} color="white" />
                 <Text style={styles.listButtonText}>My List</Text>
               </Pressable>
             </View>
-          </View>
+          </Animated.View>
         </Animated.View>
       </Pressable>
-    </View>
+    </Animated.View>
   );
 };
 
@@ -107,11 +218,7 @@ const styles = StyleSheet.create({
   outerContainer: {
     alignItems: 'center',
     marginVertical: SPACING.lg,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 12,
+    zIndex: 1,
   },
   posterContainer: {
     width: '100%',
@@ -119,18 +226,26 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.15)',
     backgroundColor: '#141414',
+    zIndex: 2,
   },
-  image: {
+  imageLayer: {
     width: '100%',
     height: '100%',
+    zIndex: 1,
+  },
+  image: {
+    width: '120%', // Wider to allow for parallax movement without edges showing
+    height: '120%',
+    left: '-10%',
+    top: '-10%',
   },
   shine: {
     position: 'absolute',
-    top: -100,
-    bottom: -100,
-    width: width * 0.6,
+    top: -height,
+    bottom: -height,
+    width: width * 0.8,
     zIndex: 5,
   },
   gradient: {
@@ -138,7 +253,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: '50%',
+    height: '60%',
     zIndex: 6,
   },
   overlayContent: {
@@ -149,6 +264,22 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     alignItems: 'center',
     zIndex: 10,
+  },
+  seriesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 6,
+  },
+  nSeriesLogoImage: {
+    width: 18,
+    height: 28,
+  },
+  seriesText: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 4,
   },
   top10Badge: {
     flexDirection: 'row',
@@ -210,28 +341,33 @@ const styles = StyleSheet.create({
   playButton: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: COLORS.text,
-    paddingVertical: 10,    borderRadius: 6,
-    alignItems: 'center',    justifyContent: 'center',
-    gap: 4,
+    backgroundColor: 'white',
+    paddingVertical: 12,
+    borderRadius: 4,
+    alignItems: 'center',    
+    justifyContent: 'center',
+    gap: 8,
   },
   playButtonText: {
-    color: COLORS.background,
+    color: 'black',
     fontWeight: 'bold',
-    fontSize: 15,
+    fontSize: 16,
   },
   listButton: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: 'rgba(51, 51, 51, 0.9)',
-    paddingVertical: 10,
-    borderRadius: 6,
-    alignItems: 'center',    justifyContent: 'center',
-    gap: 4,
+    backgroundColor: 'rgba(42, 42, 42, 0.8)',
+    paddingVertical: 12,
+    borderRadius: 4,
+    alignItems: 'center',    
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)'
   },
   listButtonText: {
-    color: COLORS.text,
+    color: 'white',
     fontWeight: 'bold',
-    fontSize: 15,
+    fontSize: 16,
   }
 });

@@ -18,23 +18,39 @@ export const tmdb = axios.create({
 export const getImageUrl = (path: string | null) => path ? `${IMAGE_BASE_URL}${path}` : undefined;
 export const getBackdropUrl = (path: string | null) => path ? `${BACKDROP_BASE_URL}${path}` : undefined;
 
-export const fetchTrending = async (type: 'movie' | 'tv' | 'all' = 'all') => {
-  const { data } = await tmdb.get(`/trending/${type}/week`);
+const getKidsParams = (isKids?: boolean) => {
+  return isKids ? {
+    certification_country: 'US',
+    'certification.lte': 'PG',
+    without_genres: '27,53,80' // Exclude Horror, Thriller, Crime
+  } : {};
+};
+
+export const fetchTrending = async (type: 'movie' | 'tv' | 'all' = 'all', isKids?: boolean) => {
+  const { data } = await tmdb.get(`/trending/${type}/week`, {
+    params: { ...getKidsParams(isKids) }
+  });
   return data.results;
 };
 
-export const fetchPopular = async (type: 'movie' | 'tv' = 'movie') => {
-  const { data } = await tmdb.get(`/${type}/popular`);
+export const fetchPopular = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean) => {
+  const { data } = await tmdb.get(`/${type}/popular`, {
+    params: { ...getKidsParams(isKids) }
+  });
   return data.results;
 };
 
-export const fetchTopRated = async (type: 'movie' | 'tv' = 'movie') => {
-  const { data } = await tmdb.get(`/${type}/top_rated`);
+export const fetchTopRated = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean) => {
+  const { data } = await tmdb.get(`/${type}/top_rated`, {
+    params: { ...getKidsParams(isKids) }
+  });
   return data.results;
 };
 
-export const fetchUpcoming = async () => {
-  const { data } = await tmdb.get('/movie/upcoming');
+export const fetchUpcoming = async (isKids?: boolean) => {
+  const { data } = await tmdb.get('/movie/upcoming', {
+    params: { ...getKidsParams(isKids) }
+  });
   return data.results;
 };
 
@@ -57,14 +73,26 @@ export const fetchSeasonDetails = async (tvId: string, seasonNumber: number) => 
   return data;
 };
 
-export const searchMulti = async (query: string) => {
+export const searchMulti = async (query: string, isKids?: boolean) => {
   if (!query) return [];
   const { data } = await tmdb.get(`/search/multi`, {
     params: {
       query,
       include_adult: false,
+      ...getKidsParams(isKids)
     },
   });
   // Filter out people, we only want movies and tv shows
   return data.results.filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv');
+};
+
+export const fetchDiscoverByGenre = async (type: 'movie' | 'tv', genreId: number, isKids?: boolean) => {
+  const { data } = await tmdb.get(`/discover/${type}`, {
+    params: {
+      with_genres: genreId,
+      sort_by: 'popularity.desc',
+      ...getKidsParams(isKids)
+    },
+  });
+  return data.results;
 };

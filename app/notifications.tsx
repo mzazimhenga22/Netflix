@@ -5,27 +5,30 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../constants/theme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const MOCK_NOTIFICATIONS = [
-  {
-    id: '1',
-    type: 'New Arrival',
-    title: 'Berlin',
-    desc: 'From the world of Money Heist.',
-    date: 'Dec 29',
-    image: 'https://image.tmdb.org/t/p/w500/v9mRl9m9m9m9m9m9m9m9m9m.jpg',
-  },
-  {
-    id: '2',
-    type: 'Now Available',
-    title: 'The Crown: Season 6',
-    desc: 'The final chapter begins.',
-    date: 'Dec 14',
-    image: 'https://image.tmdb.org/t/p/w500/v9mRl9m9m9m9m9m9m9m9m9m.jpg',
-  }
-];
+import { NotificationService, NetflixNotification } from '../services/NotificationService';
+import { useProfile } from '../context/ProfileContext';
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const { selectedProfile } = useProfile();
+  const [notifications, setNotifications] = useState<NetflixNotification[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  React.useEffect(() => {
+    if (!selectedProfile) return;
+
+    const unsub = NotificationService.subscribeToNotifications(selectedProfile.id, (data) => {
+      setNotifications(data);
+      setLoading(false);
+      
+      // Auto-seed if empty for the demo experience
+      if (data.length === 0) {
+        NotificationService.seedMockNotifications(selectedProfile.id);
+      }
+    });
+
+    return () => unsub();
+  }, [selectedProfile]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -42,18 +45,29 @@ export default function NotificationsScreen() {
       }} />
 
       <FlatList
-        data={MOCK_NOTIFICATIONS}
+        data={notifications}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
-          <View style={styles.notificationItem}>
-            <Image source={{ uri: 'https://image.tmdb.org/t/p/w500/x2LSRm21uTEx2PqYmbtHQmQp0X3.jpg' }} style={styles.notifImage} />
+          <Pressable 
+            style={[styles.notificationItem, !item.isRead && styles.unreadItem]}
+            onPress={() => {
+              if (selectedProfile && !item.isRead) {
+                NotificationService.markAsRead(selectedProfile.id, item.id);
+              }
+            }}
+          >
+            <Image 
+              source={{ uri: item.image || 'https://image.tmdb.org/t/p/w500/x2LSRm21uTEx2PqYmbtHQmQp0X3.jpg' }} 
+              style={styles.notifImage} 
+            />
             <View style={styles.notifContent}>
               <Text style={styles.notifType}>{item.type}</Text>
-              <Text style={styles.notifTitle}>{item.title}</Text>
+              <Text style={[styles.notifTitle, !item.isRead && { fontWeight: 'bold' }]}>{item.title}</Text>
               <Text style={styles.notifDesc}>{item.desc}</Text>
               <Text style={styles.notifDate}>{item.date}</Text>
             </View>
-          </View>
+            {!item.isRead && <View style={styles.unreadDot} />}
+          </Pressable>
         )}
         showsVerticalScrollIndicator={false}
       />
@@ -100,5 +114,16 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 11,
     marginTop: 5,
+  },
+  unreadItem: {
+    backgroundColor: '#1a1a1a',
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#e50914',
+    alignSelf: 'center',
+    marginRight: 10,
   }
 });

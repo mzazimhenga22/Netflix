@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { View, StyleSheet, Text, Dimensions, Pressable, Image, FlatList, ScrollView, StatusBar } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { COLORS, SPACING } from '../../constants/theme';
@@ -7,6 +7,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeIn, FadeInDown, useAnimatedStyle, withSpring, useSharedValue, interpolate, withTiming } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useTheme } from '../_layout';
+import { useFocusEffect } from 'expo-router';
 
 const { width, height } = Dimensions.get('window');
 
@@ -194,8 +196,15 @@ function GamesLibrary() {
 }
 
 export default function GamesScreen() {
+  const { setThemeColor } = useTheme();
   const [viewMode, setViewMode] = useState<'discovery' | 'library'>('discovery');
   const [activeIndex, setActiveIndex] = useState(0);
+
+  useFocusEffect(
+    useCallback(() => {
+      setThemeColor('#000000');
+    }, [])
+  );
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     if (viewableItems.length > 0) setActiveIndex(viewableItems[0].index);

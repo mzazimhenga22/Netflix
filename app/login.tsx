@@ -4,6 +4,11 @@ import { useRouter, Stack } from 'expo-router';
 import { COLORS, SPACING } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 
+import { auth } from '../services/firebase';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { SubscriptionService } from '../services/SubscriptionService';
+import { Alert } from 'react-native';
+
 export default function LoginScreen() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -11,14 +16,33 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!email || !password) return;
     setLoading(true);
-    // Simulate API call
-    setTimeout(() => {
+    
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      
+      const sub = await SubscriptionService.getSubscription();
+      if (sub.status === 'active') {
+        router.replace('/profiles');
+      } else {
+        router.replace('/subscription');
+      }
+    } catch (error: any) {
+      console.error(error);
+      let errorMessage = 'Failed to sign in. Please check your credentials.';
+      if (error.code === 'auth/user-not-found') {
+        errorMessage = 'No user found with this email.';
+      } else if (error.code === 'auth/wrong-password') {
+        errorMessage = 'Incorrect password.';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email format.';
+      }
+      Alert.alert('Login Error', errorMessage);
+    } finally {
       setLoading(false);
-      router.replace('/profiles');
-    }, 1200);
+    }
   };
 
   return (

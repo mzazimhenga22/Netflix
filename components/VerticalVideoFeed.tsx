@@ -1,9 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet, FlatList, Dimensions, Text, Pressable, Image } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { COLORS, SPACING } from '../constants/theme';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
+import { TrailerResolver } from './TrailerResolver';
+import { NetflixLoader } from './NetflixLoader';
 import Animated, { 
   useAnimatedStyle, 
   useSharedValue, 
@@ -34,72 +37,67 @@ interface VideoItemProps {
   isActive: boolean;
 }
 
-const VideoItem = React.memo(({ item, isActive }: VideoItemProps) => {
-  const router = useRouter();
-  const [isMuted, setIsMuted] = useState(false);
-  
-  const player = useVideoPlayer(item.videoUrl, (p) => {
+const ClipPlayer = React.memo(({ url, isActive, isPreloading, isMuted }: { url: string, isActive: boolean, isPreloading: boolean, isMuted: boolean }) => {
+  const player = useVideoPlayer(url, (p) => {
     p.loop = true;
     p.muted = isMuted;
+    
+    // Aggressive preloading
+    if ('preferredForwardBufferDuration' in p) {
+      (p as any).preferredForwardBufferDuration = 60; 
+    }
   });
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [liked, setLiked] = useState(false);
-  
-  const progress = useSharedValue(0);
-
-  // Auto-play when active
+  // Handle Play/Pause
   useEffect(() => {
     if (isActive) {
       player.play();
-      setIsPlaying(true);
     } else {
       player.pause();
-      setIsPlaying(false);
     }
   }, [isActive, player]);
 
-  // Sync progress bar
-  useEffect(() => {
-    if (isActive) {
-      const interval = setInterval(() => {
-        if (player.duration > 0) {
-          progress.value = (player.currentTime / player.duration) * 100;
-        }
-      }, 100);
-      return () => clearInterval(interval);
-    }
-  }, [isActive, player]);
-
-  // Sync mute state
+  // Handle Mute sync
   useEffect(() => {
     player.muted = isMuted;
   }, [isMuted, player]);
 
-  const togglePlay = () => {
-    if (player.playing) {
-      player.pause();
-      setIsPlaying(false);
-    } else {
-      player.play();
-      setIsPlaying(true);
+  if (!isActive && !isPreloading) return null;
+
+  return (
+    <VideoView
+      player={player}
+      style={styles.video}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+});
+
+const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: { item: any, isActive: boolean, isNext: boolean, isPrev: boolean, isPreShowing: boolean }) => {
+  const router = useRouter();
+  const [isMuted, setIsMuted] = useState(false);
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const [isResolving, setIsResolving] = useState(false);
+  
+  // Only create player if active, next or previous (3-player rule)
+  const shouldHavePlayer = isActive || isNext || isPrev;
+  
+  // Trigger Resolution for mock/empty URLs when nearing viewport
+  useEffect(() => {
+    if ((isActive || isNext) && !resolvedUrl && (!item.videoUrl || item.videoUrl.includes('sample'))) {
+      setIsResolving(true);
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
+  }, [isActive, isNext, item.videoUrl, resolvedUrl]);
 
   const handleLike = () => {
-    setLiked(!liked);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
-
-  const progressStyle = useAnimatedStyle(() => ({
-    width: `${progress.value}%`,
-  }));
 
   const handleGoToDetails = () => {
     if (item.showId) {
       router.push({
-        pathname: `/movie/${item.showId}`,
+        pathname: `/movie/${item.showId}` as any,
         params: { type: item.type || 'movie' }
       });
     }
@@ -107,44 +105,53 @@ const VideoItem = React.memo(({ item, isActive }: VideoItemProps) => {
 
   return (
     <View style={styles.itemContainer}>
-      <Pressable onPress={togglePlay} style={styles.videoPressable}>
-        <VideoView
-          player={player}
-          style={styles.video}
-          contentFit="cover"
-          nativeControls={false}
+      {/* Hidden Resolver - only active for current and next */}
+      {(isActive || isNext) && isResolving && (
+        <TrailerResolver
+          tmdbId={item.showId || ''}
+          mediaType={(item.type as any) || 'movie'}
+          enabled={isResolving}
+          onResolved={(stream) => {
+            setResolvedUrl(stream.url);
+            setIsResolving(false);
+          }}
+          onError={() => setIsResolving(false)}
         />
+      )}
+
+      <View style={styles.videoPressable}>
+        {shouldHavePlayer && resolvedUrl ? (
+          <ClipPlayer 
+            url={resolvedUrl} 
+            isActive={isActive} 
+            isPreloading={isNext || isPrev}
+            isMuted={isMuted} 
+          />
+        ) : (
+          <View style={styles.loadingPlaceholder}>
+            {(isActive || isNext || isPrev) && (
+              <Image 
+                source={{ uri: `https://image.tmdb.org/t/p/original${item.backdrop_path || ''}` }} 
+                style={styles.video} 
+                blurRadius={isActive ? 15 : 0}
+              />
+            )}
+            {isActive && !resolvedUrl && <NetflixLoader size={40} />}
+          </View>
+        )}
         
-        {/* Cinematic Overlays */}
         <LinearGradient
-          colors={['rgba(0,0,0,0.4)', 'transparent', 'transparent', 'rgba(0,0,0,0.8)']}
+          colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent', 'rgba(0,0,0,0.9)']}
           style={StyleSheet.absoluteFill}
         />
+      </View>
 
-        {!isPlaying && (
-          <Animated.View entering={FadeIn} style={styles.playIconOverlay}>
-            <Ionicons name="play" size={80} color="white" style={{ opacity: 0.6 }} />
-          </Animated.View>
-        )}
-      </Pressable>
-
-      {/* Interaction Rail (Right Side) */}
+      {/* Interaction Rail */}
       <View style={styles.rightRail}>
         <Animated.View entering={FadeInRight.delay(200)}>
           <Pressable style={styles.railAction} onPress={handleLike}>
-            <Ionicons 
-              name={liked ? "heart" : "heart-outline"} 
-              size={32} 
-              color={liked ? COLORS.primary : "white"} 
-            />
-            <Text style={styles.railLabel}>{liked ? 'Liked' : 'LOL'}</Text>
-          </Pressable>
-        </Animated.View>
-
-        <Animated.View entering={FadeInRight.delay(300)}>
-          <Pressable style={styles.railAction}>
-            <Ionicons name="add" size={35} color="white" />
-            <Text style={styles.railLabel}>My List</Text>
+            <Ionicons name="heart-outline" size={32} color="white" />
+            <Text style={styles.railLabel}>LOL</Text>
           </Pressable>
         </Animated.View>
 
@@ -156,33 +163,29 @@ const VideoItem = React.memo(({ item, isActive }: VideoItemProps) => {
         </Animated.View>
 
         <Animated.View entering={FadeInRight.delay(500)}>
-          <Pressable 
-            style={styles.playFunnel} 
-            onPress={handleGoToDetails}
-          >
+          <Pressable style={styles.playFunnel} onPress={handleGoToDetails}>
             <Ionicons name="play" size={24} color="black" />
             <Text style={styles.playFunnelText}>Play</Text>
           </Pressable>
         </Animated.View>
       </View>
 
-      {/* Content Info (Bottom Left) */}
+      {/* Content Info */}
       <View style={styles.infoContainer}>
         <View style={styles.badgeRow}>
-          <View style={styles.nBadge}>
-            <Text style={styles.nBadgeText}>N</Text>
-          </View>
+          <ExpoImage 
+            source={require('../assets/images/netflix-n-logo.svg')} 
+            style={styles.nBadgeImage} 
+            contentFit="contain" 
+          />
           <Text style={styles.seriesText}>SERIES</Text>
         </View>
-        <Text style={styles.title}>{item.title}</Text>
-        <Text style={styles.description} numberOfLines={2}>
-          {item.description}
-        </Text>
+        <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
+        <Text style={styles.description} numberOfLines={2}>{item.overview || item.description}</Text>
       </View>
 
-      {/* Progress Bar */}
       <View style={styles.progressContainer}>
-        <Animated.View style={[styles.progressBar, progressStyle]} />
+         <View style={[styles.progressBar, { width: isActive ? '100%' : '0%' }]} />
       </View>
     </View>
   );
@@ -215,7 +218,13 @@ export function VerticalVideoFeed({ data }: { data: any[] }) {
     <FlatList
       data={data}
       renderItem={({ item, index }) => (
-        <VideoItem item={item} isActive={index === activeIndex && isScreenFocused} />
+        <VideoItem 
+          item={item} 
+          isActive={index === activeIndex && isScreenFocused} 
+          isNext={index === activeIndex + 1 && isScreenFocused}
+          isPrev={index === activeIndex - 1 && isScreenFocused}
+          isPreShowing={Math.abs(index - activeIndex) <= 1}
+        />
       )}
       keyExtractor={(item) => item.id}
       pagingEnabled
@@ -226,6 +235,15 @@ export function VerticalVideoFeed({ data }: { data: any[] }) {
       snapToInterval={ITEM_HEIGHT}
       decelerationRate="fast"
       style={styles.feedList}
+      windowSize={3}
+      maxToRenderPerBatch={1}
+      initialNumToRender={1}
+      removeClippedSubviews={true}
+      getItemLayout={(data, index) => ({
+        length: ITEM_HEIGHT,
+        offset: ITEM_HEIGHT * index,
+        index,
+      })}
     />
   );
 }
@@ -250,6 +268,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.1)',
+  },
+  loadingPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#111',
   },
   rightRail: {
     position: 'absolute',
@@ -302,18 +326,9 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 8,
   },
-  nBadge: {
-    width: 18,
+  nBadgeImage: {
+    width: 14,
     height: 18,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 2,
-  },
-  nBadgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '900',
   },
   seriesText: {
     color: 'white',

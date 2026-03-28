@@ -3,6 +3,10 @@ import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Ima
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
+import { auth } from '../services/firebase';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { Alert } from 'react-native';
+
 export default function SignupScreen() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -10,14 +14,28 @@ export default function SignupScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleSignup = () => {
+  const handleSignup = async () => {
     if (!email || !password) return;
     setLoading(true);
-    // Simulate API call
-    setTimeout(() => {
+    
+    try {
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      // Forced subscription for new accounts
+      router.replace('/subscription');
+    } catch (error: any) {
+      console.error(error);
+      let errorMessage = 'Failed to create account.';
+      if (error.code === 'auth/email-already-in-use') {
+        errorMessage = 'This email is already in use.';
+      } else if (error.code === 'auth/weak-password') {
+        errorMessage = 'The password is too weak.';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email format.';
+      }
+      Alert.alert('Signup Error', errorMessage);
+    } finally {
       setLoading(false);
-      router.replace('/profiles');
-    }, 1200);
+    }
   };
 
   return (

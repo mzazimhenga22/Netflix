@@ -12,15 +12,33 @@ interface HorizontalCarouselProps {
     imageUrl: string;
     synopsis?: string;
   }[];
-  variant?: 'poster' | 'landscape';
+  variant?: 'poster' | 'landscape' | 'square';
   tiltX?: SharedValue<number>;
   tiltY?: SharedValue<number>;
+  isTop10?: boolean;
+  isGamesRow?: boolean;
+  isWatchHistory?: boolean;
 }
 
-const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY }: HorizontalCarouselProps) => {
-  const renderItem = React.useCallback(({ item }: any) => (
-    <DynamicTitleCard item={item} variant={variant} tiltX={tiltX} tiltY={tiltY} />
-  ), [variant, tiltX, tiltY]);
+const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY, isTop10, isGamesRow, isWatchHistory }: HorizontalCarouselProps) => {
+  const isListTop10 = isTop10 || title.includes('Top 10') || title.includes('Trending');
+
+  const actualVariant = isGamesRow ? 'square' : variant;
+
+  const renderItem = React.useCallback(({ item, index }: any) => (
+    <DynamicTitleCard 
+      item={item} 
+      variant={actualVariant} 
+      tiltX={tiltX} 
+      tiltY={tiltY} 
+      index={index}
+      isTop10={isListTop10 && actualVariant === 'poster'}
+      isOriginal={isGamesRow || (!isGamesRow && parseInt(item.id) % 3 === 0)}
+      isRecentlyAdded={!isGamesRow && parseInt(item.id) % 5 === 0}
+      isGame={isGamesRow}
+      isWatchHistory={isWatchHistory}
+    />
+  ), [actualVariant, tiltX, tiltY, isListTop10, isGamesRow, isWatchHistory]);
 
   return (
     <View style={styles.container}>
@@ -34,8 +52,8 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
         contentContainerStyle={styles.listContent}
         initialNumToRender={4}
         maxToRenderPerBatch={4}
-        windowSize={3}
-        removeClippedSubviews={true}
+        windowSize={5}
+        removeClippedSubviews={false}
       />
     </View>
   );

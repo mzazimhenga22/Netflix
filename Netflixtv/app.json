@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "plugins": [
+      [
+        "@react-native-tvos/config-tv",
+        {
+          "androidTVBanner": "./assets/logo.png",
+          "appleTVImages": {
+            "icon": "./assets/logo.png",
+            "iconSmall": "./assets/logo.png",
+            "iconSmall2x": "./assets/logo.png",
+            "topShelf": "./assets/logo.png",
+            "topShelf2x": "./assets/logo.png",
+            "topShelfWide": "./assets/logo.png",
+            "topShelfWide2x": "./assets/logo.png"
+          }
+        }
+      ]
+    ],
+    "icon": "./assets/logo.png",
+    "android": {
+      "package": "com.com1",
+      "edgeToEdgeEnabled": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.movieflix.tv"
+    },
+    "newArchEnabled": true,
+    "name": "Netflixtv",
+    "slug": "Netflixtv",
+    "orientation": "landscape",
+    "userInterfaceStyle": "automatic",
+    "extra": {
+      "eas": {
+        "projectId": "8ed408dc-3d83-427f-9c20-5dd1624797fd"
+      }
+    },
+    "owner": "netflixclone"
+  }
+}

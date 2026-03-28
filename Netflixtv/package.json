@@ -1,0 +1,76 @@
+{
+  "name": "netflixtv",
+  "main": "expo-router/entry",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "prebuild:tv": "EXPO_TV=1 expo prebuild --clean",
+    "prebuild": "expo prebuild --clean",
+    "lint": "expo lint"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "@gorhom/bottom-sheet": "^5.2.8",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-navigation/bottom-tabs": "^7.4.0",
+    "@react-navigation/elements": "^2.6.3",
+    "@react-navigation/native": "^7.1.8",
+    "axios": "^1.13.6",
+    "buffer": "^6.0.3",
+    "expo": "~55.0.0",
+    "expo-blur": "^55.0.10",
+    "expo-brightness": "~55.0.9",
+    "expo-constants": "~55.0.9",
+    "expo-file-system": "~55.0.11",
+    "expo-font": "~55.0.4",
+    "expo-haptics": "~55.0.9",
+    "expo-image": "~55.0.6",
+    "expo-keep-awake": "~55.0.4",
+    "expo-linear-gradient": "~55.0.9",
+    "expo-linking": "~55.0.8",
+    "expo-router": "~55.0.7",
+    "expo-screen-orientation": "~55.0.9",
+    "expo-sensors": "~55.0.9",
+    "expo-splash-screen": "~55.0.9",
+    "expo-status-bar": "~55.0.4",
+    "expo-symbols": "~55.0.5",
+    "expo-system-ui": "~55.0.10",
+    "expo-video": "~55.0.11",
+    "expo-web-browser": "~55.0.10",
+    "firebase": "^12.11.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-native": "npm:react-native-tvos@0.83-stable",
+    "react-native-gesture-handler": "~2.30.0",
+    "react-native-qrcode-svg": "^6.3.21",
+    "react-native-reanimated": "4.2.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.23.0",
+    "react-native-svg": "^15.15.3",
+    "react-native-web": "~0.21.0",
+    "react-native-webview": "13.16.0",
+    "react-native-worklets": "0.7.2"
+  },
+  "devDependencies": {
+    "@react-native-tvos/config-tv": "^0.1.5",
+    "@types/react": "~19.2.10",
+    "typescript": "~5.9.2"
+  },
+  "overrides": {
+    "react-native": "npm:react-native-tvos@0.83-stable",
+    "react-native-reanimated": "4.2.1",
+    "react-native-worklets": "0.7.2",
+    "@types/react": "~19.2.10"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native"
+      ]
+    }
+  },
+  "private": true
+}

@@ -2,12 +2,24 @@ import { Tabs } from 'expo-router';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useProfile } from '../_layout';
-import Animated from 'react-native-reanimated';
+import { useTheme } from '../_layout';
+import { useProfile } from '../../context/ProfileContext';
+import Animated, { SharedTransition, withSpring } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 
+// const customTransition = SharedTransition.custom((values) => {
+//   'worklet';
+//   return {
+//     height: withSpring(values.targetHeight, { damping: 15, stiffness: 100 }),
+//     width: withSpring(values.targetWidth, { damping: 15, stiffness: 100 }),
+//     originX: withSpring(values.targetOriginX, { damping: 15, stiffness: 100 }),
+//     originY: withSpring(values.targetOriginY, { damping: 15, stiffness: 100 }),
+//   };
+// });
+
 export default function TabLayout() {
-  const { selectedAvatar } = useProfile();
+  const { selectedProfile } = useProfile();
+  const { themeColor } = useTheme();
 
   return (
     <Tabs
@@ -22,6 +34,17 @@ export default function TabLayout() {
           height: 60,
           paddingBottom: 8,
         },
+        tabBarBackground: () => (
+          <View style={StyleSheet.absoluteFill}>
+            <LinearGradient
+              colors={['transparent', themeColor]}
+              locations={[0.1, 1]}
+              style={{ position: 'absolute', top: -30, left: 0, right: 0, height: 30 }}
+              pointerEvents="none"
+            />
+            <View style={{ flex: 1, backgroundColor: themeColor }} />
+          </View>
+        ),
         headerShown: false,
       }}>
       <Tabs.Screen
@@ -52,17 +75,25 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="clips"
+        options={{
+          title: 'Clips',
+          tabBarIcon: ({ color, focused }) => (
+            <MaterialCommunityIcons name={focused ? "creation" : "creation"} size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="my-netflix"
         options={{
           title: 'My Netflix',
           tabBarIcon: ({ color, focused }) => (
             <Animated.Image 
-              source={selectedAvatar} 
+              source={selectedProfile?.avatar} 
               style={[
                 styles.tabAvatar, 
                 { borderColor: focused ? 'white' : 'transparent' }
               ]} 
-              sharedTransitionTag="avatar"
             />
           ),
         }}
