@@ -31,7 +31,7 @@ const ExpandingRow = React.memo(({ title, data, onSelect, onFocusChange }: Expan
 
       {/* Jetpack Compose Native TV Row via ViewManager */}
       <NativeTvRow
-        data={data}
+        data={data.map(item => ({ ...item, id: String(item.id) }))}
         style={{ width: '100%', height: 260, marginTop: 10 }}
         onSelect={(e) => {
           onSelect(Number(e.nativeEvent.id), e.nativeEvent.mediaType);
@@ -44,6 +44,7 @@ const ExpandingRow = React.memo(({ title, data, onSelect, onFocusChange }: Expan
           }
         }}
       />
+
 
       {activeItem && (
         <Animated.View style={styles.metadataContainer} entering={FadeIn.duration(400)}>
