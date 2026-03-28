@@ -1,5 +1,6 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
+import * as Haptics from 'expo-haptics';
 import { StyleSheet, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../_layout';
@@ -55,6 +56,9 @@ export default function TabLayout() {
             <Ionicons name={focused ? "home" : "home-outline"} size={24} color={color} />
           ),
         }}
+        listeners={{
+          tabPress: () => Haptics.selectionAsync(),
+        }}
       />
       <Tabs.Screen
         name="games"
@@ -63,6 +67,9 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "game-controller" : "game-controller-outline"} size={24} color={color} />
           ),
+        }}
+        listeners={{
+          tabPress: () => Haptics.selectionAsync(),
         }}
       />
       <Tabs.Screen
@@ -73,6 +80,9 @@ export default function TabLayout() {
             <MaterialCommunityIcons name={focused ? "play-box-multiple" : "play-box-multiple-outline"} size={24} color={color} />
           ),
         }}
+        listeners={{
+          tabPress: () => Haptics.selectionAsync(),
+        }}
       />
       <Tabs.Screen
         name="clips"
@@ -81,6 +91,9 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <MaterialCommunityIcons name={focused ? "creation" : "creation"} size={24} color={color} />
           ),
+        }}
+        listeners={{
+          tabPress: () => Haptics.selectionAsync(),
         }}
       />
       <Tabs.Screen
@@ -96,6 +109,11 @@ export default function TabLayout() {
               ]} 
             />
           ),
+        }}
+        listeners={{
+          tabPress: () => {
+            Haptics.selectionAsync();
+          },
         }}
       />
     </Tabs>

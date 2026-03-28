@@ -12,7 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { useTheme } from '../_layout';
+import { useTheme, useTransition } from '../_layout';
 import { useProfile } from '../../context/ProfileContext';
 import { WatchHistoryService } from '../../services/WatchHistoryService';
 import Animated, { 
@@ -78,6 +78,7 @@ const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
 export default function HomeScreen() {
   const router = useRouter();
   const { selectedProfile } = useProfile();
+  const { isTransitioning } = useTransition();
   const { setThemeColor } = useTheme();
   const [activeFilter, setActiveFilter] = useState<'home' | 'tv' | 'movies'>('home');
   const [showCategories, setShowCategories] = useState(false);
@@ -389,7 +390,10 @@ export default function HomeScreen() {
         </Animated.View>
         
         <View style={styles.header}>
-          <Pressable style={styles.headerLeft} onPress={() => { /* Logo action */ }}>
+          <Pressable style={styles.headerLeft} onPress={() => { 
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            // Logo action
+          }}>
             <ExpoImage 
               source={require('../../assets/images/netflix-n-logo.svg')} 
               style={styles.headerLogoImage} 
@@ -403,14 +407,16 @@ export default function HomeScreen() {
             <Pressable style={styles.iconButton} onPress={handleSurpriseMe}>
               <Ionicons name="shuffle" size={26} color="white" />
             </Pressable>
-            <Pressable style={styles.iconButton} onPress={() => router.push('/search')}>
+            <Pressable style={styles.iconButton} onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/search');
+            }}>
               <Ionicons name="search" size={24} color="white" />
             </Pressable>
             <Pressable style={styles.avatarButton} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/(tabs)/my-netflix'); }}>
               <Animated.Image 
                 source={selectedProfile?.avatar} 
-                style={styles.headerAvatar} 
-                sharedTransitionTag="p_avatar"
+                style={[styles.headerAvatar, isTransitioning && { opacity: 0 }]} 
               />
             </Pressable>
           </View>
@@ -418,16 +424,16 @@ export default function HomeScreen() {
 
         <Animated.View style={[styles.tabsRow, tabsStyle]}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: SPACING.sm, paddingHorizontal: SPACING.md }}>
-            <Pressable onPress={() => { setActiveFilter('home'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'home' && styles.pillButtonActive]}>
+            <Pressable onPress={() => { Haptics.selectionAsync(); setActiveFilter('home'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'home' && styles.pillButtonActive]}>
               <Text style={[styles.pillText, activeFilter === 'home' && styles.pillTextActive]}>Home</Text>
             </Pressable>
-            <Pressable onPress={() => { setActiveFilter('tv'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'tv' && styles.pillButtonActive]}>
+            <Pressable onPress={() => { Haptics.selectionAsync(); setActiveFilter('tv'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'tv' && styles.pillButtonActive]}>
               <Text style={[styles.pillText, activeFilter === 'tv' && styles.pillTextActive]}>TV Shows</Text>
             </Pressable>
-            <Pressable onPress={() => { setActiveFilter('movies'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'movies' && styles.pillButtonActive]}>
+            <Pressable onPress={() => { Haptics.selectionAsync(); setActiveFilter('movies'); setSelectedCategory(null); }} style={[styles.pillButton, activeFilter === 'movies' && styles.pillButtonActive]}>
               <Text style={[styles.pillText, activeFilter === 'movies' && styles.pillTextActive]}>Movies</Text>
             </Pressable>
-            <Pressable onPress={() => setShowCategories(true)} style={styles.pillButton}>
+            <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowCategories(true); }} style={styles.pillButton}>
               <Text style={styles.pillText}>{selectedCategory || 'Categories'}</Text>
               <Ionicons name="chevron-down" size={14} color="white" style={{ marginLeft: 4 }} />
             </Pressable>
@@ -473,7 +479,12 @@ export default function HomeScreen() {
               data={CATEGORIES}
               keyExtractor={(item) => item}
               renderItem={({ item }) => (
-                <Pressable style={styles.categoryItem} onPress={() => { setSelectedCategory(item); setShowCategories(false); loadInitialData(activeFilter); }}>
+                <Pressable style={styles.categoryItem} onPress={() => { 
+                  Haptics.selectionAsync();
+                  setSelectedCategory(item); 
+                  setShowCategories(false); 
+                  loadInitialData(activeFilter); 
+                }}>
                   <Text style={[styles.categoryText, selectedCategory === item && styles.categoryTextActive]}>{item}</Text>
                 </Pressable>
               )}

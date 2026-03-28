@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Alert, ActivityIndicator } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../constants/theme';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as FileSystem from 'expo-file-system';
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 import { loadMetadata, deleteAllDownloads, DownloadItem } from '../services/downloads';
 import { useProfile } from '../context/ProfileContext';
 
@@ -17,9 +20,23 @@ export default function AppSettingsScreen() {
   
   const [smartDownloads, setSmartDownloads] = useState(true);
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
-
+  const [diskSpace, setDiskSpace] = useState({ free: 0, total: 0 });
+  const [isCheckingNetwork, setIsCheckingNetwork] = useState(false);
+  const [deviceModel, setDeviceModel] = useState(Constants.deviceName || Platform.OS === 'ios' ? 'iPhone' : 'Android Device');
+  
   useEffect(() => {
     loadMetadata().then(setDownloads);
+    
+    const fetchStorage = async () => {
+      try {
+        const free = await FileSystem.getFreeDiskStorageAsync();
+        const total = await FileSystem.getTotalDiskCapacityAsync();
+        setDiskSpace({ free, total });
+      } catch (err) {
+        console.error("Storage check failed", err);
+      }
+    };
+    fetchStorage();
   }, []);
 
   const handleDeleteAll = () => {
@@ -50,6 +67,25 @@ export default function AppSettingsScreen() {
     if (!selectedProfile) return;
     const current = selectedProfile.settings || { autoplayNext: true, autoplayPreviews: true, wifiOnlyDownloads: false };
     updateProfileSettings(selectedProfile.id, { ...current, ...overrides });
+  };
+
+  const handleNetworkCheck = async () => {
+    setIsCheckingNetwork(true);
+    try {
+      // Simulate real ping to fastest Netflix server (e.g. google.com for basic connectivity)
+      const start = Date.now();
+      const res = await fetch('https://www.google.com', { method: 'HEAD', mode: 'no-cors' });
+      const duration = Date.now() - start;
+      if (res.ok || res.type === 'opaque') {
+        Alert.alert('Network Check', `Success! Connection is stable. \nLatency: ${duration}ms`);
+      } else {
+        throw new Error("Server unreachable");
+      }
+    } catch (err) {
+      Alert.alert('Network Check', 'Connection failed. Please check your Wi-Fi or Cellular settings.');
+    } finally {
+      setIsCheckingNetwork(false);
+    }
   };
 
   return (
@@ -149,8 +185,8 @@ export default function AppSettingsScreen() {
             <Text style={styles.storageLabel}>Device Storage</Text>
           </View>
           <View style={styles.progressBarBg}>
-            <View style={[styles.progressFill, { width: `${Math.max(2, (totalUsedBytes / (64 * 1024 * 1024 * 1024)) * 100)}%`, backgroundColor: '#e50914' }]} />
-            <View style={[styles.progressFill, { width: '15%', backgroundColor: '#0071eb' }]} />
+            <View style={[styles.progressFill, { width: `${Math.max(2, (totalUsedBytes / diskSpace.total) * 100)}%`, backgroundColor: '#e50914' }]} />
+            <View style={[styles.progressFill, { width: `${(Math.max(0, diskSpace.total - diskSpace.free - totalUsedBytes) / diskSpace.total) * 100}%`, backgroundColor: '#0071eb' }]} />
           </View>
           <View style={styles.legend}>
             <View style={styles.legendItem}>
@@ -159,11 +195,11 @@ export default function AppSettingsScreen() {
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.dot, { backgroundColor: '#0071eb' }]} />
-              <Text style={styles.legendText}>Other</Text>
+              <Text style={styles.legendText}>Other ({formatBytes(Math.max(0, diskSpace.total - diskSpace.free - totalUsedBytes))})</Text>
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.dot, { backgroundColor: '#333' }]} />
-              <Text style={styles.legendText}>Free</Text>
+              <Text style={styles.legendText}>Free ({formatBytes(diskSpace.free)})</Text>
             </View>
           </View>
         </View>
@@ -179,13 +215,13 @@ export default function AppSettingsScreen() {
         <Text style={[styles.sectionTitle, { marginTop: 24 }]}>ABOUT</Text>
         <Pressable style={styles.settingItem}>
           <Text style={styles.itemTitle}>Device</Text>
-          <Text style={styles.itemSubtitleRight}>iPhone 16 Pro Max</Text>
+          <Text style={styles.itemSubtitleRight}>{deviceModel}</Text>
         </Pressable>
-        <Pressable style={styles.settingItem}>
+        <Pressable style={styles.settingItem} onPress={handleNetworkCheck} disabled={isCheckingNetwork}>
           <Text style={styles.itemTitle}>Network Check</Text>
-          <Ionicons name="chevron-forward" size={20} color="#888" />
+          {isCheckingNetwork ? <ActivityIndicator size="small" color="#888" /> : <Ionicons name="chevron-forward" size={20} color="#888" />}
         </Pressable>
-        <Pressable style={styles.settingItem}>
+        <Pressable style={styles.settingItem} onPress={() => Alert.alert('Speed Test', 'Connecting to fast.com... (External Link Simulation)')}>
           <Text style={styles.itemTitle}>Internet Speed Test</Text>
           <Ionicons name="chevron-forward" size={20} color="#888" />
         </Pressable>

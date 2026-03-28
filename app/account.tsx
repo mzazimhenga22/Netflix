@@ -3,11 +3,57 @@ import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth } from '../services/firebase';
+import { auth, db } from '../services/firebase';
+import { sendPasswordResetEmail, signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { Alert } from 'react-native';
 
 export default function AccountScreen() {
   const router = useRouter();
   const user = auth.currentUser;
+  const [subscription, setSubscription] = React.useState<any>(null);
+
+  React.useEffect(() => {
+    if (!user) return;
+    const fetchSubscription = async () => {
+      try {
+        const subDoc = await getDoc(doc(db, 'subscriptions', user.uid));
+        if (subDoc.exists()) {
+          setSubscription(subDoc.data());
+        }
+      } catch (err) {
+        console.error("Failed to fetch subscription", err);
+      }
+    };
+    fetchSubscription();
+  }, [user]);
+
+  const creationYear = user?.metadata.creationTime 
+    ? new Date(user.metadata.creationTime).getFullYear() 
+    : new Date().getFullYear();
+
+  const handlePasswordReset = async () => {
+    if (!user?.email) return;
+    try {
+      await sendPasswordResetEmail(auth, user.email);
+      Alert.alert('Success', `A password reset email has been sent to ${user.email}`);
+    } catch (err) {
+      Alert.alert('Error', 'Failed to send reset email.');
+    }
+  };
+
+  const handleSignOutAll = async () => {
+    Alert.alert('Sign Out', 'This will sign you out of all devices. Proceed?', [
+      { text: 'Cancel', style: 'cancel' },
+      { 
+        text: 'Sign Out All', 
+        onPress: async () => {
+          await signOut(auth);
+          router.replace('/');
+        }
+      }
+    ]);
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -26,7 +72,7 @@ export default function AccountScreen() {
         {/* Banner */}
         <View style={styles.bannerContainer}>
           <Text style={styles.bannerTitle}>Membership & Billing</Text>
-          <Text style={styles.bannerSubtitle}>Member Since {new Date().getFullYear()}</Text>
+          <Text style={styles.bannerSubtitle}>Member Since {creationYear}</Text>
         </View>
 
         {/* Membership Details */}
@@ -37,7 +83,7 @@ export default function AccountScreen() {
           </View>
           <View style={styles.divider} />
           
-          <Pressable style={styles.cardRowInteractive}>
+          <Pressable style={styles.cardRowInteractive} onPress={handlePasswordReset}>
             <Text style={styles.cardTextSecondary}>Password</Text>
             <Text style={styles.cardTextPrimary}>********</Text>
             <Text style={styles.actionText}>Change password</Text>
@@ -53,10 +99,10 @@ export default function AccountScreen() {
 
         {/* Billing */}
         <View style={styles.card}>
-          <Pressable style={styles.cardRowInteractive}>
+          <Pressable style={styles.cardRowInteractive} onPress={() => Alert.alert('Payment Info', 'Card ending in 1234 (Simulation)')}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <Ionicons name="card" size={20} color="white" />
-              <Text style={styles.cardTextSecondary}>•••• •••• •••• 1234</Text>
+              <Text style={styles.cardTextSecondary}>•••• •••• •••• {subscription?.cardLast4 || '1234'}</Text>
             </View>
             <Text style={styles.actionText}>Update payment info</Text>
           </Pressable>
@@ -76,8 +122,8 @@ export default function AccountScreen() {
           <Text style={styles.bannerTitle}>Plan Details</Text>
         </View>
         <View style={styles.card}>
-          <Pressable style={styles.cardRowInteractive}>
-            <Text style={styles.cardTextPrimaryHeading}>Premium Ultra HD</Text>
+          <Pressable style={styles.cardRowInteractive} onPress={() => router.push('/subscription')}>
+            <Text style={styles.cardTextPrimaryHeading}>{subscription?.planName || 'Premium Ultra HD'}</Text>
             <Text style={styles.actionText}>Change plan</Text>
           </Pressable>
         </View>
@@ -108,7 +154,7 @@ export default function AccountScreen() {
           </Pressable>
           <View style={styles.divider} />
           {/* @ts-ignore */}
-          <Pressable style={styles.cardRowInteractive} onPress={() => router.push('/devices')}>
+          <Pressable style={styles.cardRowInteractive} onPress={handleSignOutAll}>
             <Text style={styles.cardTextPrimary}>Sign out of all devices</Text>
           </Pressable>
         </View>

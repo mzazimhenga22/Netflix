@@ -9,6 +9,9 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, withSequence } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '../_layout';
+import { db, auth } from '../../services/firebase';
+import { doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
+import { NotificationService } from '../../services/NotificationService';
 
 export default function NewAndHotScreen() {
   const router = useRouter();
@@ -100,8 +103,7 @@ export default function NewAndHotScreen() {
   );
 }
 
-const AnimatedActionButton = ({ icon, activeIcon, text, activeText }: any) => {
-  const [isActive, setIsActive] = useState(false);
+const AnimatedActionButton = ({ icon, activeIcon, text, activeText, isActive, onPress }: any) => {
   const scale = useSharedValue(1);
 
   const handlePress = () => {
@@ -111,7 +113,7 @@ const AnimatedActionButton = ({ icon, activeIcon, text, activeText }: any) => {
       withSpring(1.2, { damping: 10, stiffness: 300 }),
       withSpring(1, { damping: 10, stiffness: 300 })
     );
-    setIsActive(!isActive);
+    if (onPress) onPress();
   };
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -131,9 +133,46 @@ const AnimatedActionButton = ({ icon, activeIcon, text, activeText }: any) => {
 };
 
 const NewAndHotItem = ({ item }: { item: any }) => {
+  const [isReminded, setIsReminded] = useState(false);
   const releaseDate = item.release_date ? new Date(item.release_date) : new Date();
   const month = releaseDate.toLocaleString('default', { month: 'short' }).toUpperCase();
   const day = releaseDate.getDate();
+
+  useEffect(() => {
+    const checkReminder = async () => {
+      const user = auth.currentUser;
+      if (!user) return;
+      
+      const reminderDoc = await getDoc(doc(db, 'users', user.uid, 'reminders', item.id.toString()));
+      if (reminderDoc.exists()) {
+        setIsReminded(true);
+      }
+    };
+    checkReminder();
+  }, [item.id]);
+
+  const toggleReminder = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const reminderRef = doc(db, 'users', user.uid, 'reminders', item.id.toString());
+    
+    if (isReminded) {
+      setIsReminded(false);
+      await deleteDoc(reminderRef);
+      await NotificationService.cancelReleaseReminder(item.id.toString());
+    } else {
+      setIsReminded(true);
+      await setDoc(reminderRef, {
+        id: item.id,
+        title: item.title,
+        releaseDate: item.release_date,
+        image: item.backdrop_path,
+        timestamp: new Date().toISOString()
+      });
+      await NotificationService.scheduleReleaseReminder(item.id.toString(), item.title, item.release_date);
+    }
+  };
 
   return (
     <View style={styles.itemContainer}>
@@ -164,6 +203,8 @@ const NewAndHotItem = ({ item }: { item: any }) => {
               activeIcon={<MaterialCommunityIcons name="bell-ring" size={24} color="white" />}
               text="Remind Me"
               activeText="Reminded"
+              isActive={isReminded}
+              onPress={toggleReminder}
             />
             <Pressable style={styles.actionBtn}>
               <Feather name="info" size={24} color="white" />

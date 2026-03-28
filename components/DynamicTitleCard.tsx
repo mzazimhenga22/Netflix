@@ -99,6 +99,11 @@ const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, ind
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         onPress={handlePress}
+        onLongPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          // Potential for context menu or more info here
+        }}
+        delayLongPress={300}
         style={[styles.pressable, isTop10 && { width: POSTER_WIDTH, position: 'absolute', right: 0, height: '100%' }]}
       >
         <AnimatedImage 
@@ -159,7 +164,7 @@ const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, ind
                    </Pressable>
                 </View>
 
-                <Pressable style={styles.infoBtn} onPress={(e) => { e.stopPropagation(); handlePress(); }}>
+                <Pressable style={styles.infoBtn} onPress={(e) => { e.stopPropagation(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); handlePress(); }}>
                   <Ionicons name="information-circle-outline" size={24} color="white" />
                 </Pressable>
               </View>

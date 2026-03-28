@@ -85,18 +85,24 @@ export default function SearchScreen() {
             selectionColor="#e50914"
           />
           {searchQuery.length > 0 ? (
-            <Pressable onPress={() => setSearchQuery('')} style={styles.iconBtn}>
+            <Pressable onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSearchQuery('');
+            }} style={styles.iconBtn}>
               <Ionicons name="close-circle" size={20} color="#b3b3b3" />
             </Pressable>
           ) : (
-            <Pressable style={styles.iconBtn}>
+            <Pressable style={styles.iconBtn} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}>
               <Ionicons name="mic" size={20} color="#b3b3b3" />
             </Pressable>
           )}
         </Animated.View>
         
         {searchQuery.length > 0 || searchBarWidth.value < width - 40 ? (
-          <Pressable onPress={handleCancel} style={styles.cancelBtn}>
+          <Pressable onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            handleCancel();
+          }} style={styles.cancelBtn}>
             <Text style={styles.cancelText}>Cancel</Text>
           </Pressable>
         ) : null}
@@ -112,10 +118,13 @@ export default function SearchScreen() {
                 <Pressable 
                   key={item.id} 
                   style={styles.searchItem}
-                  onPress={() => router.push({
-                    pathname: "/movie/[id]",
-                    params: { id: item.id.toString(), type: 'movie' }
-                  })}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push({
+                      pathname: "/movie/[id]",
+                      params: { id: item.id.toString(), type: 'movie' }
+                    });
+                  }}
                 >
                   <Image 
                     source={{ uri: getBackdropUrl(item.backdrop_path) }} 
@@ -128,6 +137,7 @@ export default function SearchScreen() {
                   </View>
                   <Pressable onPress={(e) => {
                     e.stopPropagation();
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
                     router.push({ pathname: "/movie/[id]", params: { id: item.id.toString(), type: 'movie', autoplay: 'true' }});
                   }}>
                     <Ionicons name="play-circle-outline" size={32} color="#fff" style={styles.playIcon} />
@@ -150,10 +160,13 @@ export default function SearchScreen() {
                     entering={FadeIn.delay(index * 30)}
                     style={styles.gridItem}
                   >
-                    <Pressable onPress={() => router.push({
-                      pathname: "/movie/[id]",
-                      params: { id: item.id.toString(), type: item.media_type || 'movie' }
-                    })}>
+                    <Pressable onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      router.push({
+                        pathname: "/movie/[id]",
+                        params: { id: item.id.toString(), type: item.media_type || 'movie' }
+                      });
+                    }}>
                       <Image source={{ uri: getImageUrl(item.poster_path) }} style={styles.gridImage} />
                     </Pressable>
                   </Animated.View>

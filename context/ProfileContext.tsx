@@ -14,6 +14,13 @@ import {
 } from 'firebase/firestore';
 import { SubscriptionService, PLAN_PROFILE_LIMITS } from '../services/SubscriptionService';
 
+export interface ProfileSettings {
+  wifiOnlyDownloads: boolean;
+  autoplayNext: boolean;
+  autoplayPreviews: boolean;
+  videoQuality?: 'standard' | 'higher';
+}
+
 export interface Profile {
   id: string;
   name: string;
@@ -22,6 +29,7 @@ export interface Profile {
   isLocked?: boolean;
   pin?: string;
   isKids?: boolean;
+  settings?: ProfileSettings;
 }
 
 const AVATAR_MAP: Record<string, any> = {
@@ -51,6 +59,7 @@ interface ProfileContextType {
   selectProfile: (profile: Profile) => void;
   addProfile: (name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean) => void;
   updateProfile: (id: string, name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean) => void;
+  updateProfileSettings: (id: string, settings: Partial<ProfileSettings>) => void;
   deleteProfile: (id: string) => void;
   isLoading: boolean;
   canAddProfile: boolean;
@@ -63,6 +72,7 @@ const ProfileContext = createContext<ProfileContextType>({
   selectProfile: () => {},
   addProfile: () => {},
   updateProfile: () => {},
+  updateProfileSettings: () => {},
   deleteProfile: () => {},
   isLoading: true,
   canAddProfile: true,
@@ -115,7 +125,13 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
             avatar: AVATAR_MAP[data.avatarId] || AVATAR_MAP.avatar1,
             isLocked: data.isLocked,
             pin: data.pin,
-            isKids: data.isKids === true || data.isKids === 'true'
+            isKids: data.isKids === true || data.isKids === 'true',
+            settings: data.settings || {
+              wifiOnlyDownloads: false,
+              autoplayNext: true,
+              autoplayPreviews: true,
+              videoQuality: 'standard'
+            }
           });
         });
 
@@ -127,11 +143,17 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
               setDoc(doc(db, 'users', activeUid, 'profiles', p.id), {
                  name: p.name,
                  avatarId: p.avatarId,
-                 isLocked: p.isLocked,
-                 pin: p.pin || null,
-                 isKids: p.isKids === true
-              });
-           });
+                  isLocked: p.isLocked,
+                  pin: p.pin || null,
+                  isKids: p.isKids === true,
+                  settings: {
+                    wifiOnlyDownloads: false,
+                    autoplayNext: true,
+                    autoplayPreviews: true,
+                    videoQuality: 'standard'
+                  }
+               });
+            });
         }
 
         // Restore selected profile from storage if not set in memory
@@ -194,6 +216,18 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const updateProfileSettings = async (id: string, settings: Partial<ProfileSettings>) => {
+    const activeUid = auth.currentUser?.uid || 'dev-guest';
+    try {
+      console.log('[Profiles] Updating profile settings:', id);
+      await setDoc(doc(db, 'users', activeUid, 'profiles', id), {
+        settings
+      }, { merge: true });
+    } catch (e) {
+      console.error('[Profiles] Settings update failed:', e);
+    }
+  };
+
   const deleteProfile = async (id: string) => {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
     try {
@@ -213,6 +247,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
       selectProfile,
       addProfile,
       updateProfile,
+      updateProfileSettings,
       deleteProfile,
       isLoading,
       canAddProfile,

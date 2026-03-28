@@ -193,8 +193,14 @@ export default function MyNetflixScreen() {
         <SafeAreaView edges={['top']} style={styles.headerContent}>
           <Text style={styles.floatingHeaderTitle}>My Netflix</Text>
           <View style={styles.headerIcons}>
-            <Pressable style={styles.iconButton} onPress={() => router.push('/search')}><Ionicons name="search" size={28} color="white" /></Pressable>
-            <Pressable style={styles.iconButton} onPress={() => bottomSheetRef.current?.expand()}>
+            <Pressable style={styles.iconButton} onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/search');
+            }}><Ionicons name="search" size={28} color="white" /></Pressable>
+            <Pressable style={styles.iconButton} onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              bottomSheetRef.current?.expand();
+            }}>
               <Ionicons name="menu" size={32} color="white" />
             </Pressable>
           </View>
@@ -228,7 +234,10 @@ export default function MyNetflixScreen() {
               </Pressable>
             </Animated.View>
             <Text style={styles.profileName}>{selectedProfile?.name || 'User'}</Text>
-            <Pressable style={styles.switchPill} onPress={() => router.replace('/profiles')}>
+            <Pressable style={styles.switchPill} onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              router.replace('/profiles');
+            }}>
               <Text style={styles.switchPillText}>Switch Profile</Text>
               <Ionicons name="chevron-down" size={14} color="rgba(255,255,255,0.6)" />
             </Pressable>
@@ -276,7 +285,7 @@ export default function MyNetflixScreen() {
               key={filter}
               style={[styles.listFilterPill, activeListFilter === filter && styles.listFilterPillActive]}
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                Haptics.selectionAsync();
                 setActiveListFilter(filter as any);
               }}
             >
@@ -358,12 +367,20 @@ export default function MyNetflixScreen() {
         handleIndicatorStyle={{ backgroundColor: 'rgba(255,255,255,0.3)' }}
       >
         <BottomSheetView style={styles.bottomSheetContent}>
-          <Pressable style={styles.sheetItem} onPress={() => { bottomSheetRef.current?.close(); router.push('/app-settings'); }}>
+          <Pressable style={styles.sheetItem} onPress={() => { 
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            bottomSheetRef.current?.close(); 
+            router.push('/app-settings'); 
+          }}>
             <Ionicons name="settings-outline" size={24} color="white" />
             <Text style={styles.sheetText}>App Settings</Text>
             <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.3)" />
           </Pressable>
-          <Pressable style={styles.sheetItem} onPress={() => { bottomSheetRef.current?.close(); router.push('/account'); }}>
+          <Pressable style={styles.sheetItem} onPress={() => { 
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            bottomSheetRef.current?.close(); 
+            router.push('/account'); 
+          }}>
             <Ionicons name="person-outline" size={24} color="white" />
             <Text style={styles.sheetText}>Account</Text>
             <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.3)" />

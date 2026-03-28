@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, FlatList, Dimensions, Text, Pressable, Image } from 'react-native';
+import { View, StyleSheet, FlatList, Dimensions, Text, Pressable, Image, useWindowDimensions, Platform } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { COLORS, SPACING } from '../constants/theme';
@@ -21,9 +21,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 
 const { height, width } = Dimensions.get('window');
-// Full screen for clips
-const ITEM_HEIGHT = height; 
-
 interface VideoItemProps {
   item: {
     id: string;
@@ -194,6 +191,7 @@ const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: 
 VideoItem.displayName = 'VideoItem';
 
 export function VerticalVideoFeed({ data }: { data: any[] }) {
+  const { height: ITEM_HEIGHT, width } = useWindowDimensions();
   const [activeIndex, setActiveIndex] = useState(0);
 
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
@@ -231,13 +229,12 @@ export function VerticalVideoFeed({ data }: { data: any[] }) {
       showsVerticalScrollIndicator={false}
       onViewableItemsChanged={onViewableItemsChanged}
       viewabilityConfig={viewabilityConfig}
-      snapToAlignment="start"
-      snapToInterval={ITEM_HEIGHT}
+      disableIntervalMomentum={Platform.OS === 'android'}
       decelerationRate="fast"
       style={styles.feedList}
-      windowSize={3}
-      maxToRenderPerBatch={1}
-      initialNumToRender={1}
+      windowSize={5}
+      maxToRenderPerBatch={2}
+      initialNumToRender={2}
       removeClippedSubviews={true}
       getItemLayout={(data, index) => ({
         length: ITEM_HEIGHT,
@@ -253,8 +250,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'black',
   },
   itemContainer: {
-    height: ITEM_HEIGHT,
-    width: width,
+    height: Dimensions.get('window').height,
+    width: Dimensions.get('window').width,
     backgroundColor: 'black',
   },
   videoPressable: {

@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { fetchStreamingLinks } from './streaming';
 import { NativeModules } from 'react-native';
 const DownloadServiceModule = NativeModules.DownloadService;
+import { NotificationService } from './NotificationService';
 
 export interface DownloadItem {
   id: string;
@@ -268,6 +269,7 @@ export const downloadVideo = async (
         item.downloadedBytes = fileSize;
         item.totalSize = fileSize || item.totalSize || 0;
         await saveMetadata(updatedItems);
+        NotificationService.notifyDownloadComplete(item.title);
       }
       return result;
     }
@@ -277,6 +279,7 @@ export const downloadVideo = async (
     if (item) {
       item.status = 'failed';
       await saveMetadata(updatedItems);
+      NotificationService.notifyDownloadFailed(item.title);
     }
       throw error;
     } finally {
@@ -624,6 +627,7 @@ async function downloadHlsVideo(
       finalItem.progress = 1;
       finalItem.totalSize = totalSizeAccumulated || (segmentUrls.length * 1024 * 512); 
       await saveMetadata(finalItems);
+      NotificationService.notifyDownloadComplete(finalItem.title);
     }
   } catch (error) {
     console.error('[DownloadService] HLS Download failed:', error);

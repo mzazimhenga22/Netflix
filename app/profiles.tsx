@@ -40,6 +40,15 @@ export default function ProfilesScreen() {
   const [lockedProfile, setLockedProfile] = useState<{profile: any, layout: any} | null>(null);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
+  const contentOpacity = useSharedValue(1);
+
+  useEffect(() => {
+    if (isTransitioning) {
+      contentOpacity.value = withTiming(0, { duration: 400, easing: Easing.out(Easing.quad) });
+    } else {
+      contentOpacity.value = 1;
+    }
+  }, [isTransitioning]);
 
   useEffect(() => {
     async function loadFeatured() {
@@ -134,7 +143,7 @@ export default function ProfilesScreen() {
       <StatusBar barStyle="light-content" />
       
       {/* Background Fades Out on Selection */}
-      <Animated.View style={[{ flex: 1 }, isTransitioning ? { opacity: 0 } : {}]}>
+      <Animated.View style={[{ flex: 1 }, useAnimatedStyle(() => ({ opacity: contentOpacity.value }))]}>
         <Animated.View entering={FadeIn.duration(1200)} style={styles.billboardContainer}>
           {featured && (
             <>

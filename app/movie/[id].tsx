@@ -136,9 +136,10 @@ export default function MovieDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [episodes, setEpisodes] = useState<any[]>([]);
-  const [selectedSeason, setSelectedSeason] = useState(1);
-  const [showSeasonModal, setShowSeasonModal] = useState(false);
   const [isTV, setIsTV] = useState(type === 'tv');
+  const [selectedSeason, setSelectedSeason] = useState(1);
+  const [activeTab, setActiveTab] = useState<'episodes' | 'more'>(isTV ? 'episodes' : 'more');
+  const [showSeasonModal, setShowSeasonModal] = useState(false);
   const { selectedProfile } = useProfile();
   const [isInMyList, setIsInMyList] = useState(false);
   
@@ -240,6 +241,29 @@ export default function MovieDetailsScreen() {
     }
   }, [isPlaying]);
 
+  const renderSimilarItem = ({ item }: { item: any }) => (
+    <Pressable 
+      style={styles.similarItem}
+      onPress={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.push({ pathname: "/movie/[id]", params: { id: item.id.toString(), type: item.media_type || 'movie' } });
+      }}
+    >
+      <ExpoImage 
+        source={{ uri: getImageUrl(item.poster_path) }} 
+        style={styles.similarPoster} 
+        contentFit="cover"
+      />
+    </Pressable>
+  );
+
+  const renderItem = ({ item, index }: any) => {
+    if (activeTab === 'episodes') {
+      return renderEpisodeItem({ item, index });
+    }
+    return renderSimilarItem({ item });
+  };
+
   const toggleTrailerMute = () => {
     setIsTrailerMuted(!isTrailerMuted);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -309,6 +333,7 @@ export default function MovieDetailsScreen() {
   }, [id, type]);
 
   const handleSeasonChange = async (seasonNum: number) => {
+    Haptics.selectionAsync();
     setSelectedSeason(seasonNum);
     setShowSeasonModal(false);
     try {
@@ -506,7 +531,10 @@ export default function MovieDetailsScreen() {
   const AnimatedFlatList = React.useMemo(() => Animated.createAnimatedComponent(FlatList), []);
 
   const renderEpisodeItem = useCallback(({ item: ep }: { item: any }) => (
-    <Pressable key={ep.id} style={styles.episodeItem} onPress={() => handlePlay(ep.episode_number)}>
+    <Pressable key={ep.id} style={styles.episodeItem} onPress={() => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      handlePlay(ep.episode_number);
+    }}>
       <View style={styles.episodeMain}>
         <View style={styles.episodeThumbContainer}>
           <ExpoImage 
@@ -672,7 +700,10 @@ export default function MovieDetailsScreen() {
             style={styles.heroPlayOverlay}
             pointerEvents="box-none"
           >
-          <Pressable style={styles.heroPlayCircle} onPress={handleHeroPlay}>
+          <Pressable style={styles.heroPlayCircle} onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            handleHeroPlay();
+          }}>
             <Ionicons name="play" size={32} color="white" style={{ marginLeft: 4 }} />
           </Pressable>
         </Animated.View>
@@ -708,7 +739,10 @@ export default function MovieDetailsScreen() {
               styles.playLargeButton,
               pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }
             ]} 
-            onPress={handleHeroPlay}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+              handleHeroPlay();
+            }}
           >
             <Ionicons name="play" size={24} color="black" />
             <Text style={styles.playLargeText}>
@@ -728,7 +762,10 @@ export default function MovieDetailsScreen() {
         <Animated.View entering={FadeInUp.delay(900).duration(800)}>
           <Pressable 
             style={styles.downloadLargeButton}
-            onPress={() => isTV ? handleDownload(1) : handleDownload()}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              isTV ? handleDownload(1) : handleDownload();
+            }}
           >
             <Feather name="download" size={22} color="white" />
             <Text style={styles.downloadLargeText}>Download</Text>
@@ -764,20 +801,36 @@ export default function MovieDetailsScreen() {
       </View>
 
       <View style={styles.tabsContainer}>
-        <View style={styles.tabItemActive}>
-          <Text style={styles.tabTextActive}>{isTV ? 'Episodes' : 'More Like This'}</Text>
-          <View style={styles.tabIndicator} />
-        </View>
         {isTV && (
-          <View style={styles.tabItem}>
-            <Text style={styles.tabText}>More Like This</Text>
-          </View>
+          <Pressable 
+            style={[styles.tabItem, activeTab === 'episodes' && styles.tabItemActive]} 
+            onPress={() => {
+              Haptics.selectionAsync();
+              setActiveTab('episodes');
+            }}
+          >
+            <Text style={[styles.tabText, activeTab === 'episodes' && styles.tabTextActive]}>Episodes</Text>
+            {activeTab === 'episodes' && <View style={styles.tabIndicator} />}
+          </Pressable>
         )}
+        <Pressable 
+          style={[styles.tabItem, activeTab === 'more' && styles.tabItemActive]} 
+          onPress={() => {
+            Haptics.selectionAsync();
+            setActiveTab('more');
+          }}
+        >
+          <Text style={[styles.tabText, activeTab === 'more' && styles.tabTextActive]}>More Like This</Text>
+          {activeTab === 'more' && <View style={styles.tabIndicator} />}
+        </Pressable>
       </View>
 
-      {isTV && (
+      {isTV && activeTab === 'episodes' && (
         <View style={styles.seasonPicker}>
-          <Pressable style={styles.seasonBtn} onPress={() => setShowSeasonModal(true)}>
+          <Pressable style={styles.seasonBtn} onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            setShowSeasonModal(true);
+          }}>
             <Text style={styles.seasonBtnText}>Season {selectedSeason}</Text>
             <Ionicons name="chevron-down" size={16} color="white" />
           </Pressable>
@@ -788,16 +841,7 @@ export default function MovieDetailsScreen() {
 
   const renderFooter = () => (
     <View style={{ paddingBottom: 100 }}>
-      {/* If it's a Movie, we show similar items at the bottom */}
-      {!isTV && (
-        <View style={styles.similarGrid}>
-          <HorizontalCarousel title="" data={movie.similar?.results?.map((item: any) => ({
-            id: item.id.toString(),
-            title: item.title || item.name,
-            imageUrl: getImageUrl(item.poster_path),
-          })) || []} />
-        </View>
-      )}
+      {/* Universal Footer Info */}
       <View style={{ padding: 20, alignItems: 'center' }}>
         <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Version 1.0.0 (2026.03.24)</Text>
         <Text style={{ color: 'rgba(255,255,255,0.2)', fontSize: 11, marginTop: 4 }}>made by mzazimhenga ❤️</Text>
@@ -816,7 +860,10 @@ export default function MovieDetailsScreen() {
         <Animated.View style={[styles.header, headerAnimatedStyle]}>
           <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
           <View style={styles.headerContent}>
-            <Pressable style={styles.headerCircleBtn} onPress={() => router.back()}>
+            <Pressable style={styles.headerCircleBtn} onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.back();
+            }}>
               <Ionicons name="chevron-back" size={24} color="white" />
             </Pressable>
             <Text style={styles.headerTitle} numberOfLines={1}>{movie.title || movie.name}</Text>
@@ -824,7 +871,10 @@ export default function MovieDetailsScreen() {
               <Pressable style={styles.headerCircleBtn}>
                 <MaterialCommunityIcons name="cast" size={22} color="white" />
               </Pressable>
-              <Pressable style={styles.headerCircleBtn} onPress={() => router.back()}>
+              <Pressable style={styles.headerCircleBtn} onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.back();
+              }}>
                 <Ionicons name="close" size={24} color="white" />
               </Pressable>
             </View>
@@ -834,18 +884,21 @@ export default function MovieDetailsScreen() {
         <View style={{ flex: 1 }}>
           <GestureDetector gesture={panGesture}>
             <AnimatedFlatList 
+              key={activeTab === 'more' ? 'grid-3' : 'list-1'}
               ref={scrollRef as any}
-              data={isTV ? episodes : []}
-              renderItem={renderEpisodeItem}
+              data={activeTab === 'episodes' ? episodes : (movie.similar?.results || [])}
+              renderItem={renderItem}
               keyExtractor={(item: any) => item.id.toString()}
               ListHeaderComponent={renderHeader}
               ListFooterComponent={renderFooter}
+              numColumns={activeTab === 'more' ? 3 : 1}
+              columnWrapperStyle={activeTab === 'more' ? { paddingHorizontal: 4 } : null}
               showsVerticalScrollIndicator={false}
               onScroll={scrollHandler}
               scrollEventThrottle={16}
               removeClippedSubviews={false}
-              initialNumToRender={5}
-              maxToRenderPerBatch={5}
+              initialNumToRender={12}
+              maxToRenderPerBatch={12}
               windowSize={5}
             />
           </GestureDetector>
@@ -1188,38 +1241,54 @@ const styles = StyleSheet.create({
   },
   tabsContainer: {
     flexDirection: 'row',
+    paddingHorizontal: 16,
     borderTopWidth: 1,
-    borderTopColor: '#262626',
-    paddingHorizontal: SPACING.md,
-    marginTop: 10,
-    gap: 30,
-  },
-  tabItemActive: {
-    paddingTop: 15,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    marginTop: 20,
   },
   tabItem: {
-    paddingTop: 15,
+    paddingVertical: 12,
+    marginRight: 32,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  tabTextActive: {
-    color: COLORS.text,
-    fontSize: 15,
-    fontWeight: 'bold',
-    marginBottom: 12,
+  tabItemActive: {
+    // Active specific styles if any
   },
   tabText: {
-    color: COLORS.textSecondary,
-    fontSize: 15,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
     fontWeight: 'bold',
-    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  tabTextActive: {
+    color: 'white',
   },
   tabIndicator: {
+    position: 'absolute',
+    top: -1, 
+    left: 0,
+    right: 0,
     height: 4,
     backgroundColor: COLORS.primary,
-    borderRadius: 2,
-    width: '100%',
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
   },
   similarGrid: {
     paddingVertical: SPACING.md,
+  },
+  similarItem: {
+    flex: 1/3,
+    aspectRatio: 2/3,
+    padding: 4,
+  },
+  similarPoster: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#1a1a1a',
   },
   episodesSection: {
     marginTop: 10,

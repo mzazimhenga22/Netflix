@@ -860,44 +860,60 @@ export function ModernVideoPlayer({
             pointerEvents="box-none"
           >
             {/* Top Bar */}
-            {!isLocked && (
-              <View style={styles.topBar}>
-                <View style={styles.topBarLeft}>
-                  <Pressable onPress={onClose} style={styles.iconBtn}>
-                    <Ionicons name="chevron-back" size={28} color="white" />
-                  </Pressable>
-                  <Text style={styles.videoTitle} numberOfLines={1}>{title}</Text>
-                </View>
-                
-                {/* Three Thumbs (Rating) */}
-                <View style={styles.thumbsContainer}>
-                  <Pressable style={styles.thumbBtn} onPress={() => handleRate('dislike')}>
-                    <MaterialCommunityIcons name={rating === 'dislike' ? "thumb-down" : "thumb-down-outline"} size={26} color="white" />
-                    <Text style={styles.thumbLabel}>Not for me</Text>
-                  </Pressable>
-                  <Pressable style={styles.thumbBtn} onPress={() => handleRate('like')}>
-                    <MaterialCommunityIcons name={rating === 'like' ? "thumb-up" : "thumb-up-outline"} size={26} color="white" />
-                    <Text style={styles.thumbLabel}>I like this</Text>
-                  </Pressable>
-                  <Pressable style={styles.thumbBtn} onPress={() => handleRate('love')}>
-                    <View style={styles.doubleThumbWrapper}>
-                      <MaterialCommunityIcons name={rating === 'love' ? "thumb-up" : "thumb-up-outline"} size={20} color="white" style={styles.thumbOffset} />
-                      <MaterialCommunityIcons name={rating === 'love' ? "thumb-up" : "thumb-up-outline"} size={20} color="white" />
-                    </View>
-                    <Text style={styles.thumbLabel}>Love this!</Text>
-                  </Pressable>
-                </View>
+            <View style={styles.topBar}>
+              {!isLocked ? (
+                <>
+                  <View style={styles.topBarLeft}>
+                    <Pressable onPress={onClose} style={styles.iconBtn}>
+                      <Ionicons name="chevron-back" size={28} color="white" />
+                    </Pressable>
+                    <Text style={styles.videoTitle} numberOfLines={1}>{title}</Text>
+                  </View>
+                  
+                  {/* Three Thumbs (Rating) */}
+                  <View style={styles.thumbsContainer}>
+                    <Pressable style={styles.thumbBtn} onPress={() => handleRate('dislike')}>
+                      <MaterialCommunityIcons name={rating === 'dislike' ? "thumb-down" : "thumb-down-outline"} size={26} color="white" />
+                      <Text style={styles.thumbLabel}>Not for me</Text>
+                    </Pressable>
+                    <Pressable style={styles.thumbBtn} onPress={() => handleRate('like')}>
+                      <MaterialCommunityIcons name={rating === 'like' ? "thumb-up" : "thumb-up-outline"} size={26} color="white" />
+                      <Text style={styles.thumbLabel}>I like this</Text>
+                    </Pressable>
+                    <Pressable style={styles.thumbBtn} onPress={() => handleRate('love')}>
+                      <View style={styles.doubleThumbWrapper}>
+                        <MaterialCommunityIcons name={rating === 'love' ? "thumb-up" : "thumb-up-outline"} size={20} color="white" style={styles.thumbOffset} />
+                        <MaterialCommunityIcons name={rating === 'love' ? "thumb-up" : "thumb-up-outline"} size={20} color="white" />
+                      </View>
+                      <Text style={styles.thumbLabel}>Love this!</Text>
+                    </Pressable>
+                  </View>
 
-                <View style={styles.topBarRight}>
-                  <Pressable style={styles.iconBtn}>
-                    <MaterialCommunityIcons name="cast" size={26} color="white" />
-                  </Pressable>
-                  <Pressable onPress={onClose} style={styles.iconBtn}>
-                    <Ionicons name="close" size={30} color="white" />
+                  <View style={styles.topBarRight}>
+                    <Pressable style={styles.iconBtn}>
+                      <MaterialCommunityIcons name="cast" size={26} color="white" />
+                    </Pressable>
+                    <Pressable onPress={onClose} style={styles.iconBtn}>
+                      <Ionicons name="close" size={30} color="white" />
+                    </Pressable>
+                  </View>
+                </>
+              ) : (
+                <View style={{ flex: 1, alignItems: 'flex-end', paddingTop: 10, paddingRight: 20 }}>
+                  <Pressable 
+                    onPress={() => {
+                      setIsLocked(false);
+                      resetHideTimer();
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    }} 
+                    style={styles.lockPill}
+                  >
+                    <Ionicons name="lock-closed" size={18} color="white" />
+                    <Text style={styles.lockPillText}>Screen Locked</Text>
                   </Pressable>
                 </View>
-              </View>
-            )}
+              )}
+            </View>
 
             {/* Middle Section: Brightness, Playback Controls, Volume */}
             <View style={styles.middleSection} pointerEvents="box-none">
@@ -927,18 +943,7 @@ export function ModernVideoPlayer({
                   </Pressable>
                 </View>
               ) : (
-                <View style={[styles.centerControls, { flex: 1, justifyContent: 'center' }]} pointerEvents="box-none">
-                   <Pressable 
-                    onPress={() => {
-                      setIsLocked(false);
-                      resetHideTimer();
-                    }} 
-                    style={styles.lockBtnLarge}
-                  >
-                    <Ionicons name="lock-closed" size={40} color="white" />
-                    <Text style={styles.lockText}>Tap to Unlock</Text>
-                  </Pressable>
-                </View>
+                <View style={{ flex: 1 }} pointerEvents="none" />
               )}
 
               {/* Right: Volume Visual */}
@@ -1436,17 +1441,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
-  lockBtnLarge: {
+  lockPill: {
+    flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 30,
     gap: 10,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    padding: 20,
-    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
   },
-  lockText: {
+  lockPillText: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   modalOverlay: {
     flex: 1,

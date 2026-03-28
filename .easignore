@@ -41,9 +41,15 @@ app-example
 # generated native folders
 # /ios
 # /android
+android/build/
+android/.gradle/
+**/build/
+**/.gradle/
+
 
 # agent files
 puter/
 
 # Ignore the TV app module when building the Phone app on EAS
-Netflixtv/
+# Netflixtv/
+

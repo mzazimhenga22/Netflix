@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Dimensions } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { DynamicTitleCard } from './DynamicTitleCard';
 import { COLORS, SPACING } from '../constants/theme';
 import Animated, { SharedValue } from 'react-native-reanimated';
@@ -22,8 +23,15 @@ interface HorizontalCarouselProps {
 
 const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY, isTop10, isGamesRow, isWatchHistory }: HorizontalCarouselProps) => {
   const isListTop10 = isTop10 || title.includes('Top 10') || title.includes('Trending');
-
   const actualVariant = isGamesRow ? 'square' : variant;
+
+  const { width: windowWidth } = Dimensions.get('window');
+  const POSTER_W = windowWidth * 0.28;
+  const LANDSCAPE_W = windowWidth * 0.35;
+  const SQUARE_W = windowWidth * 0.28;
+  
+  const itemWidth = actualVariant === 'landscape' ? LANDSCAPE_W : (actualVariant === 'square' ? SQUARE_W : (isListTop10 ? POSTER_W + 40 : POSTER_W));
+  const snapInterval = itemWidth + 8; // width + gap
 
   const renderItem = React.useCallback(({ item, index }: any) => (
     <DynamicTitleCard 
@@ -40,6 +48,16 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
     />
   ), [actualVariant, tiltX, tiltY, isListTop10, isGamesRow, isWatchHistory]);
 
+  const viewabilityConfig = React.useRef({
+    itemVisiblePercentThreshold: 50
+  }).current;
+
+  const onViewableItemsChanged = React.useCallback(({ viewableItems }: any) => {
+    if (viewableItems && viewableItems.length > 0) {
+      Haptics.selectionAsync();
+    }
+  }, []);
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{title}</Text>
@@ -50,6 +68,10 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
+        snapToInterval={snapInterval}
+        decelerationRate="fast"
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         initialNumToRender={4}
         maxToRenderPerBatch={4}
         windowSize={5}

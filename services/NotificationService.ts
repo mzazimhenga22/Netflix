@@ -1,81 +1,105 @@
-import { db, auth } from './firebase';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 
-export interface NetflixNotification {
-  id: string;
-  type: string;
-  title: string;
-  desc: string;
-  date: string;
-  image: string;
-  isRead: boolean;
-  createdAt: number;
-}
+// Configure how notifications are handled when the app is foregrounded
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
-export const NotificationService = {
-  subscribeToNotifications: (profileId: string, callback: (notifications: NetflixNotification[]) => void) => {
-    const activeUid = auth.currentUser?.uid;
-    if (!activeUid || !profileId) {
-      callback([]);
-      return () => {};
+export class NotificationService {
+  /**
+   * Permissions: Always request before scheduling.
+   */
+  static async requestPermissions() {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
     }
-
-    const q = query(
-      collection(db, 'users', activeUid, 'profiles', profileId, 'notifications'),
-      orderBy('createdAt', 'desc')
-    );
-
-    return onSnapshot(q, (snapshot) => {
-      const notifs: NetflixNotification[] = [];
-      snapshot.forEach(docSnap => {
-        notifs.push({ id: docSnap.id, ...docSnap.data() } as NetflixNotification);
+    
+    // Android-specific channel setup
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'default',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
       });
-      callback(notifs);
-    });
-  },
-
-  markAsRead: async (profileId: string, notificationId: string) => {
-    const activeUid = auth.currentUser?.uid;
-    if (!activeUid || !profileId) return;
-
-    try {
-      await updateDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'notifications', notificationId), {
-        isRead: true
-      });
-    } catch (e) {
-      console.error('[NotificationService] Failed to mark read:', e);
     }
-  },
 
-  seedMockNotifications: async (profileId: string) => {
-    const activeUid = auth.currentUser?.uid;
-    if (!activeUid || !profileId) return;
-
-    const mocks = [
-      {
-        id: 'mock1',
-        type: 'New Arrival',
-        title: 'Stranger Things 5',
-        desc: 'The epic conclusion is here.',
-        date: 'Today',
-        image: 'https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfSA8sQcw1959.jpg',
-        isRead: false,
-        createdAt: Date.now()
-      },
-      {
-        id: 'mock2',
-        type: 'Top Pick for You',
-        title: 'Wednesday',
-        desc: 'Because you watched The Addams Family.',
-        date: 'Yesterday',
-        image: 'https://image.tmdb.org/t/p/w500/9PFonBhy4cQy7Jz20NpMygczOo.jpg',
-        isRead: true,
-        createdAt: Date.now() - 86400000
-      }
-    ];
-
-    for (const m of mocks) {
-      await setDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'notifications', m.id), m, { merge: true });
-    }
+    return finalStatus === 'granted';
   }
-};
+
+  /**
+   * Scheduled Alerts: For upcoming movie releases.
+   */
+  static async scheduleReleaseReminder(id: string, title: string, releaseDate: string) {
+    const hasPermission = await this.requestPermissions();
+    if (!hasPermission) return null;
+
+    // Parse release date (TMDB format: YYYY-MM-DD or similar)
+    const date = new Date(releaseDate);
+    
+    // Schedule for 9:00 AM on the release day
+    date.setHours(9, 0, 0, 0);
+
+    // If release is today or in the past, don't schedule an "upcoming" alert
+    if (date.getTime() < Date.now()) {
+        console.log(`[NotificationService] Release date ${releaseDate} is in the past, skipping reminder.`);
+        return null;
+    }
+
+    console.log(`[NotificationService] Scheduling reminder for ${title} on ${date.toDateString()}`);
+
+    return await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "🍿 Now on Netflix!",
+        body: `${title} is now available to watch.`,
+        data: { id, type: 'release' },
+        sound: true,
+      },
+      trigger: {
+        date,
+      },
+      identifier: `reminder_${id}` // unique ID so we can cancel it later
+    });
+  }
+
+  static async cancelReleaseReminder(id: string) {
+    await Notifications.cancelScheduledNotificationAsync(`reminder_${id}`);
+    console.log(`[NotificationService] Canceled reminder for ${id}`);
+  }
+
+  /**
+   * Immediate Alerts: For download completion or failures.
+   */
+  static async notifyDownloadComplete(title: string) {
+    await this.requestPermissions();
+    return await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "📥 Download Complete",
+        body: `${title} is ready to watch offline.`,
+        sound: true,
+        priority: 'high',
+      },
+      trigger: null, // immediate
+    });
+  }
+
+  static async notifyDownloadFailed(title: string) {
+    await this.requestPermissions();
+    return await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "❌ Download Failed",
+        body: `Something went wrong downloading ${title}.`,
+        sound: true,
+      },
+      trigger: null,
+    });
+  }
+}

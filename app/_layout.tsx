@@ -21,8 +21,13 @@ import Animated, {
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import * as SplashScreen from 'expo-splash-screen';
 import { SplashAnimation } from '../components/SplashAnimation';
 import { ProfileProvider } from '../context/ProfileContext';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Keep the splash screen visible while we fetch resources
+SplashScreen.preventAutoHideAsync();
 
 const { width, height } = Dimensions.get('window');
 
@@ -32,6 +37,7 @@ const { width, height } = Dimensions.get('window');
  * to the Home screen by animating the selected profile's avatar.
  */
 function GlobalGhostAvatar({ profile, layout, onComplete }: { profile: any, layout: any, onComplete: () => void }) {
+  const insets = useSafeAreaInsets();
   const top = useSharedValue(layout.y);
   const left = useSharedValue(layout.x);
   const scale = useSharedValue(1);
@@ -42,33 +48,35 @@ function GlobalGhostAvatar({ profile, layout, onComplete }: { profile: any, layo
     const centerY = height / 2 - (layout.height || 100) / 2;
     
     // Precise target: Home screen header avatar (Top-Right)
-    const targetX = width - 40 - (layout.width || 100) / 2;
-    const targetY = 50 - (layout.height || 100) / 2;
+    // 16 is SPACING.md, 28 is avatar width, 4 is button padding
+    const targetX = width - 16 - 28 - 4;
+    const targetY = insets.top + (50 / 2) - (28 / 2); // 50 is approximate header height
 
-    const cinematicEasing = Easing.bezier(0.4, 0, 0.2, 1);
+    const fluidEasing = Easing.bezier(0.22, 1, 0.36, 1); // OutQuint
 
+    // Fluid Overlapping Motion
     top.value = withSequence(
-      withTiming(centerY, { duration: 500, easing: cinematicEasing }),
-      withDelay(300, withTiming(targetY, { duration: 700, easing: cinematicEasing }))
+      withTiming(centerY, { duration: 400, easing: fluidEasing }),
+      withTiming(targetY, { duration: 550, easing: fluidEasing })
     );
 
     left.value = withSequence(
-      withTiming(centerX, { duration: 500, easing: cinematicEasing }),
-      withDelay(300, withTiming(targetX, { duration: 700, easing: cinematicEasing }))
+      withTiming(centerX, { duration: 400, easing: fluidEasing }),
+      withTiming(targetX, { duration: 550, easing: fluidEasing })
     );
 
     scale.value = withSequence(
-      withTiming(1.5, { duration: 500, easing: cinematicEasing }),
-      withDelay(300, withTiming(0.28, { duration: 700, easing: cinematicEasing }, (finished?: boolean) => {
+      withTiming(1.6, { duration: 400, easing: fluidEasing }),
+      withTiming(0.28, { duration: 550, easing: fluidEasing }, (finished?: boolean) => {
         if (finished) {
           runOnJS(onComplete)();
         }
-      }))
+      })
     );
 
     spinnerOpacity.value = withSequence(
-      withDelay(200, withTiming(1, { duration: 250 })),
-      withDelay(400, withTiming(0, { duration: 200 }))
+      withDelay(100, withTiming(1, { duration: 200 })),
+      withDelay(200, withTiming(0, { duration: 150 }))
     );
   }, []);
 
@@ -129,7 +137,8 @@ export default function RootLayout() {
   const [transitionData, setTransitionData] = useState<{ profile: any, layout: any } | null>(null);
 
   useEffect(() => {
-    // initializeDownloads();
+    // Hide the native splash screen immediately to let our custom Animation take over
+    SplashScreen.hideAsync();
   }, []);
 
   const startProfileTransition = (profile: any, layout: any) => {
@@ -137,8 +146,9 @@ export default function RootLayout() {
   };
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: 'black' }}>
-      <ProfileProvider>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: 'black' }}>
+        <ProfileProvider>
         <TransitionContext.Provider value={{ 
           startProfileTransition,
           isTransitioning: transitionData !== null
@@ -170,7 +180,8 @@ export default function RootLayout() {
           </BottomSheetModalProvider>
         </ThemeContext.Provider>
         </TransitionContext.Provider>
-      </ProfileProvider>
-    </GestureHandlerRootView>
+        </ProfileProvider>
+      </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
