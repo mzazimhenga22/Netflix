@@ -1,9 +1,28 @@
 import React from 'react';
-import { View, Text, StyleSheet, FlatList, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, useWindowDimensions, Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { DynamicTitleCard } from './DynamicTitleCard';
 import { COLORS, SPACING } from '../constants/theme';
 import Animated, { SharedValue } from 'react-native-reanimated';
+import { PhoneRowNative } from './PhoneRowNative';
+import { useRouter } from 'expo-router';
+
+// Styles moved to top to avoid hoisting issues with React.memo
+const styles = StyleSheet.create({
+  container: {
+    marginBottom: SPACING.lg,
+  },
+  title: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+  },
+  listContent: {
+    paddingHorizontal: SPACING.md,
+  }
+});
 
 interface HorizontalCarouselProps {
   title: string;
@@ -12,6 +31,7 @@ interface HorizontalCarouselProps {
     title: string;
     imageUrl: string;
     synopsis?: string;
+    type?: string;
   }[];
   variant?: 'poster' | 'landscape' | 'square';
   tiltX?: SharedValue<number>;
@@ -22,16 +42,18 @@ interface HorizontalCarouselProps {
 }
 
 const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY, isTop10, isGamesRow, isWatchHistory }: HorizontalCarouselProps) => {
-  const isListTop10 = isTop10 || title.includes('Top 10') || title.includes('Trending');
-  const actualVariant = isGamesRow ? 'square' : variant;
-
-  const { width: windowWidth } = Dimensions.get('window');
+  const { width: windowWidth } = useWindowDimensions();
   const POSTER_W = windowWidth * 0.28;
   const LANDSCAPE_W = windowWidth * 0.35;
   const SQUARE_W = windowWidth * 0.28;
-  
+
+  const router = useRouter();
+  const isListTop10 = isTop10 || title.includes('Top 10') || title.includes('Trending');
+  const actualVariant = isGamesRow ? 'square' : variant;
+
   const itemWidth = actualVariant === 'landscape' ? LANDSCAPE_W : (actualVariant === 'square' ? SQUARE_W : (isListTop10 ? POSTER_W + 40 : POSTER_W));
   const snapInterval = itemWidth + 8; // width + gap
+  const actualHeight = actualVariant === 'landscape' ? LANDSCAPE_W * 1.4 : (actualVariant === 'square' ? SQUARE_W : POSTER_W * 1.5);
 
   const renderItem = React.useCallback(({ item, index }: any) => (
     <DynamicTitleCard 
@@ -58,6 +80,28 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
     }
   }, []);
 
+  if (Platform.OS === 'android' && !isListTop10 && !isWatchHistory && !isGamesRow) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>{title}</Text>
+        <PhoneRowNative 
+          data={data.map(d => ({ 
+            id: d.id, 
+            title: d.title, 
+            imageUrl: d.imageUrl, 
+            type: d.type || 'movie' 
+          }))} 
+          variant={actualVariant} 
+          onSelect={(id, type) => {
+            Haptics.selectionAsync();
+            router.push({ pathname: "/movie/[id]", params: { id, type } });
+          }} 
+          style={{ width: '100%', height: actualHeight, marginTop: 4 }} 
+        />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{title}</Text>
@@ -82,19 +126,3 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
 };
 
 export const HorizontalCarousel = React.memo(HorizontalCarouselComponent);
-
-const styles = StyleSheet.create({
-  container: {
-    marginBottom: SPACING.lg,
-  },
-  title: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: SPACING.sm,
-    paddingHorizontal: SPACING.md,
-  },
-  listContent: {
-    paddingHorizontal: SPACING.md,
-  }
-});

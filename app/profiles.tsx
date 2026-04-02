@@ -135,6 +135,10 @@ export default function ProfilesScreen() {
     }
   };
 
+  const animatedContentStyle = useAnimatedStyle(() => ({ 
+    opacity: contentOpacity.value 
+  }));
+
   if (loading) return <View style={[styles.container, styles.center]}><ActivityIndicator color={COLORS.primary} /></View>;
 
   return (
@@ -143,7 +147,7 @@ export default function ProfilesScreen() {
       <StatusBar barStyle="light-content" />
       
       {/* Background Fades Out on Selection */}
-      <Animated.View style={[{ flex: 1 }, useAnimatedStyle(() => ({ opacity: contentOpacity.value }))]}>
+      <Animated.View style={[{ flex: 1 }, animatedContentStyle]}>
         <Animated.View entering={FadeIn.duration(1200)} style={styles.billboardContainer}>
           {featured && (
             <>

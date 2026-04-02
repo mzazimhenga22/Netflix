@@ -13,7 +13,7 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 
-const WATCH_HISTORY_KEY = 'netflix_phone_watch_history';
+const getHistoryKey = (profileId: string) => `netflix_watch_history_${profileId}`;
 const THROTTLE_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 const lastSaveProgressTime: Record<string, number> = {};
 
@@ -29,19 +29,28 @@ export interface WatchHistoryItem {
 }
 
 export const WatchHistoryService = {
+  // Build a storage key that is unique per episode for TV shows
+  _buildStorageId(itemId: string, type: string, season?: number, episode?: number): string {
+    if (type === 'tv' && season !== undefined && episode !== undefined) {
+      return `${itemId}_s${season}_e${episode}`;
+    }
+    return itemId;
+  },
+
   async saveProgress(
     item: any, 
     type: 'movie' | 'tv', 
     currentTime: number, 
     duration: number, 
-    profileId?: string,
+    profileId: string, // REQUIRED
     season?: number, 
     episode?: number
   ) {
     try {
-      if (!item || !item.id) return;
+      if (!item || !item.id || !profileId) return;
 
       const itemId = item.id.toString();
+      const storageId = this._buildStorageId(itemId, type, season, episode);
       const now = Date.now();
 
       const newItem: WatchHistoryItem = {
@@ -56,21 +65,26 @@ export const WatchHistoryService = {
       if (season !== undefined && season !== null) newItem.season = season;
       if (episode !== undefined && episode !== null) newItem.episode = episode;
 
-      // 1. Update Local Storage (ALWAYS)
-      const localHistory = await this.getAllHistory();
-      const updatedHistory = [
-        newItem,
-        ...localHistory.filter(h => h.id.toString() !== itemId)
-      ].slice(0, 50);
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(updatedHistory));
+      // 1. Update Local Storage (ALWAYS) - PROFILE SPECIFIC
+      // For TV shows, store per-episode AND update the "latest" entry for the show
+      const localHistory = await this.getAllHistory(profileId);
+
+      // Remove any existing entry with same storageId
+      const filtered = localHistory.filter(h => {
+        const hStorageId = this._buildStorageId(h.id.toString(), h.type, h.season, h.episode);
+        return hStorageId !== storageId;
+      });
+
+      const updatedHistory = [newItem, ...filtered].slice(0, 100);
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(updatedHistory));
 
       // 2. Throttled Cloud Sync
       const activeUid = auth.currentUser?.uid || 'dev-guest';
-      const lastSave = lastSaveProgressTime[itemId] || 0;
+      const lastSave = lastSaveProgressTime[storageId] || 0;
       
-      if (profileId && (now - lastSave >= THROTTLE_INTERVAL_MS)) {
-        lastSaveProgressTime[itemId] = now;
-        const historyDocRef = doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId);
+      if (now - lastSave >= THROTTLE_INTERVAL_MS) {
+        lastSaveProgressTime[storageId] = now;
+        const historyDocRef = doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', storageId);
         await setDoc(historyDocRef, {
           ...newItem,
           lastUpdated: serverTimestamp(),
@@ -81,18 +95,31 @@ export const WatchHistoryService = {
     }
   },
 
-  async getProgress(itemId: string | number): Promise<WatchHistoryItem | null> {
+  async getProgress(profileId: string, itemId: string | number, season?: number, episode?: number): Promise<WatchHistoryItem | null> {
     try {
-      const history = await this.getAllHistory();
-      return history.find(h => h.id.toString() === itemId.toString()) || null;
+      if (!profileId) return null;
+      const history = await this.getAllHistory(profileId);
+      const id = itemId.toString();
+
+      // For TV shows, look for exact episode match first
+      if (season !== undefined && episode !== undefined) {
+        const episodeMatch = history.find(h => 
+          h.id.toString() === id && h.season === season && h.episode === episode
+        );
+        if (episodeMatch) return episodeMatch;
+      }
+
+      // Fallback: find the most recent entry for this show (for resuming from details page)
+      return history.find(h => h.id.toString() === id) || null;
     } catch (e) {
       return null;
     }
   },
 
-  async getAllHistory(): Promise<WatchHistoryItem[]> {
+  async getAllHistory(profileId: string): Promise<WatchHistoryItem[]> {
     try {
-      const data = await AsyncStorage.getItem(WATCH_HISTORY_KEY);
+      if (!profileId) return [];
+      const data = await AsyncStorage.getItem(getHistoryKey(profileId));
       return data ? JSON.parse(data) : [];
     } catch (e) {
       return [];
@@ -101,7 +128,7 @@ export const WatchHistoryService = {
 
   async syncWithFirestore(profileId: string) {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
-    if (!profileId) return;
+    if (!profileId) return [];
 
     try {
       const historyColRef = collection(db, 'users', activeUid, 'profiles', profileId, 'watchHistory');
@@ -117,9 +144,9 @@ export const WatchHistoryService = {
         } as WatchHistoryItem);
       });
 
-      if (remoteHistory.length === 0) return await this.getAllHistory();
+      if (remoteHistory.length === 0) return await this.getAllHistory(profileId);
 
-      const localHistory = await this.getAllHistory();
+      const localHistory = await this.getAllHistory(profileId);
       const combined = [...remoteHistory];
       
       localHistory.forEach(localItem => {
@@ -132,24 +159,23 @@ export const WatchHistoryService = {
         .sort((a, b) => b.lastUpdated - a.lastUpdated)
         .slice(0, 50);
 
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(finalHistory));
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(finalHistory));
       return finalHistory;
     } catch (e) {
       console.error('[WatchHistory] Sync failed:', e);
-      return await this.getAllHistory();
+      return await this.getAllHistory(profileId);
     }
   },
 
-  async removeFromHistory(itemId: string | number, profileId?: string) {
+  async removeFromHistory(profileId: string, itemId: string | number) {
     try {
-      const history = await this.getAllHistory();
+      if (!profileId) return;
+      const history = await this.getAllHistory(profileId);
       const updated = history.filter(h => h.id.toString() !== itemId.toString());
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(updated));
 
       const activeUid = auth.currentUser?.uid || 'dev-guest';
-      if (profileId) {
-        await deleteDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId.toString()));
-      }
+      await deleteDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId.toString()));
     } catch (e) {}
   },
 

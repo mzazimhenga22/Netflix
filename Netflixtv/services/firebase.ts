@@ -3,7 +3,7 @@ import {
   getAuth, 
   initializeAuth, 
 } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
@@ -37,7 +37,11 @@ if (Platform.OS !== 'web' && getReactNativePersistence) {
   auth = getAuth(app);
 }
 
-const db = getFirestore(app);
+// Initialize Firestore with forced long polling for stability in mobile environments
+const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+});
+
 const storage = getStorage(app);
 
 export { app, auth, db, storage };

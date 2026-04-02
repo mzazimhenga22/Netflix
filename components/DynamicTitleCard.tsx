@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, { 
   useAnimatedStyle, 
@@ -13,171 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 
-const { width } = Dimensions.get('window');
-const POSTER_WIDTH = width * 0.28;
-const POSTER_HEIGHT = POSTER_WIDTH * 1.5;
-
-const LANDSCAPE_WIDTH = width * 0.35;
-const LANDSCAPE_HEIGHT = LANDSCAPE_WIDTH * 1.4;
-
-const SQUARE_SIZE = width * 0.28;
-
-interface DynamicTitleCardProps {
-  item: {
-    id: string;
-    title: string;
-    imageUrl: string;
-    synopsis?: string;
-    type?: 'movie' | 'tv' | 'game';
-  };
-  variant?: 'poster' | 'landscape' | 'square';
-  tiltX?: SharedValue<number>;
-  tiltY?: SharedValue<number>;
-  index?: number;
-  isTop10?: boolean;
-  isOriginal?: boolean;
-  isRecentlyAdded?: boolean;
-  isGame?: boolean;
-  isWatchHistory?: boolean;
-}
-
-const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, index, isTop10, isOriginal, isRecentlyAdded, isGame, isWatchHistory }: DynamicTitleCardProps) => {
-  const router = useRouter();
-  const isLandscape = variant === 'landscape';
-  const isSquare = variant === 'square';
-  const baseWidth = isSquare ? SQUARE_SIZE : (isLandscape ? LANDSCAPE_WIDTH : POSTER_WIDTH);
-  const cardWidth = isTop10 ? baseWidth + 40 : baseWidth;
-  const cardHeight = isSquare ? SQUARE_SIZE : (isLandscape ? LANDSCAPE_HEIGHT : POSTER_HEIGHT);
-
-  const scale = useSharedValue(1);
-  const zIndex = useSharedValue(0);
-
-  const animatedStyle = useAnimatedStyle(() => {
-    return {
-      transform: [
-        { perspective: 500 },
-        { rotateX: `${(tiltX?.value ?? 0) * 0.5}deg` },
-        { rotateY: `${(tiltY?.value ?? 0) * 0.5}deg` },
-        { scale: scale.value }
-      ],
-      zIndex: zIndex.value,
-    };
-  });
-
-  const handlePressIn = React.useCallback(() => {
-    zIndex.value = 10;
-    scale.value = withSpring(0.95, { damping: 15, stiffness: 300 });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, []);
-
-  const handlePressOut = React.useCallback(() => {
-    zIndex.value = 0;
-    scale.value = withSpring(1, { damping: 15, stiffness: 300 });
-  }, []);
-
-  const handlePress = React.useCallback(() => {
-    router.push({
-      pathname: "/movie/[id]",
-      params: { id: item.id, type: item.type || 'movie' }
-    });
-  }, [item.id, item.type, router]);
-
-  return (
-    <Animated.View style={[
-      styles.container, 
-      { width: cardWidth, height: cardHeight },
-      animatedStyle,
-      isTop10 && styles.top10Container,
-      isSquare && { borderRadius: 16 }
-    ]}>
-      {isTop10 && index !== undefined && (
-        <View style={styles.top10NumberWrapper}>
-          <Text style={styles.top10NumberText}>{index + 1}</Text>
-        </View>
-      )}
-      <Pressable
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        onPress={handlePress}
-        onLongPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          // Potential for context menu or more info here
-        }}
-        delayLongPress={300}
-        style={[styles.pressable, isTop10 && { width: POSTER_WIDTH, position: 'absolute', right: 0, height: '100%' }]}
-      >
-        <AnimatedImage 
-          source={{ uri: item.imageUrl }} 
-          style={styles.image} 
-          contentFit="cover"
-          sharedTransitionTag={`movie-image-${item.id}`}
-        />
-
-        {isOriginal && (
-          <View style={styles.netflixBadge}>
-            <Image 
-              source={require('../assets/images/netflix-n-logo.svg')} 
-              style={styles.nBadgeImage} 
-              contentFit="contain"
-            />
-          </View>
-        )}
-
-        {isRecentlyAdded && !isTop10 && !isLandscape && (
-          <View style={styles.recentlyAddedBadge}>
-            <Text style={styles.recentlyAddedText}>Recently Added</Text>
-          </View>
-        )}
-        
-        {(isLandscape || isWatchHistory) && (
-          <View style={[styles.cardOverlay, isLandscape && styles.landscapeOverlay]}>
-            {isLandscape && (
-              <Pressable 
-                style={styles.playCircle}
-                onPress={(e) => {
-                  e.stopPropagation();
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                  router.push({ pathname: "/movie/[id]", params: { id: item.id, type: item.type || 'movie', autoplay: 'true' } });
-                }}
-              >
-                <Ionicons name="play" size={20} color="white" style={{ marginLeft: 2 }} />
-              </Pressable>
-            )}
-            
-            <View style={[styles.cardFooter, isWatchHistory && !isLandscape && styles.posterFooter]}>
-              {isLandscape && (
-                <View style={styles.progressBarBackground}>
-                  <View style={[styles.progressBar, { width: '40%' }]} />
-                </View>
-              )}
-              <View style={styles.cardControls}>
-                <View style={styles.leftControls}>
-                   <Pressable style={styles.controlBtn} onPress={(e) => {
-                     e.stopPropagation();
-                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                     router.push({ pathname: "/movie/[id]", params: { id: item.id, type: item.type || 'movie', autoplay: 'true' } });
-                   }}>
-                     <Ionicons name="play-circle" size={24} color="white" />
-                   </Pressable>
-                   <Pressable style={styles.controlBtn} onPress={(e) => { e.stopPropagation(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}>
-                     <Ionicons name="add-outline" size={24} color="white" />
-                   </Pressable>
-                </View>
-
-                <Pressable style={styles.infoBtn} onPress={(e) => { e.stopPropagation(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); handlePress(); }}>
-                  <Ionicons name="information-circle-outline" size={24} color="white" />
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-      </Pressable>
-    </Animated.View>
-  );
-};
-
-export const DynamicTitleCard = React.memo(DynamicTitleCardComponent);
-
+// Styles moved to top to avoid hoisting issues with React.memo
 const styles = StyleSheet.create({
   container: {
     marginRight: 8,
@@ -294,3 +130,165 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   }
 });
+
+interface DynamicTitleCardProps {
+  item: {
+    id: string;
+    title: string;
+    imageUrl: string;
+    synopsis?: string;
+    type?: 'movie' | 'tv' | 'game';
+  };
+  variant?: 'poster' | 'landscape' | 'square';
+  tiltX?: SharedValue<number>;
+  tiltY?: SharedValue<number>;
+  index?: number;
+  isTop10?: boolean;
+  isOriginal?: boolean;
+  isRecentlyAdded?: boolean;
+  isGame?: boolean;
+  isWatchHistory?: boolean;
+}
+
+const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, index, isTop10, isOriginal, isRecentlyAdded, isGame, isWatchHistory }: DynamicTitleCardProps) => {
+  const { width } = useWindowDimensions();
+  const POSTER_WIDTH = width * 0.28;
+  const POSTER_HEIGHT = POSTER_WIDTH * 1.5;
+  const LANDSCAPE_WIDTH = width * 0.35;
+  const LANDSCAPE_HEIGHT = LANDSCAPE_WIDTH * 1.4;
+  const SQUARE_SIZE = width * 0.28;
+
+  const router = useRouter();
+  const isLandscape = variant === 'landscape';
+  const isSquare = variant === 'square';
+  const baseWidth = isSquare ? SQUARE_SIZE : (isLandscape ? LANDSCAPE_WIDTH : POSTER_WIDTH);
+  const cardWidth = isTop10 ? baseWidth + 40 : baseWidth;
+  const cardHeight = isSquare ? SQUARE_SIZE : (isLandscape ? LANDSCAPE_HEIGHT : POSTER_HEIGHT);
+
+  const scale = useSharedValue(1);
+  const zIndex = useSharedValue(0);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      transform: [
+        { perspective: 500 },
+        { rotateX: `${(tiltX?.value ?? 0) * 0.5}deg` },
+        { rotateY: `${(tiltY?.value ?? 0) * 0.5}deg` },
+        { scale: scale.value }
+      ],
+      zIndex: zIndex.value,
+    };
+  });
+
+  const handlePressIn = React.useCallback(() => {
+    zIndex.value = 10;
+    scale.value = withSpring(0.95, { damping: 15, stiffness: 300 });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
+  const handlePressOut = React.useCallback(() => {
+    zIndex.value = 0;
+    scale.value = withSpring(1, { damping: 15, stiffness: 300 });
+  }, []);
+
+  const handlePress = React.useCallback(() => {
+    router.push({
+      pathname: "/movie/[id]",
+      params: { id: item.id, type: item.type || 'movie' }
+    });
+  }, [item.id, item.type, router]);
+
+  return (
+    <Animated.View style={[
+      styles.container, 
+      { width: cardWidth, height: cardHeight },
+      animatedStyle,
+      isTop10 && styles.top10Container,
+      isSquare && { borderRadius: 16 }
+    ]}>
+      {isTop10 && index !== undefined && (
+        <View style={styles.top10NumberWrapper}>
+          <Text style={styles.top10NumberText}>{index + 1}</Text>
+        </View>
+      )}
+      <Pressable
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={handlePress}
+        onLongPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        }}
+        delayLongPress={300}
+        style={[styles.pressable, isTop10 && { width: POSTER_WIDTH, position: 'absolute', right: 0, height: '100%' }]}
+      >
+        <AnimatedImage 
+          source={{ uri: item.imageUrl }} 
+          style={styles.image} 
+          contentFit="cover"
+          sharedTransitionTag={`movie-image-${item.id}`}
+        />
+
+        {isOriginal && (
+          <View style={styles.netflixBadge}>
+            <Image 
+              source={require('../assets/images/netflix-n-logo.svg')} 
+              style={styles.nBadgeImage} 
+              contentFit="contain"
+            />
+          </View>
+        )}
+
+        {isRecentlyAdded && !isTop10 && !isLandscape && (
+          <View style={styles.recentlyAddedBadge}>
+            <Text style={styles.recentlyAddedText}>Recently Added</Text>
+          </View>
+        )}
+        
+        {(isLandscape || isWatchHistory) && (
+          <View style={[styles.cardOverlay, isLandscape && styles.landscapeOverlay]}>
+            {isLandscape && (
+              <Pressable 
+                style={styles.playCircle}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                  router.push({ pathname: "/movie/[id]", params: { id: item.id, type: item.type || 'movie', autoplay: 'true' } });
+                }}
+              >
+                <Ionicons name="play" size={20} color="white" style={{ marginLeft: 2 }} />
+              </Pressable>
+            )}
+            
+            <View style={[styles.cardFooter, isWatchHistory && !isLandscape && styles.posterFooter]}>
+              {isLandscape && (
+                <View style={styles.progressBarBackground}>
+                  <View style={[styles.progressBar, { width: '40%' }]} />
+                </View>
+              )}
+              <View style={styles.cardControls}>
+                <View style={styles.leftControls}>
+                   <Pressable style={styles.controlBtn} onPress={(e) => {
+                     e.stopPropagation();
+                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                     router.push({ pathname: "/movie/[id]", params: { id: item.id, type: item.type || 'movie', autoplay: 'true' } });
+                   }}>
+                     <Ionicons name="play-circle" size={24} color="white" />
+                   </Pressable>
+                   <Pressable style={styles.controlBtn} onPress={(e) => { e.stopPropagation(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}>
+                     <Ionicons name="add-outline" size={24} color="white" />
+                   </Pressable>
+                </View>
+
+                <Pressable style={styles.infoBtn} onPress={(e) => { e.stopPropagation(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); handlePress(); }}>
+                  <Ionicons name="information-circle-outline" size={24} color="white" />
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        )}
+      </Pressable>
+    </Animated.View>
+  );
+};
+
+export const DynamicTitleCard = React.memo(DynamicTitleCardComponent);

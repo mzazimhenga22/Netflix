@@ -13,7 +13,7 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 
-const WATCH_HISTORY_KEY = 'netflix_tv_watch_history';
+const getHistoryKey = (profileId: string) => `netflix_watch_history_${profileId}`;
 const THROTTLE_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 const lastSaveProgressTime: Record<string, number> = {};
 
@@ -38,12 +38,12 @@ export const WatchHistoryService = {
     type: 'movie' | 'tv', 
     currentTime: number, 
     duration: number, 
-    profileId?: string,
+    profileId: string, // REQUIRED
     season?: number, 
     episode?: number
   ) {
     try {
-      if (!item || !item.id) return;
+      if (!item || !item.id || !profileId) return;
 
       const itemId = item.id.toString();
       const now = Date.now();
@@ -61,19 +61,19 @@ export const WatchHistoryService = {
       if (season !== undefined && season !== null) newItem.season = season;
       if (episode !== undefined && episode !== null) newItem.episode = episode;
 
-      // 1. Update Local Storage (ALWAYS)
-      const localHistory = await this.getAllHistory();
+      // 1. Update Local Storage (ALWAYS) - PROFILE SPECIFIC
+      const localHistory = await this.getAllHistory(profileId);
       const updatedHistory = [
         newItem,
         ...localHistory.filter(h => h.id.toString() !== itemId)
       ].slice(0, 50);
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(updatedHistory));
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(updatedHistory));
 
       // 2. Throttled Cloud Sync
       const activeUid = auth.currentUser?.uid || 'dev-guest';
       const lastSave = lastSaveProgressTime[itemId] || 0;
       
-      if (profileId && (now - lastSave >= THROTTLE_INTERVAL_MS)) {
+      if (now - lastSave >= THROTTLE_INTERVAL_MS) {
         lastSaveProgressTime[itemId] = now;
         const historyDocRef = doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId);
         await setDoc(historyDocRef, {
@@ -89,9 +89,10 @@ export const WatchHistoryService = {
   /**
    * Retrieves playback progress for a specific item.
    */
-  async getProgress(itemId: string | number): Promise<WatchHistoryItem | null> {
+  async getProgress(profileId: string, itemId: string | number): Promise<WatchHistoryItem | null> {
     try {
-      const history = await this.getAllHistory();
+      if (!profileId) return null;
+      const history = await this.getAllHistory(profileId);
       return history.find(h => h.id.toString() === itemId.toString()) || null;
     } catch (e) {
       return null;
@@ -101,9 +102,10 @@ export const WatchHistoryService = {
   /**
    * Retrieves all items in the local watch history.
    */
-  async getAllHistory(): Promise<WatchHistoryItem[]> {
+  async getAllHistory(profileId: string): Promise<WatchHistoryItem[]> {
     try {
-      const data = await AsyncStorage.getItem(WATCH_HISTORY_KEY);
+      if (!profileId) return [];
+      const data = await AsyncStorage.getItem(getHistoryKey(profileId));
       return data ? JSON.parse(data) : [];
     } catch (e) {
       console.error('[WatchHistory] Failed to get history:', e);
@@ -117,7 +119,7 @@ export const WatchHistoryService = {
    */
   async syncWithFirestore(profileId: string) {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
-    if (!profileId) return;
+    if (!profileId) return [];
 
     try {
       const historyColRef = collection(db, 'users', activeUid, 'profiles', profileId, 'watchHistory');
@@ -133,10 +135,10 @@ export const WatchHistoryService = {
         } as WatchHistoryItem);
       });
 
-      if (remoteHistory.length === 0) return;
+      if (remoteHistory.length === 0) return await this.getAllHistory(profileId);
 
       // Merge Remote and Local
-      const localHistory = await this.getAllHistory();
+      const localHistory = await this.getAllHistory(profileId);
       const combined = [...remoteHistory];
       
       // Add local items that aren't in remote (or are newer - but usually remote is source of truth)
@@ -150,28 +152,28 @@ export const WatchHistoryService = {
         .sort((a, b) => b.lastUpdated - a.lastUpdated)
         .slice(0, 50);
 
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(finalHistory));
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(finalHistory));
       return finalHistory;
     } catch (e) {
       console.error('[WatchHistory] Sync failed:', e);
+      return await this.getAllHistory(profileId);
     }
   },
 
   /**
    * Removes an item from history.
    */
-  async removeFromHistory(itemId: string | number, profileId?: string) {
+  async removeFromHistory(profileId: string, itemId: string | number) {
     try {
+      if (!profileId) return;
       // Remove Local
-      const history = await this.getAllHistory();
+      const history = await this.getAllHistory(profileId);
       const updated = history.filter(h => h.id.toString() !== itemId.toString());
-      await AsyncStorage.setItem(WATCH_HISTORY_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(getHistoryKey(profileId), JSON.stringify(updated));
 
       // Remove Remote
       const activeUid = auth.currentUser?.uid || 'dev-guest';
-      if (profileId) {
-        await deleteDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId.toString()));
-      }
+      await deleteDoc(doc(db, 'users', activeUid, 'profiles', profileId, 'watchHistory', itemId.toString()));
     } catch (e) {}
   },
 

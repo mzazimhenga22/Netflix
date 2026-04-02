@@ -89,7 +89,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(2);
+  const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(5);
 
   useEffect(() => {
     const unsub = SubscriptionService.listenToSubscription((sub) => {
@@ -181,6 +181,14 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const selectProfile = async (profile: Profile) => {
     setSelectedProfile(profile);
     await AsyncStorage.setItem(SELECTED_PROFILE_KEY, profile.id);
+    
+    // Sync watch history for the newly selected profile
+    try {
+      const { WatchHistoryService } = require('../services/WatchHistoryService');
+      WatchHistoryService.syncWithFirestore(profile.id);
+    } catch (e) {
+      console.error('[ProfileContext] Failed to sync watch history on profile switch:', e);
+    }
   };
 
   const addProfile = async (name: string, avatarId: string, isLocked = false, pin = '', isKids = false) => {

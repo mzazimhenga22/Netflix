@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, Dimensions, ActivityIndicator, ScrollView, Modal, Image } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions, ActivityIndicator, ScrollView, Modal, Image } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -13,7 +13,9 @@ import Animated, {
   SlideInRight,
   SlideOutRight,
   FadeInRight,
-  FadeOutRight
+  FadeOutRight,
+  FadeIn,
+  FadeOut
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
@@ -25,12 +27,15 @@ import { parseVtt, Subtitle } from '../utils/vttParser';
 import { getImageUrl } from '../services/tmdb';
 import { NetflixLoader } from './NetflixLoader';
 import { VidLinkResolver } from './VidLinkResolver';
-import { VidLinkStream } from '../services/vidlink';
+import { VidSrcResolver } from './VidSrcResolver';
+import { VidLinkStream, VidLinkSkipMarker } from '../services/vidlink';
+import { VidSrcStream } from '../services/vidsrc';
 import { useProfile } from '../context/ProfileContext';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { RatingsService, RatingValue } from '../services/RatingsService';
 
-const { width, height } = Dimensions.get('window');
+// Removed static top-level Dimensions to prevent orientation distortion.
+// Component now uses useWindowDimensions() hook internally.
 
 interface ModernPlayerProps {
   videoUrl?: string; // Optional now, since we can fetch internally
@@ -70,6 +75,7 @@ export function ModernVideoPlayer({
   primaryId,
   backdropUrl
 }: ModernPlayerProps) {
+  const { width, height } = useWindowDimensions();
   useKeepAwake(); // Keep screen from sleeping during playback
 
   const [isLocked, setIsLocked] = useState(false);
@@ -84,8 +90,15 @@ export function ModernVideoPlayer({
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const [showEpisodePicker, setShowEpisodePicker] = useState(false);
   const [showSubtitlePicker, setShowSubtitlePicker] = useState(false);
+  const [showMoreOptions, setShowMoreOptions] = useState(false);
+  
+  // Source resolution state — VidLink primary, VidSrc fallback
+  const [activeSource, setActiveSource] = useState<'vidlink' | 'vidsrc' | 'none'>('none');
+  const [resolveAttempt, setResolveAttempt] = useState(0); // bump to re-trigger resolution
   
   // Premium Features State
+  const [skipMarkers, setSkipMarkers] = useState<VidLinkSkipMarker[]>([]);
+  const skipMarkersRef = useRef<VidLinkSkipMarker[]>([]);
   const [showSkipIntro, setShowSkipIntro] = useState(false);
   const showSkipIntroRef = useRef(false);
   const [isNextEpisodeCountdown, setIsNextEpisodeCountdown] = useState(false);
@@ -172,37 +185,84 @@ export function ModernVideoPlayer({
 
     if (!tmdbId || !title) return;
 
-    // Enable the VidLink resolver WebView
-    console.log(`[Player] 🚀 Enabling VidLink resolver for: ${title} (TMDB: ${tmdbId})`);
+    // CRITICAL: Reset state for new episode/content to prevent stale resume/buffering
+    console.log(`[Player] 🚀 Starting stream resolution for: ${title} (TMDB: ${tmdbId}, S:${seasonNum} E:${episodeNum})`);
+    hasSeekedRef.current = false;       // Allow fresh resume lookup for this episode
+    lastSaveTimeRef.current = 0;        // Reset save throttle
+    currentUrlRef.current = '';          // Clear cached URL so replaceAsync fires
+    setInternalVideoUrl('');             // Clear old stream
+    setInternalHeaders(undefined);
+    setInternalTracks([]);
+    setCurrentTime(0);                  // Reset playback position display
+    setDuration(0);
+    progressPercentage.value = 0;
+    isNextEpisodeCountdownRef.current = false;
+    setIsNextEpisodeCountdown(false);
+    showSkipIntroRef.current = false;
+    setShowSkipIntro(false);
+    setSkipMarkers([]);
+    skipMarkersRef.current = [];
     setStatus('loading');
     setFetchError(false);
     setIsRateLimited(false);
+    // Start with VidLink as primary source
+    setActiveSource('vidlink');
     setVidlinkEnabled(true);
-  }, [tmdbId, episodeNum, seasonNum, videoUrl]);
+  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt]);
 
   // VidLink stream resolved callback
   const handleVidLinkResolved = useCallback((stream: VidLinkStream) => {
     console.log(`[Player] ✅ VidLink stream resolved: ${stream.url.substring(0, 80)}...`);
     setInternalVideoUrl(stream.url);
     setInternalHeaders(stream.headers);
-    // Convert VidLink captions to our track format
     const vidlinkTracks = stream.captions.map(c => ({
       file: c.url,
       label: c.language,
       kind: 'captions',
     }));
     setInternalTracks(vidlinkTracks);
+    
+    if (stream.markers) {
+      setSkipMarkers(stream.markers);
+      skipMarkersRef.current = stream.markers;
+    }
+    
     setFetchError(false);
     setIsRateLimited(false);
     setStatus('readyToPlay');
-    setVidlinkEnabled(false); // Disable resolver after success
+    setVidlinkEnabled(false);
+    setActiveSource('none');
   }, []);
 
   const handleVidLinkError = useCallback((error: string) => {
-    console.error(`[Player] ❌ VidLink error: ${error}`);
+    console.error(`[Player] ❌ VidLink failed: ${error} — falling back to VidSrc`);
+    setVidlinkEnabled(false);
+    // Don't set fetchError yet — try VidSrc fallback first
+    setActiveSource('vidsrc');
+  }, []);
+
+  // VidSrc fallback resolved callback
+  const handleVidSrcResolved = useCallback((stream: VidSrcStream) => {
+    console.log(`[Player] ✅ VidSrc fallback resolved: ${stream.url.substring(0, 80)}...`);
+    setInternalVideoUrl(stream.url);
+    setInternalHeaders(stream.headers);
+    const vidsrcTracks = stream.captions.map(c => ({
+      file: c.url,
+      label: c.language,
+      kind: 'captions',
+    }));
+    setInternalTracks(vidsrcTracks);
+    setFetchError(false);
+    setIsRateLimited(false);
+    setStatus('readyToPlay');
+    setActiveSource('none');
+  }, []);
+
+  const handleVidSrcError = useCallback((error: string) => {
+    console.error(`[Player] ❌ VidSrc fallback also failed: ${error}`);
     setFetchError(true);
     setStatus('error');
-    setVidlinkEnabled(false);
+    setActiveSource('none');
   }, []);
 
   // Handle Player Source Updates (when state changes)
@@ -268,6 +328,8 @@ export function ModernVideoPlayer({
   const lastSaveTimeRef = useRef(0);
   const hasSeekedRef = useRef(false);
 
+  const currentPlaybackTimeRef = useRef(0);
+
   const handleProgressUpdate = useCallback((current: number, playerDur: number) => {
     if (playerDur > 0 && playerDur !== duration) {
       setDuration(playerDur);
@@ -278,6 +340,7 @@ export function ModernVideoPlayer({
     if (!isScrubbing.current) {
       progressPercentage.value = (current / activeDur) * 100;
       setCurrentTime(current);
+      currentPlaybackTimeRef.current = current;
     }
 
     // Save watch progress every 3 minutes (180s) — same as TV app
@@ -299,16 +362,21 @@ export function ModernVideoPlayer({
           contentType || 'movie',
           current,
           activeDur,
-          selectedProfile?.id,
+          selectedProfile?.id || '',
           seasonNum,
           episodeNum
         );
       }
     }
 
-    // Skip Intro Logic (Mocked around 30s to 90s)
-    // Use refs to avoid stale closure — callback is memoized but state may be outdated
-    if (current > 30 && current < 90) {
+    // Skip Intro Logic
+    const introMarker = skipMarkersRef.current.find(m => m.type === 'intro');
+    // Intelligent marker check, fallback to 30-90s mock if stream has no markers
+    const isIntroActive = introMarker 
+      ? (current >= introMarker.start && current <= introMarker.end)
+      : (current > 30 && current < 90);
+
+    if (isIntroActive) {
       if (!showSkipIntroRef.current) {
         showSkipIntroRef.current = true;
         setShowSkipIntro(true);
@@ -321,10 +389,17 @@ export function ModernVideoPlayer({
     }
 
     // Auto-Play Next Episode logic
-    // Require a realistic duration (>60s) so it doesn't trigger immediately on load when duration is 0 (fallback 1)
+    // Require a realistic duration (>60s) so it doesn't trigger immediately on load when duration is 0
     if (contentType === 'tv' && onNextEpisode && activeDur > 60) {
+      const outroMarker = skipMarkersRef.current.find(m => m.type === 'outro');
       const remaining = activeDur - current;
-      if (remaining <= 20 && remaining > 0) {
+      
+      // If we have a genuine API outro marker, trigger there. Otherwise fallback to the last 20 seconds.
+      const isOutroActive = outroMarker
+         ? (current >= outroMarker.start && remaining > 0)
+         : (remaining <= 20 && remaining > 0);
+
+      if (isOutroActive) {
         if (!isNextEpisodeCountdownRef.current) {
           isNextEpisodeCountdownRef.current = true;
           setIsNextEpisodeCountdown(true);
@@ -376,24 +451,38 @@ export function ModernVideoPlayer({
   }, []);
   
   // Resume Playback Progress (same pattern as TV app)
+  // Now uses episode-specific lookup to avoid cross-episode position bleed
   useEffect(() => {
     async function checkHistory() {
       if (!tmdbId || hasSeekedRef.current) return;
       const id = tmdbId.toString();
       if (!id) return;
-      const historyItem = await WatchHistoryService.getProgress(id);
+      // Pass season/episode so we get the exact episode's progress, not a different episode
+      const historyItem = await WatchHistoryService.getProgress(
+        selectedProfile?.id || '', 
+        id, 
+        seasonNum, 
+        episodeNum
+      );
       if (historyItem && historyItem.currentTime > 5 && player) {
-        console.log(`[WatchHistory] Resuming from ${historyItem.currentTime}s`);
-        try {
-          player.currentTime = historyItem.currentTime;
-        } catch (e) {}
+        // Double-check: only resume if the history matches our current episode
+        const episodeMatches = contentType !== 'tv' || 
+          (historyItem.season === seasonNum && historyItem.episode === episodeNum);
+        if (episodeMatches) {
+          console.log(`[WatchHistory] Resuming S${seasonNum}E${episodeNum} from ${historyItem.currentTime}s`);
+          try {
+            player.currentTime = historyItem.currentTime;
+          } catch (e) {}
+        } else {
+          console.log(`[WatchHistory] Episode mismatch — starting from beginning`);
+        }
       }
       hasSeekedRef.current = true;
     }
     if (status === 'readyToPlay' && !hasSeekedRef.current) {
        checkHistory();
     }
-  }, [status, tmdbId, player]);
+  }, [status, tmdbId, player, seasonNum, episodeNum]);
 
   // NOTE: Separate 10s save progress interval removed.
   // Watch history is now saved every 180s inside handleProgressUpdate,
@@ -426,8 +515,9 @@ export function ModernVideoPlayer({
 
     return () => {
       // Final Save on exit/episode switch
-      const current = player.currentTime || 0;
-      const playerDur = player.duration || 0;
+      // Use ref and state to avoid accessing player properties after it's released
+      const current = currentPlaybackTimeRef.current || 0;
+      const playerDur = duration || 0;
       if (current > 5 && playerDur > 0) {
         const id = tmdbId?.toString();
         if (id) {
@@ -436,7 +526,7 @@ export function ModernVideoPlayer({
             contentType || 'movie',
             current,
             playerDur,
-            selectedProfile?.id,
+            selectedProfile?.id || '',
             seasonNum,
             episodeNum
           );
@@ -444,7 +534,7 @@ export function ModernVideoPlayer({
       }
       subscriptions.forEach(sub => sub.remove());
     };
-  }, [player, handleProgressUpdate]);
+  }, [player, handleProgressUpdate, duration]);
 
   // Loading Screen Crossfade Animation
   useEffect(() => {
@@ -702,7 +792,7 @@ export function ModernVideoPlayer({
   return (
     <GestureHandlerRootView style={styles.container}>
       <View style={styles.container}>
-        {/* VidLink Hidden Resolver WebView */}
+        {/* VidLink Primary Resolver WebView */}
         <VidLinkResolver
           tmdbId={tmdbId || ''}
           type={contentType || 'movie'}
@@ -711,6 +801,17 @@ export function ModernVideoPlayer({
           enabled={vidlinkEnabled}
           onStreamResolved={handleVidLinkResolved}
           onError={handleVidLinkError}
+        />
+
+        {/* VidSrc Fallback Resolver WebView */}
+        <VidSrcResolver
+          tmdbId={tmdbId || ''}
+          type={contentType || 'movie'}
+          season={seasonNum}
+          episode={episodeNum}
+          enabled={activeSource === 'vidsrc'}
+          onStreamResolved={handleVidSrcResolved}
+          onError={handleVidSrcError}
         />
 
         <Animated.View style={[StyleSheet.absoluteFill, animatedVideoStyle]}>
@@ -822,7 +923,18 @@ export function ModernVideoPlayer({
             <>
               <NetflixLoader size={60} withPercentage={true} />
               {!internalVideoUrl ? (
-                <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>Resolving Stream...</Text>
+                <>
+                  <Text style={[styles.loadingStatusText, { marginTop: 30, fontSize: 18, fontWeight: '600', color: 'white' }]}>
+                    {contentType === 'tv' && episodeNum
+                      ? `Getting Episode ${episodeNum} ready...`
+                      : 'Getting your movie ready...'}
+                  </Text>
+                  <Text style={[styles.loadingStatusText, { marginTop: 10, fontSize: 13 }]}>
+                    {activeSource === 'vidlink' ? 'Trying VidLink...' 
+                     : activeSource === 'vidsrc' ? 'Trying VidSrc fallback...' 
+                     : 'Resolving stream...'}
+                  </Text>
+                </>
               ) : (
                 <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>Buffering...</Text>
               )}
@@ -847,8 +959,16 @@ export function ModernVideoPlayer({
                   : "Please try again later.")}
             </Text>
             <View style={styles.errorActions}>
-              <Pressable style={styles.retryBtn} onPress={onClose}>
-                <Text style={styles.retryText}>Go Back</Text>
+              <Pressable style={styles.retryBtn} onPress={() => {
+                // Re-trigger resolution from scratch
+                setFetchError(false);
+                setIsRateLimited(false);
+                setResolveAttempt(prev => prev + 1);
+              }}>
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+              <Pressable style={[styles.retryBtn, { backgroundColor: '#333' }]} onPress={onClose}>
+                <Text style={[styles.retryText, { color: 'white' }]}>Go Back</Text>
               </Pressable>
             </View>
           </View>
@@ -958,12 +1078,29 @@ export function ModernVideoPlayer({
             </View>
 
             {/* Skip Intro Button */}
-            {currentTime > 10 && currentTime < 60 && !isLocked && (
-              <View style={styles.skipIntroContainer}>
-                <Pressable style={styles.skipIntroBtn} onPress={() => skip(70 - currentTime)}>
+            {showSkipIntro && !isLocked && (
+              <Animated.View 
+                entering={FadeIn.duration(400)} 
+                exiting={FadeOut.duration(400)}
+                style={styles.skipIntroContainer}
+              >
+                <Pressable 
+                  style={styles.skipIntroBtn}
+                  onPress={() => {
+                    const introMarker = skipMarkers.find(m => m.type === 'intro');
+                    if (introMarker && player) {
+                      player.currentTime = introMarker.end;
+                    } else {
+                      skip(90 - currentTime); // Fallback to 90s mark
+                    }
+                    setShowSkipIntro(false);
+                    showSkipIntroRef.current = false;
+                    resetHideTimer();
+                  }}
+                >
                   <Text style={styles.skipIntroText}>Skip Intro</Text>
                 </Pressable>
-              </View>
+              </Animated.View>
             )}
 
             {/* Bottom Section */}
@@ -991,38 +1128,6 @@ export function ModernVideoPlayer({
                 </View>
 
                 <View style={styles.bottomIcons}>
-                  <Pressable onPress={() => {
-                    const speeds = [0.75, 1, 1.25, 1.5];
-                    const next = speeds[(speeds.indexOf(playbackSpeed) + 1) % speeds.length];
-                    setPlaybackSpeed(next);
-                    player.playbackRate = next;
-                    resetHideTimer();
-                  }} style={styles.bottomIconBtn}>
-                    <Ionicons name="speedometer-outline" size={26} color="white" />
-                    <Text style={styles.bottomIconLabel}>Speed ({playbackSpeed}x)</Text>
-                  </Pressable>
-                  
-                  <Pressable onPress={() => setIsLocked(true)} style={styles.bottomIconBtn}>
-                    <Ionicons name="lock-open-outline" size={26} color="white" />
-                    <Text style={styles.bottomIconLabel}>Lock</Text>
-                  </Pressable>
-                  
-                  <Pressable onPress={() => {
-                    videoViewRef.current?.startPictureInPicture?.();
-                    resetHideTimer();
-                  }} style={styles.bottomIconBtn}>
-                    <MaterialIcons name="picture-in-picture-alt" size={26} color="white" />
-                    <Text style={styles.bottomIconLabel}>PiP Mode</Text>
-                  </Pressable>
-
-                  <Pressable onPress={() => {
-                    setResizeMode(prev => prev === 'contain' ? 'cover' : 'contain');
-                    resetHideTimer();
-                  }} style={styles.bottomIconBtn}>
-                    <Ionicons name={resizeMode === 'contain' ? "expand-outline" : "contract-outline"} size={26} color="white" />
-                    <Text style={styles.bottomIconLabel}>Fit / Fill</Text>
-                  </Pressable>
-
                   {episodes && episodes.length > 0 && (
                     <Pressable onPress={() => setShowEpisodePicker(true)} style={styles.bottomIconBtn}>
                       <MaterialCommunityIcons name="layers-outline" size={26} color="white" />
@@ -1035,13 +1140,11 @@ export function ModernVideoPlayer({
                     <Text style={styles.bottomIconLabel}>Audio & Subtitles</Text>
                   </Pressable>
 
-                  {episodes && episodes.length > 0 && (
+                  {episodes && episodes.length > 0 && onNextEpisode && (
                     <Pressable 
                       onPress={() => {
-                        if (onNextEpisode) {
-                          onNextEpisode();
-                          resetHideTimer();
-                        }
+                        onNextEpisode();
+                        resetHideTimer();
                       }} 
                       style={styles.bottomIconBtn}
                     >
@@ -1049,6 +1152,11 @@ export function ModernVideoPlayer({
                       <Text style={styles.bottomIconLabel}>Next Ep.</Text>
                     </Pressable>
                   )}
+
+                  <Pressable onPress={() => { setShowMoreOptions(true); resetHideTimer(); }} style={styles.bottomIconBtn}>
+                    <Ionicons name="ellipsis-horizontal-circle-outline" size={26} color="white" />
+                    <Text style={styles.bottomIconLabel}>More</Text>
+                  </Pressable>
                 </View>
               </View>
             )}
@@ -1188,6 +1296,81 @@ export function ModernVideoPlayer({
                 </View>
               </View>
             </Animated.View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* More Options Bottom Sheet */}
+      <Modal
+        visible={showMoreOptions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMoreOptions(false)}
+      >
+        <Pressable style={styles.moreOptionsOverlay} onPress={() => setShowMoreOptions(false)}>
+          <Pressable style={styles.moreOptionsSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.moreOptionsHandle} />
+            <Text style={styles.moreOptionsTitle}>More Options</Text>
+
+            <Pressable 
+              style={styles.moreOptionRow} 
+              onPress={() => {
+                const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+                const next = speeds[(speeds.indexOf(playbackSpeed) + 1) % speeds.length];
+                setPlaybackSpeed(next);
+                player.playbackRate = next;
+              }}
+            >
+              <Ionicons name="speedometer-outline" size={24} color="white" />
+              <View style={styles.moreOptionInfo}>
+                <Text style={styles.moreOptionLabel}>Playback Speed</Text>
+                <Text style={styles.moreOptionValue}>{playbackSpeed}x</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.4)" />
+            </Pressable>
+
+            <Pressable 
+              style={styles.moreOptionRow} 
+              onPress={() => {
+                setIsLocked(true);
+                setShowMoreOptions(false);
+              }}
+            >
+              <Ionicons name="lock-closed-outline" size={24} color="white" />
+              <View style={styles.moreOptionInfo}>
+                <Text style={styles.moreOptionLabel}>Lock Screen</Text>
+                <Text style={styles.moreOptionValue}>Disables touch controls</Text>
+              </View>
+            </Pressable>
+
+            <Pressable 
+              style={styles.moreOptionRow} 
+              onPress={() => {
+                videoViewRef.current?.startPictureInPicture?.();
+                setShowMoreOptions(false);
+              }}
+            >
+              <MaterialIcons name="picture-in-picture-alt" size={24} color="white" />
+              <View style={styles.moreOptionInfo}>
+                <Text style={styles.moreOptionLabel}>Picture in Picture</Text>
+                <Text style={styles.moreOptionValue}>Continue watching in a mini player</Text>
+              </View>
+            </Pressable>
+
+            <Pressable 
+              style={styles.moreOptionRow} 
+              onPress={() => {
+                setResizeMode(prev => prev === 'contain' ? 'cover' : 'contain');
+              }}
+            >
+              <Ionicons name={resizeMode === 'contain' ? "expand-outline" : "contract-outline"} size={24} color="white" />
+              <View style={styles.moreOptionInfo}>
+                <Text style={styles.moreOptionLabel}>Screen Fit</Text>
+                <Text style={styles.moreOptionValue}>{resizeMode === 'contain' ? 'Fit to Screen' : 'Fill Screen'}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.4)" />
+            </Pressable>
+
           </Pressable>
         </Pressable>
       </Modal>
@@ -1670,5 +1853,59 @@ const styles = StyleSheet.create({
     color: 'black',
     fontSize: 14,
     fontWeight: 'bold',
-  }
+  },
+  // More Options Bottom Sheet
+  moreOptionsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  moreOptionsSheet: {
+    backgroundColor: 'rgba(30,30,30,0.98)',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+    paddingTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  moreOptionsHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  moreOptionsTitle: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 20,
+  },
+  moreOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+    gap: 16,
+  },
+  moreOptionInfo: {
+    flex: 1,
+  },
+  moreOptionLabel: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  moreOptionValue: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 13,
+    marginTop: 2,
+  },
 });

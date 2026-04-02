@@ -1,0 +1,18 @@
+[
+  {
+    "role": "user",
+    "content": "hello",
+    "turn": 1,
+    "type": "message",
+    "toolName": null,
+    "timestamp": 1774976155520
+  },
+  {
+    "role": "agent",
+    "content": "Not logged in · Please run /login",
+    "turn": 2,
+    "type": "message",
+    "toolName": null,
+    "timestamp": 1774976167979
+  }
+]

@@ -40,7 +40,10 @@ app-example
 
 # generated native folders
 /ios
-/android
+# /android
 
 # agent files
 puter/
+
+# EAS Credentials
+credentials/

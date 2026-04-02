@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, StyleSheet, Text, ScrollView, Image, Pressable, FlatList, StatusBar } from 'react-native';
 import { COLORS, SPACING } from '../../constants/theme';
-import { fetchUpcoming, getBackdropUrl, fetchTrending } from '../../services/tmdb';
+import { fetchNewAndHot, getBackdropUrl, fetchTrending } from '../../services/tmdb';
 import { NetflixLoader } from '../../components/NetflixLoader';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,7 +32,7 @@ export default function NewAndHotScreen() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await fetchUpcoming();
+        const data = await fetchNewAndHot();
         setUpcoming(data);
       } catch (error) {
         console.error("Error fetching upcoming movies:", error);
@@ -174,6 +174,18 @@ const NewAndHotItem = ({ item }: { item: any }) => {
     }
   };
 
+  const getComingSoonText = () => {
+    const today = new Date('2026-04-02');
+    const diffTime = releaseDate.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays <= 0) return 'Coming Today';
+    if (diffDays > 0 && diffDays <= 7) {
+      return `Coming ${releaseDate.toLocaleDateString('default', { weekday: 'long' })}`;
+    }
+    return `Coming ${month} ${day}`;
+  };
+
   return (
     <View style={styles.itemContainer}>
       <View style={styles.dateContainer}>
@@ -213,7 +225,7 @@ const NewAndHotItem = ({ item }: { item: any }) => {
           </View>
         </View>
 
-        <Text style={styles.comingSoonText}>Coming {month} {day}</Text>
+        <Text style={styles.comingSoonText}>{getComingSoonText()}</Text>
         <Text style={styles.synopsis} numberOfLines={3}>{item.overview}</Text>
         <Text style={styles.tags}>Slick • Dark • Thriller</Text>
       </View>

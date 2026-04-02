@@ -9,12 +9,12 @@ import {
   Pressable
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { searchMulti, getImageUrl, fetchTrending } from '../../services/tmdb';
+import { SearchService } from '../../services/SearchService';
+import { useProfile } from '../../context/ProfileContext';
 import TvPosterCard from '../../components/TvPosterCard';
 import TvKeyboard from '../../components/TvKeyboard';
-import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useProfile } from '../../context/ProfileContext';
 
 export default function SearchScreen() {
   const router = useRouter();
@@ -24,6 +24,7 @@ export default function SearchScreen() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [trending, setTrending] = useState<any[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   React.useEffect(() => {
@@ -33,6 +34,21 @@ export default function SearchScreen() {
     }
     loadTrending();
   }, [isKids]);
+
+  // Load Recent Searches
+  React.useEffect(() => {
+    if (!selectedProfile) return;
+    
+    SearchService.getRecentSearchesLocal(selectedProfile.id).then(setRecentSearches);
+
+    const unsubscribe = SearchService.subscribeToRecentSearches(selectedProfile.id, (queries) => {
+      if (queries && queries.length > 0) {
+        setRecentSearches(queries);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile]);
 
   const handleKeyPress = (key: string) => {
     const newQuery = query + key;
@@ -57,6 +73,10 @@ export default function SearchScreen() {
       try {
         const data = await searchMulti(text, isKids);
         setResults(data);
+        
+        if (data.length > 0 && text.length > 3) {
+           SearchService.saveSearch(selectedProfile?.id || '', text);
+        }
       } catch (err) {
         console.error(err);
       } finally {
@@ -84,6 +104,32 @@ export default function SearchScreen() {
             onBackspace={handleBackspace}
             onClear={handleClear}
           />
+
+          {/* Recent Searches (TV specific layout) */}
+          {recentSearches.length > 0 && !query && (
+            <View style={styles.recentContainer}>
+               <View style={styles.recentHeader}>
+                 <Text style={styles.recentTitle}>Recents</Text>
+                 <Pressable onPress={() => SearchService.clearSearchHistory(selectedProfile?.id || '')}>
+                   <Text style={styles.clearText}>Clear</Text>
+                 </Pressable>
+               </View>
+               <View style={styles.recentList}>
+                 {recentSearches.slice(0, 5).map((q, i) => (
+                   <Pressable 
+                     key={i} 
+                     style={({ focused }) => [styles.recentBtn, focused && styles.focusedRecent]}
+                     onPress={() => {
+                        setQuery(q);
+                        debouncedSearch(q);
+                     }}
+                   >
+                     <Text style={styles.recentText} numberOfLines={1}>{q}</Text>
+                   </Pressable>
+                 ))}
+               </View>
+            </View>
+          )}
 
           <View style={styles.genreList}>
             {GENRES.map((genre) => (
@@ -174,8 +220,42 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginLeft: 15,
   },
+  recentContainer: {
+    marginTop: 20,
+  },
+  recentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  recentTitle: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+  },
+  clearText: {
+    color: 'rgba(255,255,255,0.3)',
+    fontSize: 14,
+  },
+  recentList: {
+    gap: 8,
+  },
+  recentBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  focusedRecent: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  recentText: {
+    color: 'white',
+    fontSize: 18,
+  },
   genreList: {
-    marginTop: 40,
+    marginTop: 30,
     gap: 10,
   },
   genreButton: {

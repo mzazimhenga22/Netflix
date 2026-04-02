@@ -9,10 +9,10 @@ export interface SubscriptionStatus {
 }
 
 export const PLAN_PROFILE_LIMITS: Record<string, number> = {
-  'basic': 2,
-  'standard': 4,
+  'basic': 5,
+  'standard': 5,
   'premium': 5,
-  'none': 2, // default free/expired fallback
+  'none': 5,
 };
 
 export const SubscriptionService = {
@@ -20,15 +20,27 @@ export const SubscriptionService = {
     const uid = auth.currentUser?.uid;
     if (!uid) return { status: 'none' };
     
-    try {
-      const snap = await getDoc(doc(db, 'users', uid, 'subscription', 'details'));
-      if (snap.exists()) {
-        return snap.data() as SubscriptionStatus;
+    const fetchSub = async (attempt = 1): Promise<SubscriptionStatus> => {
+      try {
+        const snap = await getDoc(doc(db, 'users', uid, 'subscription', 'details'));
+        if (snap.exists()) {
+          return snap.data() as SubscriptionStatus;
+        }
+      } catch (e: any) {
+        // If it's a connectivity error and we haven't retried yet, wait a bit and try again
+        if (e?.code === 'unavailable' || e?.message?.includes('offline')) {
+          if (attempt < 2) {
+            console.warn(`[SubscriptionService] Firestore unavailable, retrying in 2s... (Attempt ${attempt})`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            return fetchSub(attempt + 1);
+          }
+        }
+        console.error('[SubscriptionService] Error getting sub:', e);
       }
-    } catch (e) {
-      console.error('[SubscriptionService] Error getting sub:', e);
-    }
-    return { status: 'none' };
+      return { status: 'none' };
+    };
+
+    return fetchSub();
   },
 
   listenToSubscription: (callback: (sub: SubscriptionStatus) => void) => {

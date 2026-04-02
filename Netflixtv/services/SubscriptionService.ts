@@ -2,17 +2,18 @@ import { db, auth } from './firebase';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 
 export interface SubscriptionStatus {
-  status: 'active' | 'past_due' | 'none';
+  status: 'active' | 'past_due' | 'none' | 'error' | 'loading';
   planId?: string;
   planName?: string;
   expiresAt?: number;
+  errorMessage?: string;
 }
 
 export const PLAN_PROFILE_LIMITS: Record<string, number> = {
-  'basic': 2,
-  'standard': 4,
+  'basic': 5,
+  'standard': 5,
   'premium': 5,
-  'none': 2, // default free/expired fallback
+  'none': 5,
 };
 
 export const SubscriptionService = {
@@ -20,15 +21,34 @@ export const SubscriptionService = {
     const uid = auth.currentUser?.uid;
     if (!uid) return { status: 'none' };
     
-    try {
-      const snap = await getDoc(doc(db, 'users', uid, 'subscription', 'details'));
-      if (snap.exists()) {
-        return snap.data() as SubscriptionStatus;
+    const fetchSub = async (attempt = 1): Promise<SubscriptionStatus> => {
+      try {
+        const snap = await getDoc(doc(db, 'users', uid, 'subscription', 'details'));
+        if (snap.exists()) {
+          return { ...(snap.data() as SubscriptionStatus), status: snap.data().status || 'active' };
+        }
+        return { status: 'none' };
+      } catch (e: any) {
+        console.error(`[SubscriptionService] Error (Attempt ${attempt}):`, e);
+        
+        // Connectivity error handling
+        const isNetworkError = e?.code === 'unavailable' || e?.message?.toLowerCase().includes('offline') || e?.message?.toLowerCase().includes('network');
+        
+        if (isNetworkError && attempt < 3) {
+          const delay = attempt * 2000;
+          console.warn(`[SubscriptionService] Network error, retrying in ${delay/1000}s...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return fetchSub(attempt + 1);
+        }
+        
+        return { 
+          status: 'error', 
+          errorMessage: isNetworkError ? 'Network connectivity issue. Please check your internet.' : 'Failed to load subscription details.' 
+        };
       }
-    } catch (e) {
-      console.error('[SubscriptionService] Error getting sub:', e);
-    }
-    return { status: 'none' };
+    };
+
+    return fetchSub();
   },
 
   listenToSubscription: (callback: (sub: SubscriptionStatus) => void) => {
@@ -38,13 +58,42 @@ export const SubscriptionService = {
       return () => {};
     }
 
-    return onSnapshot(doc(db, 'users', uid, 'subscription', 'details'), (snap) => {
-      if (snap.exists()) {
-        callback(snap.data() as SubscriptionStatus);
-      } else {
-        callback({ status: 'none' });
+    // Initial loading state
+    callback({ status: 'loading' });
+
+    // Timeout to prevent infinite loading on broken networks
+    const timeout = setTimeout(() => {
+      callback({ 
+        status: 'error', 
+        errorMessage: 'Connection timed out. We are still trying to verify your subscription...' 
+      });
+    }, 15000);
+
+    return onSnapshot(doc(db, 'users', uid, 'subscription', 'details'), 
+      (snap) => {
+        // Clear timeout once we get ANY non-error result from Firestore
+        clearTimeout(timeout);
+        
+        if ((snap as any).exists()) {
+          callback({ ...(snap.data() as SubscriptionStatus), status: snap.data().status || 'active' });
+        } else {
+          // IMPORTANT: If snap doesn't exist but is from cache, it might just be 
+          // that the cache hasn't synced yet. We WAIT for server confirmation 
+          // unless the server itself says the document is missing.
+          if (!(snap as any).metadata.fromCache) {
+            callback({ status: 'none' });
+          } else {
+            // Document missing from cache, stay in loading/error until server confirms
+            callback({ status: 'loading' });
+          }
+        }
+      },
+      (error) => {
+        clearTimeout(timeout);
+        console.error('[SubscriptionService] Snapshot error:', error);
+        callback({ status: 'error', errorMessage: 'Network synchronization failed. Please check your internet.' });
       }
-    });
+    );
   },
 
   activateSubscription: async (planId: string, planName: string) => {

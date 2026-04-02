@@ -1,30 +1,30 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TextInput, Image, Pressable, ScrollView, Dimensions, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Image, Pressable, ScrollView, useWindowDimensions, FlatList, ActivityIndicator } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../constants/theme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { fetchPopular, getImageUrl, getBackdropUrl, searchMulti } from '../services/tmdb';
+import { SearchService } from '../services/SearchService';
 import { NetflixLoader } from '../components/NetflixLoader';
 import { useProfile } from '../context/ProfileContext';
 import Animated, { 
   FadeIn, 
-  FadeInDown, 
-  useAnimatedStyle, 
   useSharedValue, 
   withSpring,
-  interpolate,
-  Extrapolate
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
-const { width, height } = Dimensions.get('window');
+// Removed static Dimensions measurement to prevent orientation-change distortion
+// useWindowDimensions() is used inside the component instead.
 
 export default function SearchScreen() {
+  const { width, height } = useWindowDimensions();
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
   const [topSearches, setTopSearches] = useState<any[]>([]);
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const searchInputRef = useRef<TextInput>(null);
   
@@ -32,6 +32,23 @@ export default function SearchScreen() {
   const isKids = selectedProfile?.isKids || false;
   
   const searchBarWidth = useSharedValue(width - 32);
+
+  // Load Recent Searches
+  useEffect(() => {
+    if (!selectedProfile) return;
+    
+    // Initial load from local storage
+    SearchService.getRecentSearchesLocal(selectedProfile.id).then(setRecentSearches);
+
+    // Real-time sync from Firestore
+    const unsubscribe = SearchService.subscribeToRecentSearches(selectedProfile.id, (queries) => {
+      if (queries && queries.length > 0) {
+        setRecentSearches(queries);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile]);
 
   useEffect(() => {
     const loadTopSearches = async () => {
@@ -48,10 +65,15 @@ export default function SearchScreen() {
         const results = await searchMulti(searchQuery, isKids);
         setSearchResults(results);
         setLoading(false);
+        
+        // Save to recent searches if result is found (Netflix-like behavior)
+        if (results.length > 0 && searchQuery.length > 3) {
+           SearchService.saveSearch(selectedProfile?.id || '', searchQuery);
+        }
       } else {
         setSearchResults([]);
       }
-    }, 500);
+    }, 800);
 
     return () => clearTimeout(delayDebounceFn);
   }, [searchQuery, isKids]);
@@ -83,6 +105,12 @@ export default function SearchScreen() {
             onChangeText={setSearchQuery}
             onFocus={handleSearchFocus}
             selectionColor="#e50914"
+            returnKeyType="search"
+            onSubmitEditing={() => {
+              if (searchQuery.trim()) {
+                SearchService.saveSearch(selectedProfile?.id || '', searchQuery);
+              }
+            }}
           />
           {searchQuery.length > 0 ? (
             <Pressable onPress={() => {
@@ -98,7 +126,7 @@ export default function SearchScreen() {
           )}
         </Animated.View>
         
-        {searchQuery.length > 0 || searchBarWidth.value < width - 40 ? (
+        {searchQuery.length > 0 || (searchBarWidth.value && searchBarWidth.value < width - 40) ? (
           <Pressable onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             handleCancel();
@@ -111,6 +139,29 @@ export default function SearchScreen() {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {!searchQuery ? (
           <>
+            {/* Recent Searches Section */}
+            {recentSearches.length > 0 && (
+              <View style={[styles.section, { marginBottom: 20 }]}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Recent Searches</Text>
+                  <Pressable onPress={() => SearchService.clearSearchHistory(selectedProfile?.id || '')}>
+                     <Text style={styles.clearText}>Clear</Text>
+                  </Pressable>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingLeft: 16, gap: 8 }}>
+                  {recentSearches.map((query, index) => (
+                    <Pressable 
+                      key={index} 
+                      style={styles.recentItem}
+                      onPress={() => setSearchQuery(query)}
+                    >
+                      <Text style={styles.recentItemText}>{query}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
             {/* Top Searches List */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Top Searches</Text>
@@ -158,7 +209,7 @@ export default function SearchScreen() {
                   <Animated.View 
                     key={item.id} 
                     entering={FadeIn.delay(index * 30)}
-                    style={styles.gridItem}
+                    style={[styles.gridItem, { width: (width - 32) / 3, aspectRatio: 2/3 }]}
                   >
                     <Pressable onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -224,12 +275,32 @@ const styles = StyleSheet.create({
   section: {
     marginTop: 10,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingRight: 16,
+  },
+  clearText: {
+    color: '#b3b3b3',
+    fontSize: 14,
+  },
   sectionTitle: {
     color: '#fff',
     fontSize: 20,
     fontWeight: 'bold',
     marginBottom: 8,
     paddingHorizontal: 16,
+  },
+  recentItem: {
+    backgroundColor: '#333',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  recentItemText: {
+    color: '#fff',
+    fontSize: 14,
   },
   searchItem: {
     flexDirection: 'row',
@@ -264,8 +335,6 @@ const styles = StyleSheet.create({
     gap: 8, // Tighter gap
   },
   gridItem: {
-    width: (width - 32) / 3, // Compute carefully for 3 columns with 8px gap
-    aspectRatio: 2/3,
     borderRadius: 4,
     overflow: 'hidden',
     backgroundColor: '#1a1a1a',

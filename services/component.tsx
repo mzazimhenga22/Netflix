@@ -4,7 +4,7 @@ import {
   initializeAuth, 
   getReactNativePersistence 
 } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
@@ -33,7 +33,10 @@ if (Platform.OS !== 'web') {
   auth = getAuth(app);
 }
 
-const db = getFirestore(app);
+// Fix "WebChannelConnection RPC 'Listen' stream transport errored" by forcing long polling
+const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true
+});
 const storage = getStorage(app);
 
 export { app, auth, db, storage };

@@ -32,9 +32,12 @@ const ExpandingRow = React.memo(({ title, data, onSelect, onFocusChange }: Expan
       {/* Jetpack Compose Native TV Row via ViewManager */}
       <NativeTvRow
         data={data.map(item => ({ ...item, id: String(item.id) }))}
-        style={{ width: '100%', height: 260, marginTop: 10 }}
+        style={{ width: '100%', height: 320, marginTop: 10 }}
         onSelect={(e) => {
-          onSelect(Number(e.nativeEvent.id), e.nativeEvent.mediaType);
+          const id = Number(e.nativeEvent.id);
+          const mediaType = e.nativeEvent.mediaType;
+          console.log(`[ExpandingRow] onSelect → id=${id} type=${mediaType}`);
+          onSelect(id, mediaType);
         }}
         onFocusChange={(e) => {
           const item = data.find(i => String(i.id) === String(e.nativeEvent.id));

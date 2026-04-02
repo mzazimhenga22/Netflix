@@ -3,7 +3,7 @@ import { View, StyleSheet, FlatList, ActivityIndicator, Text } from 'react-nativ
 import { fetchPopular, fetchTopRated, fetchDiscoverByGenre, getImageUrl, getBackdropUrl, getLogoUrl, fetchMovieImages } from '../../services/tmdb';
 import { useRouter } from 'expo-router';
 import { useProfile } from '../../context/ProfileContext';
-import HomeHero from '../../components/HomeHero';
+import NativeHeroBanner from '../../components/NativeHeroBanner';
 import ColorExtractor from '../../components/ColorExtractor';
 import ExpandingRow from '../../components/ExpandingRow';
 import TvCategoryPills from '../../components/TvCategoryPills';
@@ -118,7 +118,7 @@ export default function ShowsScreen() {
     <>
       <Animated.View key={heroMovie?.id} entering={FadeIn.duration(1000)}>
         {heroMovie && (
-          <HomeHero
+          <NativeHeroBanner
             title={heroMovie.name}
             description={heroMovie.overview}
             imageUrl={getBackdropUrl(heroMovie.backdrop_path) || ''}

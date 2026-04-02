@@ -12,7 +12,6 @@
       ],
       [
         "@react-native-tvos/config-tv",
-
         {
           "androidTVBanner": "./assets/logo.png",
           "appleTVImages": {
@@ -42,9 +41,8 @@
     "userInterfaceStyle": "automatic",
     "extra": {
       "eas": {
-        "projectId": "8ed408dc-3d83-427f-9c20-5dd1624797fd"
+        "projectId": "e36af8cd-71ba-4856-958d-8d87c59f5d51"
       }
-    },
-    "owner": "netflixclone"
+    }
   }
 }

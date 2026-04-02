@@ -24,13 +24,13 @@ const Ribbon = ({
   delay = 0, 
   duration = 800, 
   isDiagonal = false,
-  rotation = '0deg'
+  skewX = '0deg'
 }: { 
   style?: any, 
   delay?: number, 
   duration?: number, 
   isDiagonal?: boolean,
-  rotation?: string
+  skewX?: string
 }) => {
   const progress = useSharedValue(0);
   const glowPos = useSharedValue(-1);
@@ -52,9 +52,9 @@ const Ribbon = ({
     const opacity = interpolate(progress.value, [0, 0.2], [0, 1]);
     
     return {
-      height: isDiagonal ? '118%' : '100%', 
+      height: '100%', 
       transform: [
-        { rotate: rotation },
+        { skewX },
         { scaleY },
         { translateY: isDiagonal ? 0 : (1 - scaleY) * (N_HEIGHT / 2) * (style?.bottom === 0 ? 1 : -1) }
       ],
@@ -146,11 +146,11 @@ export function SplashAnimation({ onFinish }: { onFinish: () => void }) {
         {/* Diagonal Ribbon (Middle) */}
         <Ribbon 
           isDiagonal 
-          rotation="-32deg"
+          skewX="-26.565deg"
           style={{ 
-            left: 19.5, 
-            top: -15,
-            width: RIBBON_WIDTH + 2,
+            left: 40, 
+            top: 0,
+            width: RIBBON_WIDTH,
             zIndex: 2,
             shadowColor: '#000',
             shadowOffset: { width: 0, height: 0 },

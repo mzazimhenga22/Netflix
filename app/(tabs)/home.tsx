@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, StyleSheet, Text, Pressable, Dimensions, Modal, FlatList, Image as RNImage, ScrollView } from 'react-native';
+import { View, StyleSheet, Text, Pressable, useWindowDimensions, Modal, FlatList, Image as RNImage, ScrollView, NativeModules, Image } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
+import { NativeHeroCard } from '../../components/NativeHeroCard';
+import { MyListService } from '../../services/MyListService';
 import { NetflixHero } from '../../components/NetflixHero';
 import { HorizontalCarousel } from '../../components/HorizontalCarousel';
 import { LazyCarouselRow } from '../../components/LazyCarouselRow';
@@ -59,6 +61,27 @@ const CATEGORIES = [
   'Reality TV', 'Romance', 'Sci-Fi', 'Stand-Up Comedy', 'Thriller'
 ];
 
+const GENRE_MAP: Record<string, number> = {
+  'Action': 28,
+  'Anime': 16,
+  'Award-Winning': 18, // Drama mapping
+  'Comedies': 35,
+  'Documentaries': 99,
+  'Dramas': 18,
+  'Fantasy': 14,
+  'Horror': 27,
+  'International': 10751, // Family fallback
+  'Kids & Family': 10751,
+  'Music & Musicals': 10402,
+  'Reality TV': 10770, // TV Movie mapping
+  'Romance': 10749,
+  'Sci-Fi': 878,
+  'Stand-Up Comedy': 35, // Comedy mapping
+  'Thriller': 53
+};
+
+const { MoviesModule } = NativeModules;
+
 const MOCK_GAMES = [
   { id: 'g1', title: 'GTA: San Andreas', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co5z8n.jpg', type: 'game' },
   { id: 'g2', title: 'Hades', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1tms.jpg', type: 'game' },
@@ -68,14 +91,16 @@ const MOCK_GAMES = [
   { id: 'g6', title: 'Valiant Hearts', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1w50.jpg', type: 'game' },
 ];
 
-const { height, width } = Dimensions.get('window');
+// Removed static Dimensions measurement to prevent orientation-change distortion;
+// using useWindowDimensions() inside components instead.
 
-const HERO_H = width * 1.2;
+const HERO_H = 720;
 
 // We use an Animated.FlatList
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
 
 export default function HomeScreen() {
+  const { width, height } = useWindowDimensions();
   const router = useRouter();
   const { selectedProfile } = useProfile();
   const { isTransitioning } = useTransition();
@@ -96,6 +121,7 @@ export default function HomeScreen() {
   const snapPoints = useMemo(() => ['40%'], []);
   const [isCasting, setIsCasting] = useState(false);
   const [activeDevice, setActiveDevice] = useState<string | null>(null);
+  const [heroIsInList, setHeroIsInList] = useState(false);
 
   const handleCastPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -188,9 +214,15 @@ export default function HomeScreen() {
     try {
       const type = filter === 'home' ? 'all' : (filter === 'tv' ? 'tv' : 'movie');
       const safeType = type === 'all' ? 'movie' : type;
-      const trendingData = isKids 
-        ? await fetchDiscoverByGenre(safeType as any, 10751, isKids) // Family genre fallback
-        : await fetchTrending(type as any, isKids);
+      
+      let trendingData;
+      if (selectedCategory && GENRE_MAP[selectedCategory]) {
+        trendingData = await fetchDiscoverByGenre(safeType as any, GENRE_MAP[selectedCategory], isKids);
+      } else {
+        trendingData = isKids 
+          ? await fetchDiscoverByGenre(safeType as any, 10751, isKids) 
+          : await fetchTrending(type as any, isKids);
+      }
 
       const formatData = (items: any[]) => items.map((item: any) => ({
         id: item.id.toString(),
@@ -198,8 +230,9 @@ export default function HomeScreen() {
         imageUrl: getImageUrl(item.poster_path),
         backdropUrl: getBackdropUrl(item.backdrop_path),
         synopsis: item.overview,
-        categories: ['Trending'], 
+        categories: selectedCategory ? [selectedCategory, 'Trending'] : ['Trending'], 
         type: item.media_type || (item.title ? 'movie' : 'tv'),
+        genre_ids: item.genre_ids
       }));
 
       setTrending(formatData(trendingData));
@@ -281,11 +314,36 @@ export default function HomeScreen() {
     categories: selectedCategory ? [selectedCategory, 'Trending'] : ['Understated', 'Dark', 'Drama', 'Detectives'],
   } : null, [trending, selectedCategory]);
 
+  useEffect(() => {
+    if (!selectedProfile || !heroItem?.id) return;
+    
+    MyListService.isInList(selectedProfile.id, heroItem.id).then(setHeroIsInList);
+    
+    const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
+      const exists = items.some(i => i.id.toString() === heroItem.id.toString());
+      setHeroIsInList(exists);
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile, heroItem?.id]);
+
+  const [categorySubRows, setCategorySubRows] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (selectedCategory && GENRE_MAP[selectedCategory]) {
+      MoviesModule.getGenreSubCategories(GENRE_MAP[selectedCategory])
+        .then(setCategorySubRows)
+        .catch(console.error);
+    } else {
+      setCategorySubRows([]);
+    }
+  }, [selectedCategory]);
+
   // Master FlatList Configuration Map (Memoized to prevent LazyCarouselRow unmounts)
   const rowsConfig = useMemo(() => {
     const rows = [];
     
-    if (activeFilter === 'home') {
+    if (activeFilter === 'home' && !selectedCategory) {
       if (continueWatching.length > 0) {
         rows.push({ id: 'cw', type: 'cw', data: continueWatching });
       }
@@ -297,6 +355,20 @@ export default function HomeScreen() {
 
     // Static early rows (already loaded so zero stutter)
     rows.push({ id: 'trending', type: 'static_carousel', title: isKids ? 'Kids Trending Now' : (selectedCategory ? `${selectedCategory} Trending` : 'Trending Now'), data: trending });
+
+    if (selectedCategory && categorySubRows.length > 0) {
+      // Show dynamic genre-specific rows generated by MoviesModule
+      categorySubRows.forEach(row => {
+        rows.push({
+          id: row.id,
+          title: row.title,
+          type: 'lazy_carousel',
+          typeInput: activeFilter === 'tv' ? 'tv' : 'movie',
+          genreId: row.genreId
+        });
+      });
+      return rows;
+    }
 
     // The Endless Lazy Rows (20+ robust rows using strict TMDB genre mapping)
     const baseType = activeFilter === 'tv' ? 'tv' : 'movie';
@@ -332,7 +404,7 @@ export default function HomeScreen() {
       rows.push(...lazyConfigs.map(c => ({ ...c, type: 'lazy_carousel' })));
     }
     return rows;
-  }, [activeFilter, continueWatching, clips, trending, selectedCategory, isKids]);
+  }, [activeFilter, continueWatching, clips, trending, selectedCategory, isKids, categorySubRows]);
 
   const renderItem = useCallback(({ item }: { item: any }) => {
     switch (item.type) {
@@ -362,17 +434,29 @@ export default function HomeScreen() {
   const renderHeader = () => (
     heroItem ? (
       <View style={{ zIndex: 1 }}>
-        <GestureDetector gesture={gesture}>
-          <NetflixHero 
-            item={heroItem} 
-            onPress={() => router.push({ pathname: "/movie/[id]", params: { id: heroItem!.id, type: heroItem!.type } })}
-            tiltX={tiltX} 
-            tiltY={tiltY} 
-            shineX={shineX} 
-            sensor={sensor}
-            style={heroParallaxStyle}
-          />
-        </GestureDetector>
+        <NativeHeroCard
+          item={{
+            ...heroItem,
+            isInMyList: heroIsInList,
+            nLogoUrl: Image.resolveAssetSource(require('../../assets/images/netflix-n-logo.svg')).uri
+          }}
+          onPlayPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            router.push({ pathname: "/movie/[id]", params: { id: heroItem!.id, type: heroItem!.type } });
+          }}
+          onListPress={async () => {
+            if (!selectedProfile) return;
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await MyListService.toggleItem(selectedProfile.id, {
+              id: heroItem.id.toString(),
+              title: heroItem.title,
+              poster_path: heroItem.imageUrl,
+              backdrop_path: heroItem.imageUrl,
+              type: heroItem.type || 'movie'
+            });
+          }}
+          style={heroParallaxStyle}
+        />
         {/* We use a negative margin on the first row to tuck slightly under hero bottom, just like before */}
         <View style={{ marginTop: -20 }} /> 
       </View>
@@ -531,8 +615,9 @@ function Shimmer({ width, height, borderRadius = 4, style }: { width: any, heigh
 }
 
 function HomeSkeleton() {
+  const { width } = useWindowDimensions();
   const HERO_W = width * 0.9;
-  const HERO_H = HERO_W * 1.35;
+  const HERO_H_SKELETON = HERO_W * 1.35;
   const POSTER_W = width * 0.28;
   const POSTER_H = POSTER_W * 1.5;
   const LANDSCAPE_W = width * 0.35;
@@ -541,7 +626,7 @@ function HomeSkeleton() {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={styles.skeletonHeroContainer}><Shimmer width={HERO_W} height={HERO_H} borderRadius={12} /></View>
+        <View style={styles.skeletonHeroContainer}><Shimmer width={HERO_W} height={HERO_H_SKELETON} borderRadius={12} /></View>
         <View style={styles.skeletonRow}>
           <Shimmer width={150} height={18} style={{ marginBottom: 12 }} />
           <View style={styles.skeletonCardsRow}>

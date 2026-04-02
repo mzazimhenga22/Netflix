@@ -1,15 +1,11 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Text, Pressable, Dimensions, ScrollView, Image } from 'react-native';
+import { View, StyleSheet, Text, Pressable, useWindowDimensions, ScrollView, Image } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import Animated, { useAnimatedStyle, withSpring, useSharedValue } from 'react-native-reanimated';
 import { COLORS, SPACING } from '../constants/theme';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-
-const { width } = Dimensions.get('window');
-const CARD_WIDTH = width * 0.42;
-const CARD_HEIGHT = CARD_WIDTH * 1.6;
 
 interface ClipItem {
   id: string;
@@ -18,11 +14,14 @@ interface ClipItem {
   thumbnailUrl: string;
 }
 
-const ClipCard = ({ item }: { item: ClipItem }) => {
+const ClipCard = ({ item, width }: { item: ClipItem, width: number }) => {
   const router = useRouter();
   const [isHovered, setIsHovered] = useState(false);
   const scale = useSharedValue(1);
   
+  const CARD_WIDTH = width * 0.42;
+  const CARD_HEIGHT = CARD_WIDTH * 1.6;
+
   const player = useVideoPlayer(item.videoUrl, (p) => {
     p.loop = true;
     p.muted = true;
@@ -46,7 +45,6 @@ const ClipCard = ({ item }: { item: ClipItem }) => {
 
   const handlePress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Navigate to New & Hot screen and tell it to open Discovery tab
     router.push({
       pathname: '/(tabs)/new',
       params: { tab: 'discovery', clipId: item.id }
@@ -58,7 +56,7 @@ const ClipCard = ({ item }: { item: ClipItem }) => {
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       onPress={handlePress}
-      style={styles.cardContainer}
+      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
     >
       <Animated.View style={[styles.card, animatedStyle]}>
         <Image source={{ uri: item.thumbnailUrl }} style={styles.thumbnail} />
@@ -87,6 +85,8 @@ const ClipCard = ({ item }: { item: ClipItem }) => {
 };
 
 export function ClipsRow({ title, data }: { title: string, data: ClipItem[] }) {
+  const { width } = useWindowDimensions();
+  
   return (
     <View style={styles.container}>
       <Text style={styles.rowTitle}>{title}</Text>
@@ -96,7 +96,7 @@ export function ClipsRow({ title, data }: { title: string, data: ClipItem[] }) {
         contentContainerStyle={styles.scrollContent}
       >
         {data.map((item) => (
-          <ClipCard key={item.id} item={item} />
+          <ClipCard key={item.id} item={item} width={width} />
         ))}
       </ScrollView>
     </View>
@@ -118,10 +118,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: SPACING.md,
     gap: 12,
-  },
-  cardContainer: {
-    width: CARD_WIDTH,
-    height: CARD_HEIGHT,
   },
   card: {
     flex: 1,

@@ -54,6 +54,24 @@ export const fetchUpcoming = async (isKids?: boolean) => {
   return data.results;
 };
 
+export const fetchNewAndHot = async (isKids?: boolean) => {
+  // Use current system date: April 2, 2026
+  const today = '2026-04-02';
+  const sixMonthsLater = '2026-10-02';
+  
+  const { data } = await tmdb.get('/discover/movie', {
+    params: {
+      'primary_release_date.gte': today,
+      'primary_release_date.lte': sixMonthsLater,
+      sort_by: 'primary_release_date.asc',
+      include_video: true,
+      with_release_type: '2|3', // Theatrical, Digital
+      ...getKidsParams(isKids)
+    }
+  });
+  return data.results;
+};
+
 export const fetchVideos = async (id: number, type: 'movie' | 'tv' = 'movie') => {
   const { data } = await tmdb.get(`/${type}/${id}/videos`);
   return data.results;

@@ -18,7 +18,7 @@ import {
   getLogoUrl,
   fetchMovieImages
 } from '../../services/tmdb';
-import HomeHero from '../../components/HomeHero';
+import NativeHeroBanner from '../../components/NativeHeroBanner';
 import ColorExtractor from '../../components/ColorExtractor';
 import ExpandingRow from '../../components/ExpandingRow';
 import HomeSkeleton from '../../components/HomeSkeleton';
@@ -43,9 +43,11 @@ export default function HomeScreen() {
   const loadHistory = useCallback(async () => {
     if (selectedProfile?.id) {
        await WatchHistoryService.syncWithFirestore(selectedProfile.id);
+       const data = await WatchHistoryService.getAllHistory(selectedProfile.id);
+       setHistory(data);
+    } else {
+       setHistory([]);
     }
-    const data = await WatchHistoryService.getAllHistory();
-    setHistory(data);
   }, [selectedProfile?.id]);
 
   useFocusEffect(
@@ -88,7 +90,8 @@ export default function HomeScreen() {
   // const router = useRouter(); // Already declared above
 
   const handleColorExtracted = useCallback((color: string) => {
-    setHeroColors([`${color}B3`, `${color}80`, '#000000']);
+    // Making background color more vibrant and deep
+    setHeroColors([`${color}CC`, `${color}66`, '#000000']);
   }, []);
 
   useEffect(() => {
@@ -209,6 +212,20 @@ export default function HomeScreen() {
       data: data.comedy
     }
   ], [filter, titleLabel, history, myList, data]);
+ 
+  const isInMyList = useMemo(() => {
+    if (!heroMovie || !myList) return false;
+    return myList.some(item => String(item.id) === String(heroMovie.id));
+  }, [heroMovie?.id, myList]);
+
+  const handleToggleMyList = useCallback(async () => {
+    if (!heroMovie || !selectedProfile?.id) return;
+    try {
+      await MyListService.toggleItem(selectedProfile.id, heroMovie);
+    } catch (error) {
+      console.error('Error toggling my list:', error);
+    }
+  }, [heroMovie, selectedProfile?.id]);
 
   const renderRow = useCallback(({ item: row }: { item: any }) => (
     <ExpandingRow 
@@ -225,19 +242,21 @@ export default function HomeScreen() {
   const ListHeader = useCallback(() => (
     <Animated.View key={heroMovie?.id} entering={FadeIn.duration(1000)}>
       {heroMovie && (
-        <HomeHero
+        <NativeHeroBanner
           title={heroMovie.title || heroMovie.name}
           description={heroMovie.overview}
           imageUrl={getBackdropUrl(heroMovie.backdrop_path) || ''}
           logoUrl={heroLogo || ''}
           item={heroMovie}
           top10={data.trending.slice(0, 10).some(m => m.id === heroMovie.id)}
+          isInMyList={isInMyList}
           onPlay={() => router.push({ pathname: `/movie/${heroMovie.id}`, params: { type: heroMovie.media_type || (filter === 'all' ? 'movie' : filter) } })}
+          onMyList={handleToggleMyList}
           onInfo={() => router.push({ pathname: `/movie/${heroMovie.id}`, params: { type: heroMovie.media_type || (filter === 'all' ? 'movie' : filter) } })}
         />
       )}
     </Animated.View>
-  ), [heroMovie, heroLogo, data.trending, filter, router]);
+  ), [heroMovie, heroLogo, heroColors, data.trending, filter, router]);
 
   if (loading) {
     return <HomeSkeleton />;
@@ -245,11 +264,11 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.masterContainer}>
-      {/* Ambient Background Layer — limited to hero area only */}
-      <View style={styles.ambientBackground}>
+      {/* Ambient Background Layer — Fixed position for the whole screen */}
+      <View style={[StyleSheet.absoluteFill, { zIndex: 0 }]} pointerEvents="none">
         <LinearGradient
           colors={heroColors}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, { height: '100%' }]}
         />
       </View>
 
@@ -265,7 +284,7 @@ export default function HomeScreen() {
         renderItem={renderRow}
         keyExtractor={item => item.id}
         ListHeaderComponent={ListHeader}
-        style={styles.container}
+        style={[styles.container, { zIndex: 1, elevation: 1 }]}
         contentContainerStyle={styles.contentContainer}
         // Low-RAM optimization: render fewer items at once
         initialNumToRender={2}
@@ -284,24 +303,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  ambientBackground: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    // Only cover the hero area, not the scrollable rows below
-    height: SCREEN_HEIGHT * 0.8,
-    zIndex: 0,
-    elevation: 0, // Android TV needs elevation for z-ordering
-  },
   container: {
     flex: 1,
     backgroundColor: 'transparent',
-    paddingTop: 100,
-    zIndex: 1,
-    elevation: 2, // Ensure FlatList renders above ambient gradient on Android TV
   },
   contentContainer: {
+    paddingTop: 40, // Small native safe area padding so it's not flush with the screen top
     paddingBottom: 100,
   },
   loadingContainer: {

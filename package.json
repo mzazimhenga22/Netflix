@@ -34,7 +34,7 @@
     "expo-linear-gradient": "~55.0.9",
     "expo-linking": "~55.0.8",
     "expo-modules-core": "~55.0.18",
-    "expo-notifications": "~0.27.1",
+    "expo-notifications": "~55.0.14",
     "expo-router": "~55.0.7",
     "expo-screen-orientation": "~55.0.9",
     "expo-sensors": "~55.0.9",

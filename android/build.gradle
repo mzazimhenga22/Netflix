@@ -1,6 +1,13 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 buildscript {
+  ext {
+    buildToolsVersion = "36.0.0"
+    minSdkVersion = 24
+    compileSdkVersion = 36
+    targetSdkVersion = 36
+    kotlinVersion = "2.1.20"
+  }
   repositories {
     google()
     mavenCentral()
@@ -8,7 +15,8 @@ buildscript {
   dependencies {
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
-    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}")
+    classpath("org.jetbrains.kotlin:compose-compiler-gradle-plugin:${kotlinVersion}")
   }
 }
 
@@ -18,6 +26,19 @@ allprojects {
     mavenCentral()
     maven { url 'https://www.jitpack.io' }
   }
+}
+
+// Force SDK versions across all subprojects/node_modules to resolve "does not specify compileSdk" errors
+subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                if (compileSdk == null) {
+                    compileSdk = rootProject.ext.compileSdkVersion
+                }
+            }
+        }
+    }
 }
 
 apply plugin: "expo-root-project"

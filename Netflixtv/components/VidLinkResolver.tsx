@@ -1,5 +1,5 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent, WebViewNavigation } from 'react-native-webview';
 import { 
   getVidLinkEmbedUrl, 
@@ -19,11 +19,11 @@ interface VidLinkResolverProps {
 }
 
 // VidLinkResolver - Hidden WebView that resolves HLS streaming links.
-// Optimized for low-RAM devices (Android 9, 1GB RAM smart TVs):
-// - Software rendering layer (lower memory than GPU)
-// - No caching (saves RAM)
-// - Incognito mode (lighter footprint)
-// - Minimal surface (100x100) — big enough for JS execution, small enough to save RAM
+// TV Compatibility:
+// - 320x240 minimum size (Android TV WebView needs this for reliable JS execution)
+// - Default rendering layer (let system choose GPU/CPU based on device)
+// - Cookies & cache enabled (VidLink needs session cookies for token flow)
+// - Modern user agent (old/TV agents get blocked by anti-bot)
 export const VidLinkResolver = React.memo(({ 
   tmdbId, 
   type, 
@@ -93,6 +93,18 @@ export const VidLinkResolver = React.memo(({
 
   if (!enabled || !tmdbId) return null;
 
+  // Set a safety timeout — if WebView hangs, fire error after 25s
+  useEffect(() => {
+    if (!enabled) return;
+    const safetyTimeout = setTimeout(() => {
+      if (!hasResolved) {
+        console.warn('[VidLink] ⏰ Safety timeout (25s) — WebView may be stuck');
+        onError('Stream resolution timed out (25s)');
+      }
+    }, 25000);
+    return () => clearTimeout(safetyTimeout);
+  }, [enabled, tmdbId, type, season, episode]);
+
   console.log(`[VidLink] 🌐 Loading embed: ${embedUrl}`);
 
   return (
@@ -106,23 +118,26 @@ export const VidLinkResolver = React.memo(({
         domStorageEnabled={true}
         originWhitelist={['*']}
         mixedContentMode="always"
-        // === LOW-RAM OPTIMIZATIONS ===
-        // Software rendering uses CPU instead of GPU — much lower memory on 1GB devices
-        androidLayerType="software"
-        // Don't cache anything — saves precious RAM
-        cacheEnabled={false}
-        // Incognito = lighter memory footprint, no persistent storage
-        incognito={true}
+        // === TV COMPATIBILITY ===
+        // Let the system decide GPU vs CPU rendering ("none" = system default)
+        // "software" breaks JS execution on many TV chipsets
+        androidLayerType="none"
+        // Enable cache — VidLink loads JS bundles that need caching for token generation
+        cacheEnabled={true}
+        // Do NOT use incognito — VidLink needs session cookies for its encrypted token flow
+        incognito={false}
         // Don't play any media (saves decoder RAM)
         mediaPlaybackRequiresUserAction={true}
         allowsInlineMediaPlayback={false}
-        // Disable file access (not needed, saves permissions overhead)
+        // Disable file access (not needed)
         allowFileAccess={false}
         allowUniversalAccessFromFileURLs={false}
-        // Allow third-party cookies (needed for VidLink session)
+        // Allow third-party cookies (critical for VidLink session/token)
         thirdPartyCookiesEnabled={true}
+        // Share cookies with other WebViews (helps if VidLink sets tokens across loads)
+        sharedCookiesEnabled={true}
         overScrollMode="never"
-        // Don't open popups (saves RAM)
+        // Don't open popups
         setSupportMultipleWindows={false}
         // Block ad navigations to save bandwidth/RAM
         onShouldStartLoadWithRequest={handleShouldStartLoad}
@@ -142,11 +157,9 @@ export const VidLinkResolver = React.memo(({
           const { nativeEvent } = syntheticEvent;
           console.warn(`[VidLink] ⚠️ HTTP ${nativeEvent.statusCode}: ${nativeEvent.url?.substring(0, 80)}`);
         }}
-        // Dynamic User Agent: TV gets the lightweight Android 9 agent, Phones get the standard modern agent
-        userAgent={Platform.isTV 
-          ? "Mozilla/5.0 (Linux; Android 9; SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.101 Mobile Safari/537.36"
-          : "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        }
+        // CRITICAL: Use a modern Chrome user agent for ALL devices.
+        // Old/TV user agents (Chrome/91, "SmartTV") get blocked by VidLink anti-bot.
+        userAgent="Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
       />
     </View>
   );
@@ -155,18 +168,18 @@ export const VidLinkResolver = React.memo(({
 const styles = StyleSheet.create({
   hidden: {
     position: 'absolute',
-    // 100x100 = big enough for Android 9 WebView to execute JS,
-    // small enough to minimize RAM usage on 1GB devices.
-    // Placed offscreen so it's invisible.
-    width: 100,
-    height: 100,
-    left: -500,
-    top: -500,
-    opacity: 0.01, // Near-invisible but not 0 — prevents skip-render optimization
+    // 320x240 minimum — Android TV WebView needs this size for reliable JS execution.
+    // Smaller sizes cause JS throttling/skipping on low-end chipsets (Amlogic, Realtek).
+    // Placed offscreen so it's invisible to the user.
+    width: 320,
+    height: 240,
+    left: -1000,
+    top: -1000,
+    opacity: 0.01, // Near-invisible but not 0 — prevents Android from optimizing away the view
     overflow: 'hidden',
   },
   hiddenWebView: {
-    width: 100,
-    height: 100,
+    width: 320,
+    height: 240,
   },
 });

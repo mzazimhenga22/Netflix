@@ -1,0 +1,9 @@
+{
+  "circuitBreakerLimit": 30,
+  "compressionThreshold": 60,
+  "compressionTokenLimit": 80000,
+  "commandTimeoutMs": 30000,
+  "aiTimeoutMs": 60000,
+  "maxSameToolRetries": 3,
+  "approveAll": false
+}

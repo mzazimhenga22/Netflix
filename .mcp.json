@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "puter": {
+      "command": "node",
+      "args": [
+        "d:/Netflix2026/Netflix/puter/mcp_server.js"
+      ]
+    }
+  }
+}

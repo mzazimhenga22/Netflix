@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
-import { View, StyleSheet, Dimensions, useTVEventHandler } from 'react-native';
+import { View, StyleSheet, Dimensions, useTVEventHandler, TouchableOpacity } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { FilterProvider } from '../context/FilterContext';
@@ -59,6 +59,17 @@ function RootLayoutContent() {
     };
   }, [resetIdleTimer]);
 
+  const fetchSubscription = useCallback(() => {
+    if (!auth.currentUser) {
+      setSubscription({ status: 'none' });
+      return () => {};
+    }
+
+    return SubscriptionService.listenToSubscription((sub) => {
+      setSubscription(sub);
+    });
+  }, []);
+
   useEffect(() => {
     let subUnsubscribe = () => {};
     
@@ -68,9 +79,7 @@ function RootLayoutContent() {
           if (user) {
             setInitialRoute('/profiles');
             subUnsubscribe();
-            subUnsubscribe = SubscriptionService.listenToSubscription((sub) => {
-              setSubscription(sub);
-            });
+            subUnsubscribe = fetchSubscription();
           } else {
             setInitialRoute('/');
             setSubscription({ status: 'none' });
@@ -79,7 +88,7 @@ function RootLayoutContent() {
         });
 
         // Give auth a moment to resolve
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 800));
 
         // Hide native Expo splash immediately — our animation takes over
         await SplashScreen.hideAsync();
@@ -96,7 +105,12 @@ function RootLayoutContent() {
     }
 
     prepare();
-  }, []);
+  }, [fetchSubscription]);
+
+  const handleRetrySub = () => {
+    setSubscription({ status: 'loading' });
+    fetchSubscription();
+  };
 
   const onLayoutRootView = useCallback(async () => {
     if (appIsReady && initialRoute) {
@@ -111,6 +125,11 @@ function RootLayoutContent() {
     return <View style={styles.splashContainer} />;
   }
 
+  const isLocked = initialRoute !== '/' && subscription && (
+    subscription.status === 'none' || 
+    subscription.status === 'past_due' || 
+    subscription.status === 'error'
+  );
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
@@ -123,17 +142,40 @@ function RootLayoutContent() {
       </Stack>
       
       {/* Subscription Lockdown Overlay */}
-      {initialRoute !== '/' && subscription && (subscription.status === 'none' || subscription.status === 'past_due') && (
+      {isLocked && (
         <View style={styles.subscribeOverlay}>
           <Image 
             source={require('../assets/images/netflix-n-logo.svg')} 
             style={[styles.splashIcon, { marginBottom: 30 }]} 
             contentFit="contain"
           />
-          <Text style={styles.subscribeTitle}>Subscription Required</Text>
-          <Text style={styles.subscribeText}>
-            Your account is currently inactive. Please open the Netflix app on your mobile device to complete your subscription payment.
+          <Text style={styles.subscribeTitle}>
+            {subscription?.status === 'error' ? 'Connection Error' : 'Subscription Required'}
           </Text>
+          <Text style={styles.subscribeText}>
+            {subscription?.status === 'error' 
+              ? (subscription.errorMessage || 'We are having trouble connecting to Netflix. Please check your internet connection.')
+              : 'Your account is currently inactive. Please open the Netflix app on your mobile device to complete your subscription payment.'}
+          </Text>
+          
+          {subscription?.status === 'error' ? (
+            <TouchableOpacity 
+              activeOpacity={0.8}
+              onPress={handleRetrySub}
+              style={{
+                marginTop: 40,
+                backgroundColor: '#E50914',
+                paddingHorizontal: 40,
+                paddingVertical: 15,
+                borderRadius: 4,
+                elevation: 5
+              }}
+            >
+              <Text style={{ color: 'white', fontSize: 20, fontWeight: 'bold' }}>
+                Retry Connection
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       )}
 
@@ -176,7 +218,7 @@ const styles = StyleSheet.create({
   },
   subscribeOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.95)',
+    backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 99998,

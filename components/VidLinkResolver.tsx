@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useState } from 'react';
+import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent, WebViewNavigation } from 'react-native-webview';
 import { 
@@ -33,6 +33,15 @@ export function VidLinkResolver({
   const webviewRef = useRef<WebView>(null);
   const [hasResolved, setHasResolved] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Reset resolved state when content parameters change (new episode/movie)
+  useEffect(() => {
+    setHasResolved(false);
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, [tmdbId, type, season, episode]);
 
   const embedUrl = getVidLinkEmbedUrl(tmdbId, type, season, episode);
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image as RNImage, Pressable, ActivityIndicator, Alert, StatusBar, Dimensions, Animated as RNAnimated, FlatList, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image as RNImage, Pressable, ActivityIndicator, Alert, StatusBar, useWindowDimensions, FlatList, Modal } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather, MaterialIcons } from '@expo/vector-icons';
@@ -53,8 +53,10 @@ import { downloadVideo, loadMetadata } from '../../services/downloads';
 import { useProfile } from '../../context/ProfileContext';
 import { MyListService } from '../../services/MyListService';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
+import { useNativeDetails } from '../../hooks/useNativeDetails';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// Removed static SCREEN_WIDTH/HEIGHT constants to prevent orientation-change distortion;
+// using useWindowDimensions() inside MovieDetailsScreen instead.
 
 const SkeletonItem = ({ style }: { style: any }) => {
   const opacity = useSharedValue(0.3);
@@ -130,6 +132,7 @@ const AnimatedActionButton = ({ icon, activeIcon, text, activeText, initiallyAct
 };
 
 export default function MovieDetailsScreen() {
+  const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
   const { id, type } = useLocalSearchParams();
   const router = useRouter();
   const [movie, setMovie] = useState<any>(null);
@@ -145,6 +148,9 @@ export default function MovieDetailsScreen() {
   
   // Watch History State
   const [watchProgress, setWatchProgress] = useState<WatchHistoryItem | null>(null);
+
+  // Native Optimization Hook (Data mapping & Palette extraction)
+  const { details, palette } = useNativeDetails(movie);
 
   // Subscribe to Watch History for this specific item
   useEffect(() => {
@@ -259,7 +265,7 @@ export default function MovieDetailsScreen() {
 
   const renderItem = ({ item, index }: any) => {
     if (activeTab === 'episodes') {
-      return renderEpisodeItem({ item, index });
+      return renderEpisodeItem({ item });
     }
     return renderSimilarItem({ item });
   };
@@ -527,7 +533,7 @@ export default function MovieDetailsScreen() {
       }
     });
 
-  const matchScore = React.useMemo(() => Math.floor(85 + Math.random() * 14), [id]);
+  const matchScore = React.useMemo(() => details?.matchScore || Math.floor(85 + Math.random() * 14), [details, id]);
   const AnimatedFlatList = React.useMemo(() => Animated.createAnimatedComponent(FlatList), []);
 
   const renderEpisodeItem = useCallback(({ item: ep }: { item: any }) => (
@@ -564,10 +570,10 @@ export default function MovieDetailsScreen() {
   if (loading) return <MovieDetailsSkeleton />;
   if (!movie) return null;
 
-  const year = (movie.release_date || movie.first_air_date || '').split('-')[0];
-  const runtime = movie.runtime 
+  const year = details?.formattedYear || (movie.release_date || movie.first_air_date || '').split('-')[0];
+  const runtime = details?.formattedRuntime || (movie.runtime 
     ? `${Math.floor(movie.runtime / 60)}h ${movie.runtime % 60}m` 
-    : (movie.number_of_seasons ? `${movie.number_of_seasons} Seasons` : '');
+    : (movie.number_of_seasons ? `${movie.number_of_seasons} Seasons` : ''));
 
   if (isPlaying) {
     return (
@@ -691,7 +697,7 @@ export default function MovieDetailsScreen() {
             </Pressable>
         )}
         <LinearGradient
-          colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.7)', COLORS.background]}
+          colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.7)', palette?.darkVibrant || palette?.dominant || COLORS.background]}
           style={styles.bottomFadeOverlay}
           pointerEvents="none"
         />
@@ -779,7 +785,7 @@ export default function MovieDetailsScreen() {
         <Animated.View entering={FadeInUp.delay(1100).duration(800)} style={styles.bentoCard}>
           <Text style={styles.bentoLabel}>Cast & Crew</Text>
           <Text style={styles.credits} numberOfLines={2}>
-            {movie.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ')}... more
+            {details?.castList || movie.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ')}... more
           </Text>
         </Animated.View>
 

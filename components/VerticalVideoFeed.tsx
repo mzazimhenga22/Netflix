@@ -20,238 +20,13 @@ import Animated, {
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 
-const { height, width } = Dimensions.get('window');
-interface VideoItemProps {
-  item: {
-    id: string;
-    videoUrl: string;
-    title: string;
-    description: string;
-    showId?: string;
-    type?: string;
-    rating?: string;
-  };
-  isActive: boolean;
-}
-
-const ClipPlayer = React.memo(({ url, isActive, isPreloading, isMuted }: { url: string, isActive: boolean, isPreloading: boolean, isMuted: boolean }) => {
-  const player = useVideoPlayer(url, (p) => {
-    p.loop = true;
-    p.muted = isMuted;
-    
-    // Aggressive preloading
-    if ('preferredForwardBufferDuration' in p) {
-      (p as any).preferredForwardBufferDuration = 60; 
-    }
-  });
-
-  // Handle Play/Pause
-  useEffect(() => {
-    if (isActive) {
-      player.play();
-    } else {
-      player.pause();
-    }
-  }, [isActive, player]);
-
-  // Handle Mute sync
-  useEffect(() => {
-    player.muted = isMuted;
-  }, [isMuted, player]);
-
-  if (!isActive && !isPreloading) return null;
-
-  return (
-    <VideoView
-      player={player}
-      style={styles.video}
-      contentFit="cover"
-      nativeControls={false}
-    />
-  );
-});
-
-const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: { item: any, isActive: boolean, isNext: boolean, isPrev: boolean, isPreShowing: boolean }) => {
-  const router = useRouter();
-  const [isMuted, setIsMuted] = useState(false);
-  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
-  const [isResolving, setIsResolving] = useState(false);
-  
-  // Only create player if active, next or previous (3-player rule)
-  const shouldHavePlayer = isActive || isNext || isPrev;
-  
-  // Trigger Resolution for mock/empty URLs when nearing viewport
-  useEffect(() => {
-    if ((isActive || isNext) && !resolvedUrl && (!item.videoUrl || item.videoUrl.includes('sample'))) {
-      setIsResolving(true);
-    }
-  }, [isActive, isNext, item.videoUrl, resolvedUrl]);
-
-  const handleLike = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  };
-
-  const handleGoToDetails = () => {
-    if (item.showId) {
-      router.push({
-        pathname: `/movie/${item.showId}` as any,
-        params: { type: item.type || 'movie' }
-      });
-    }
-  };
-
-  return (
-    <View style={styles.itemContainer}>
-      {/* Hidden Resolver - only active for current and next */}
-      {(isActive || isNext) && isResolving && (
-        <TrailerResolver
-          tmdbId={item.showId || ''}
-          mediaType={(item.type as any) || 'movie'}
-          enabled={isResolving}
-          onResolved={(stream) => {
-            setResolvedUrl(stream.url);
-            setIsResolving(false);
-          }}
-          onError={() => setIsResolving(false)}
-        />
-      )}
-
-      <View style={styles.videoPressable}>
-        {shouldHavePlayer && resolvedUrl ? (
-          <ClipPlayer 
-            url={resolvedUrl} 
-            isActive={isActive} 
-            isPreloading={isNext || isPrev}
-            isMuted={isMuted} 
-          />
-        ) : (
-          <View style={styles.loadingPlaceholder}>
-            {(isActive || isNext || isPrev) && (
-              <Image 
-                source={{ uri: `https://image.tmdb.org/t/p/original${item.backdrop_path || ''}` }} 
-                style={styles.video} 
-                blurRadius={isActive ? 15 : 0}
-              />
-            )}
-            {isActive && !resolvedUrl && <NetflixLoader size={40} />}
-          </View>
-        )}
-        
-        <LinearGradient
-          colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent', 'rgba(0,0,0,0.9)']}
-          style={StyleSheet.absoluteFill}
-        />
-      </View>
-
-      {/* Interaction Rail */}
-      <View style={styles.rightRail}>
-        <Animated.View entering={FadeInRight.delay(200)}>
-          <Pressable style={styles.railAction} onPress={handleLike}>
-            <Ionicons name="heart-outline" size={32} color="white" />
-            <Text style={styles.railLabel}>LOL</Text>
-          </Pressable>
-        </Animated.View>
-
-        <Animated.View entering={FadeInRight.delay(400)}>
-          <Pressable style={styles.railAction}>
-            <MaterialCommunityIcons name="share-variant" size={30} color="white" />
-            <Text style={styles.railLabel}>Share</Text>
-          </Pressable>
-        </Animated.View>
-
-        <Animated.View entering={FadeInRight.delay(500)}>
-          <Pressable style={styles.playFunnel} onPress={handleGoToDetails}>
-            <Ionicons name="play" size={24} color="black" />
-            <Text style={styles.playFunnelText}>Play</Text>
-          </Pressable>
-        </Animated.View>
-      </View>
-
-      {/* Content Info */}
-      <View style={styles.infoContainer}>
-        <View style={styles.badgeRow}>
-          <ExpoImage 
-            source={require('../assets/images/netflix-n-logo.svg')} 
-            style={styles.nBadgeImage} 
-            contentFit="contain" 
-          />
-          <Text style={styles.seriesText}>SERIES</Text>
-        </View>
-        <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
-        <Text style={styles.description} numberOfLines={2}>{item.overview || item.description}</Text>
-      </View>
-
-      <View style={styles.progressContainer}>
-         <View style={[styles.progressBar, { width: isActive ? '100%' : '0%' }]} />
-      </View>
-    </View>
-  );
-});
-
-VideoItem.displayName = 'VideoItem';
-
-export function VerticalVideoFeed({ data }: { data: any[] }) {
-  const { height: ITEM_HEIGHT, width } = useWindowDimensions();
-  const [activeIndex, setActiveIndex] = useState(0);
-
-  const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
-    if (viewableItems.length > 0) {
-      setActiveIndex(viewableItems[0].index);
-    }
-  }, []);
-
-  const viewabilityConfig = {
-    itemVisiblePercentThreshold: 50,
-  };
-
-  const [isScreenFocused, setIsScreenFocused] = useState(true);
-  useFocusEffect(
-    useCallback(() => {
-      setIsScreenFocused(true);
-      return () => setIsScreenFocused(false);
-    }, [])
-  );
-
-  return (
-    <FlatList
-      data={data}
-      renderItem={({ item, index }) => (
-        <VideoItem 
-          item={item} 
-          isActive={index === activeIndex && isScreenFocused} 
-          isNext={index === activeIndex + 1 && isScreenFocused}
-          isPrev={index === activeIndex - 1 && isScreenFocused}
-          isPreShowing={Math.abs(index - activeIndex) <= 1}
-        />
-      )}
-      keyExtractor={(item) => item.id}
-      pagingEnabled
-      showsVerticalScrollIndicator={false}
-      onViewableItemsChanged={onViewableItemsChanged}
-      viewabilityConfig={viewabilityConfig}
-      disableIntervalMomentum={Platform.OS === 'android'}
-      decelerationRate="fast"
-      style={styles.feedList}
-      windowSize={5}
-      maxToRenderPerBatch={2}
-      initialNumToRender={2}
-      removeClippedSubviews={true}
-      getItemLayout={(data, index) => ({
-        length: ITEM_HEIGHT,
-        offset: ITEM_HEIGHT * index,
-        index,
-      })}
-    />
-  );
-}
-
+// Static styles moved to top, but dimension-dependent ones are handled dynamically
 const styles = StyleSheet.create({
   feedList: {
     backgroundColor: 'black',
   },
   itemContainer: {
-    height: Dimensions.get('window').height,
-    width: Dimensions.get('window').width,
+    flex: 1,
     backgroundColor: 'black',
   },
   videoPressable: {
@@ -362,3 +137,223 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   }
 });
+
+interface VideoItemProps {
+  item: {
+    id: string;
+    videoUrl: string;
+    title: string;
+    description: string;
+    showId?: string;
+    type?: string;
+    rating?: string;
+  };
+  isActive: boolean;
+}
+
+const ClipPlayer = React.memo(({ url, isActive, isPreloading, isMuted }: { url: string, isActive: boolean, isPreloading: boolean, isMuted: boolean }) => {
+  const player = useVideoPlayer(url, (p) => {
+    p.loop = true;
+    p.muted = isMuted;
+    
+    if ('preferredForwardBufferDuration' in p) {
+      (p as any).preferredForwardBufferDuration = 60; 
+    }
+  });
+
+  useEffect(() => {
+    if (isActive) {
+      player.play();
+    } else {
+      player.pause();
+    }
+  }, [isActive, player]);
+
+  useEffect(() => {
+    player.muted = isMuted;
+  }, [isMuted, player]);
+
+  if (!isActive && !isPreloading) return null;
+
+  return (
+    <VideoView
+      player={player}
+      style={styles.video}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+});
+
+const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: { item: any, isActive: boolean, isNext: boolean, isPrev: boolean, isPreShowing: boolean }) => {
+  const router = useRouter();
+  const [isMuted, setIsMuted] = useState(false);
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const [isResolving, setIsResolving] = useState(false);
+  
+  const shouldHavePlayer = isActive || isNext || isPrev;
+  
+  useEffect(() => {
+    if ((isActive || isNext) && !resolvedUrl && (!item.videoUrl || item.videoUrl.includes('sample'))) {
+      setIsResolving(true);
+    }
+  }, [isActive, isNext, item.videoUrl, resolvedUrl]);
+
+  const handleLike = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleGoToDetails = () => {
+    if (item.showId) {
+      router.push({
+        pathname: `/movie/${item.showId}` as any,
+        params: { type: item.type || 'movie' }
+      });
+    }
+  };
+
+  return (
+    <View style={styles.itemContainer}>
+      {(isActive || isNext) && isResolving && (
+        <TrailerResolver
+          tmdbId={item.showId || ''}
+          mediaType={(item.type as any) || 'movie'}
+          enabled={isResolving}
+          onResolved={(stream) => {
+            setResolvedUrl(stream.url);
+            setIsResolving(false);
+          }}
+          onError={() => setIsResolving(false)}
+        />
+      )}
+
+      <View style={styles.videoPressable}>
+        {shouldHavePlayer && resolvedUrl ? (
+          <ClipPlayer 
+            url={resolvedUrl} 
+            isActive={isActive} 
+            isPreloading={isNext || isPrev}
+            isMuted={isMuted} 
+          />
+        ) : (
+          <View style={styles.loadingPlaceholder}>
+            {(isActive || isNext || isPrev) && (
+              <Image 
+                source={{ uri: `https://image.tmdb.org/t/p/original${item.backdrop_path || ''}` }} 
+                style={styles.video} 
+                blurRadius={isActive ? 15 : 0}
+              />
+            )}
+            {isActive && !resolvedUrl && <NetflixLoader size={40} />}
+          </View>
+        )}
+        
+        <LinearGradient
+          colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent', 'rgba(0,0,0,0.9)']}
+          style={StyleSheet.absoluteFill}
+        />
+      </View>
+
+      <View style={styles.rightRail}>
+        <Animated.View entering={FadeInRight.delay(200)}>
+          <Pressable style={styles.railAction} onPress={handleLike}>
+            <Ionicons name="heart-outline" size={32} color="white" />
+            <Text style={styles.railLabel}>LOL</Text>
+          </Pressable>
+        </Animated.View>
+
+        <Animated.View entering={FadeInRight.delay(400)}>
+          <Pressable style={styles.railAction}>
+            <MaterialCommunityIcons name="share-variant" size={30} color="white" />
+            <Text style={styles.railLabel}>Share</Text>
+          </Pressable>
+        </Animated.View>
+
+        <Animated.View entering={FadeInRight.delay(500)}>
+          <Pressable style={styles.playFunnel} onPress={handleGoToDetails}>
+            <Ionicons name="play" size={24} color="black" />
+            <Text style={styles.playFunnelText}>Play</Text>
+          </Pressable>
+        </Animated.View>
+      </View>
+
+      <View style={styles.infoContainer}>
+        <View style={styles.badgeRow}>
+          <ExpoImage 
+            source={require('../assets/images/netflix-n-logo.svg')} 
+            style={styles.nBadgeImage} 
+            contentFit="contain" 
+          />
+          <Text style={styles.seriesText}>SERIES</Text>
+        </View>
+        <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
+        <Text style={styles.description} numberOfLines={2}>{item.overview || item.description}</Text>
+      </View>
+
+      <View style={styles.progressContainer}>
+         <View style={[styles.progressBar, { width: isActive ? '100%' : '0%' }]} />
+      </View>
+    </View>
+  );
+});
+
+VideoItem.displayName = 'VideoItem';
+
+export function VerticalVideoFeed({ data }: { data: any[] }) {
+  const { height: ITEM_HEIGHT, width: ITEM_WIDTH } = useWindowDimensions();
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
+    if (viewableItems.length > 0) {
+      setActiveIndex(viewableItems[0].index);
+    }
+  }, []);
+
+  const viewabilityConfig = {
+    itemVisiblePercentThreshold: 50,
+  };
+
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setIsScreenFocused(true);
+      return () => setIsScreenFocused(false);
+    }, [])
+  );
+
+  return (
+    <View style={{ flex: 1, backgroundColor: 'black' }}>
+      <FlatList
+        data={data}
+        renderItem={({ item, index }) => (
+          <View style={{ height: ITEM_HEIGHT, width: ITEM_WIDTH }}>
+            <VideoItem 
+              item={item} 
+              isActive={index === activeIndex && isScreenFocused} 
+              isNext={index === activeIndex + 1 && isScreenFocused}
+              isPrev={index === activeIndex - 1 && isScreenFocused}
+              isPreShowing={Math.abs(index - activeIndex) <= 1}
+            />
+          </View>
+        )}
+        keyExtractor={(item) => item.id}
+        pagingEnabled
+        showsVerticalScrollIndicator={false}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        disableIntervalMomentum={Platform.OS === 'android'}
+        decelerationRate="fast"
+        style={styles.feedList}
+        windowSize={5}
+        maxToRenderPerBatch={2}
+        initialNumToRender={2}
+        removeClippedSubviews={true}
+        getItemLayout={(data, index) => ({
+          length: ITEM_HEIGHT,
+          offset: ITEM_HEIGHT * index,
+          index,
+        })}
+      />
+    </View>
+  );
+}

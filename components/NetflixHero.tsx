@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Dimensions, Pressable } from 'react-native';
+import { View, Text, StyleSheet, useWindowDimensions, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, SPACING } from '../constants/theme';
@@ -14,205 +14,9 @@ import Animated, {
   Extrapolate
 } from 'react-native-reanimated';
 
-const { width, height } = Dimensions.get('window');
-const POSTER_WIDTH = width * 0.9;
-const POSTER_HEIGHT = POSTER_WIDTH * 1.35;
-
+// Removed static Dimensions measurement to prevent orientation-change distortion;
+// using useWindowDimensions() inside component instead.
 const AnimatedImage = Animated.createAnimatedComponent(Image);
-
-interface HeroProps {
-  item: {
-    id: string;
-    title: string;
-    imageUrl: string;
-    categories: string[];
-    type?: string;
-  };
-  onPress?: () => void;
-  tiltX?: SharedValue<number>;
-  tiltY?: SharedValue<number>;
-  shineX?: SharedValue<number>;
-  sensor?: any; // Reanimated sensor
-  style?: any;
-}
-
-const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX, sensor, style }: HeroProps) => {
-  const { selectedProfile } = useProfile();
-  const [isInMyList, setIsInMyList] = useState(false);
-
-  useEffect(() => {
-    if (!selectedProfile || !item?.id) return;
-    
-    MyListService.isInList(selectedProfile.id, item.id.toString()).then(setIsInMyList);
-
-    const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
-      const exists = items.some(i => i.id.toString() === item.id.toString());
-      setIsInMyList(exists);
-    });
-
-    return () => unsubscribe();
-  }, [selectedProfile, item?.id]);
-
-  const handleToggleMyList = async () => {
-    if (!selectedProfile || !item) return;
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const newStatus = !isInMyList;
-    setIsInMyList(newStatus);
-    
-    const wasAdded = await MyListService.toggleItem(selectedProfile.id, {
-      id: item.id.toString(),
-      title: item.title,
-      poster_path: item.imageUrl,
-      backdrop_path: item.imageUrl,
-      type: item.type || 'movie'
-    });
-    
-    if (typeof wasAdded === 'boolean') {
-      setIsInMyList(wasAdded);
-    }
-  };
-
-  // Consolidated card and content movement
-  const animatedStyle = useAnimatedStyle(() => {
-    // Combine manual tilt (touch) with sensor tilt (gyro)
-    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
-    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
-    
-    const tx = (tiltX?.value ?? 0) + sensorX;
-    const ty = (tiltY?.value ?? 0) + sensorY;
-    
-    return {
-      transform: [
-        { perspective: 1200 },
-        { rotateX: `${tx}deg` },
-        { rotateY: `${ty}deg` },
-      ],
-    };
-  });
-
-  const contentAnimatedStyle = useAnimatedStyle(() => {
-    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
-    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
-    
-    const tx = (tiltX?.value ?? 0) + sensorX;
-    const ty = (tiltY?.value ?? 0) + sensorY;
-    
-    return {
-      transform: [
-        { perspective: 1200 },
-        { translateX: ty * 0.8 },
-        { translateY: -tx * 0.8 },
-        { scale: 1.05 },
-      ],
-    };
-  });
-
-  // Image layer parallax
-  const imageAnimatedStyle = useAnimatedStyle(() => {
-    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
-    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
-    
-    const tx = (tiltX?.value ?? 0) + sensorX;
-    const ty = (tiltY?.value ?? 0) + sensorY;
-    
-    return {
-      transform: [
-        { perspective: 1200 },
-        { scale: 1.15 },
-        { translateX: -ty * 0.3 },
-        { translateY: tx * 0.3 },
-      ],
-    };
-  });
-
-  const shineStyle = useAnimatedStyle(() => {
-    const sY = sensor ? sensor.sensor.value.roll * 50 : 0;
-    const tx = tiltX?.value ?? 0;
-    const ty = tiltY?.value ?? 0;
-    
-    return {
-      opacity: (tx !== 0 || ty !== 0 || sY !== 0) ? 0.8 : 0.4,
-      transform: [
-        { translateX: (shineX?.value ?? -width) + sY },
-        { skewX: '-25deg' }
-      ],
-    };
-  });
-
-  return (
-    <Animated.View style={[styles.outerContainer, style]}>
-      <Pressable onPress={onPress} style={{ width: POSTER_WIDTH, height: POSTER_HEIGHT }}>
-        <Animated.View 
-          style={[styles.posterContainer, animatedStyle]}
-          renderToHardwareTextureAndroid={true}
-        >
-          <Animated.View style={[styles.imageLayer, imageAnimatedStyle]}>
-            <AnimatedImage 
-              source={{ uri: item.imageUrl }} 
-              style={styles.image} 
-              contentFit="cover"
-              priority="high"
-              sharedTransitionTag={`movie-image-${item.id}`}
-            />
-          </Animated.View>
-
-          {/* Dynamic Glare/Shine Effect */}
-          <Animated.View style={[styles.shine, shineStyle]}>
-            <LinearGradient
-              colors={['transparent', 'rgba(255,255,255,0.25)', 'transparent']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={StyleSheet.absoluteFill}
-            />
-          </Animated.View>
-
-          <LinearGradient
-            colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.9)']}
-            style={styles.gradient}
-          />
-
-          <Animated.View style={[styles.overlayContent, contentAnimatedStyle]}>
-            {/* N SERIES Logo */}
-            <View style={styles.seriesRow}>
-              <Image 
-                source={require('../assets/images/netflix-n-logo.svg')} 
-                style={styles.nSeriesLogoImage} 
-                contentFit="contain"
-              />
-              <Text style={styles.seriesText}>S E R I E S</Text>
-            </View>
-
-            {/* Contextual Callout */}
-            <View style={styles.top10Badge}>
-              <View style={styles.top10Square}>
-                <Text style={styles.top10Text}>TOP</Text>
-                <Text style={styles.top10Num}>10</Text>
-              </View>
-              <Text style={styles.top10Rank}>#1 in TV Shows Today</Text>
-            </View>
-
-            <Text style={styles.title} numberOfLines={2}>{item.title.toUpperCase()}</Text>
-            <Text style={styles.categories}>{item.categories.join(' • ')}</Text>
-
-            <View style={styles.actions}>
-              <Pressable style={styles.playButton} onPress={onPress}>
-                <Ionicons name="play" size={20} color="black" />
-                <Text style={styles.playButtonText}>Play</Text>
-              </Pressable>
-              <Pressable style={styles.listButton} onPress={handleToggleMyList}>
-                <Ionicons name={isInMyList ? "checkmark" : "add"} size={24} color="white" />
-                <Text style={styles.listButtonText}>My List</Text>
-              </Pressable>
-            </View>
-          </Animated.View>
-        </Animated.View>
-      </Pressable>
-    </Animated.View>
-  );
-};
-
-export const NetflixHero = React.memo(NetflixHeroComponent);
 
 const styles = StyleSheet.create({
   outerContainer: {
@@ -243,9 +47,6 @@ const styles = StyleSheet.create({
   },
   shine: {
     position: 'absolute',
-    top: -height,
-    bottom: -height,
-    width: width * 0.8,
     zIndex: 5,
   },
   gradient: {
@@ -371,3 +172,195 @@ const styles = StyleSheet.create({
     fontSize: 16,
   }
 });
+
+interface HeroProps {
+  item: {
+    id: string;
+    title: string;
+    imageUrl: string;
+    categories: string[];
+    type?: string;
+  };
+  onPress?: () => void;
+  tiltX?: SharedValue<number>;
+  tiltY?: SharedValue<number>;
+  shineX?: SharedValue<number>;
+  sensor?: any; // Reanimated sensor
+  style?: any;
+}
+
+const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX, sensor, style }: HeroProps) => {
+  const { width, height } = useWindowDimensions();
+  const POSTER_WIDTH = width * 0.9;
+  const POSTER_HEIGHT = POSTER_WIDTH * 1.35;
+  
+  const { selectedProfile } = useProfile();
+  const [isInMyList, setIsInMyList] = useState(false);
+
+  useEffect(() => {
+    if (!selectedProfile || !item?.id) return;
+    
+    MyListService.isInList(selectedProfile.id, item.id.toString()).then(setIsInMyList);
+
+    const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
+      const exists = items.some(i => i.id.toString() === item.id.toString());
+      setIsInMyList(exists);
+    });
+
+    return () => unsubscribe();
+  }, [selectedProfile, item?.id]);
+
+  const handleToggleMyList = async () => {
+    if (!selectedProfile || !item) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const newStatus = !isInMyList;
+    setIsInMyList(newStatus);
+    
+    const wasAdded = await MyListService.toggleItem(selectedProfile.id, {
+      id: item.id.toString(),
+      title: item.title,
+      poster_path: item.imageUrl,
+      backdrop_path: item.imageUrl,
+      type: item.type || 'movie'
+    });
+    
+    if (typeof wasAdded === 'boolean') {
+      setIsInMyList(wasAdded);
+    }
+  };
+
+  const animatedStyle = useAnimatedStyle(() => {
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
+    return {
+      transform: [
+        { perspective: 1200 },
+        { rotateX: `${tx}deg` },
+        { rotateY: `${ty}deg` },
+      ],
+    };
+  });
+
+  const contentAnimatedStyle = useAnimatedStyle(() => {
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
+    return {
+      transform: [
+        { perspective: 1200 },
+        { translateX: ty * 0.8 },
+        { translateY: -tx * 0.8 },
+        { scale: 1.05 },
+      ],
+    };
+  });
+
+  const imageAnimatedStyle = useAnimatedStyle(() => {
+    const sensorX = sensor ? sensor.sensor.value.pitch * 15 : 0;
+    const sensorY = sensor ? sensor.sensor.value.roll * 15 : 0;
+    
+    const tx = (tiltX?.value ?? 0) + sensorX;
+    const ty = (tiltY?.value ?? 0) + sensorY;
+    
+    return {
+      transform: [
+        { perspective: 1200 },
+        { scale: 1.15 },
+        { translateX: -ty * 0.3 },
+        { translateY: tx * 0.3 },
+      ],
+    };
+  });
+
+  const shineStyle = useAnimatedStyle(() => {
+    const sY = sensor ? sensor.sensor.value.roll * 50 : 0;
+    const tx = tiltX?.value ?? 0;
+    const ty = tiltY?.value ?? 0;
+    
+    return {
+      opacity: (tx !== 0 || ty !== 0 || sY !== 0) ? 0.8 : 0.4,
+      transform: [
+        { translateX: (shineX?.value ?? -width) + sY },
+        { skewX: '-25deg' }
+      ],
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.outerContainer, style]}>
+      <Pressable onPress={onPress} style={{ width: POSTER_WIDTH, height: POSTER_HEIGHT }}>
+        <Animated.View 
+          style={[styles.posterContainer, animatedStyle]}
+          renderToHardwareTextureAndroid={true}
+        >
+          <Animated.View style={[styles.imageLayer, imageAnimatedStyle]}>
+            <AnimatedImage 
+              source={{ uri: item.imageUrl }} 
+              style={styles.image} 
+              contentFit="cover"
+              priority="high"
+              sharedTransitionTag={`movie-image-${item.id}`}
+            />
+          </Animated.View>
+
+          <Animated.View style={[styles.shine, shineStyle, { top: -height, bottom: -height, width: width * 0.8 }]}>
+            <LinearGradient
+              colors={['transparent', 'rgba(255,255,255,0.25)', 'transparent']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+
+          <LinearGradient
+            colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.9)']}
+            style={styles.gradient}
+          />
+
+          <Animated.View style={[styles.overlayContent, contentAnimatedStyle]}>
+            <View style={styles.seriesRow}>
+              <Image 
+                source={require('../assets/images/netflix-n-logo.svg')} 
+                style={styles.nSeriesLogoImage} 
+                contentFit="contain"
+              />
+              <Text style={styles.seriesText}>S E R I E S</Text>
+            </View>
+
+            <View style={styles.top10Badge}>
+              <View style={styles.top10Square}>
+                <Text style={styles.top10Text}>TOP</Text>
+                <Text style={styles.top10Num}>10</Text>
+              </View>
+              <Text style={styles.top10Rank}>#1 in TV Shows Today</Text>
+            </View>
+
+            <Text style={styles.title} numberOfLines={2}>{item.title.toUpperCase()}</Text>
+            <Text style={styles.categories}>{item.categories.join(' • ')}</Text>
+
+            <View style={styles.actions}>
+              <Pressable style={styles.playButton} onPress={onPress}>
+                <Ionicons name="play" size={20} color="black" />
+                <Text style={styles.playButtonText}>Play</Text>
+              </Pressable>
+              <Pressable style={styles.listButton} onPress={handleToggleMyList}>
+                <Ionicons name={isInMyList ? "checkmark" : "add"} size={24} color="white" />
+                <Text style={styles.listButtonText}>My List</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
+        </Animated.View>
+      </Pressable>
+    </Animated.View>
+  );
+};
+
+export const NetflixHero = React.memo(NetflixHeroComponent);

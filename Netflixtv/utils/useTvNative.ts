@@ -20,7 +20,16 @@ export interface NativeVidLinkStream {
   url: string;
   headers: Record<string, string>;
   captions: NativeCaption[];
+  markers?: NativeSkipMarker[];
   sourceId: string;
+}
+
+export interface NativeVidSrcStream {
+  url: string;
+  headers: Record<string, string>;
+  captions: NativeCaption[];
+  sourceId: string;
+  quality?: string;
 }
 
 export interface NativeCaption {
@@ -28,6 +37,12 @@ export interface NativeCaption {
   url: string;
   language: string;
   type: string;
+}
+
+export interface NativeSkipMarker {
+  type: 'intro' | 'outro';
+  start: number;
+  end: number;
 }
 
 export interface NativeTrailerStream {
@@ -38,8 +53,9 @@ export interface NativeTrailerStream {
 // ===== API =====
 
 /**
- * Resolve a VidLink HLS stream entirely on the native thread (OkHttp).
- * Replaces the WebView-based VidLinkResolver component.
+ * Resolve a VidLink HLS stream via native Android WebView (Kotlin).
+ * The Kotlin module creates a headless WebView, loads the embed page,
+ * and intercepts the /api/b/ fetch response containing the HLS playlist.
  */
 export async function resolveVidLinkStream(
   tmdbId: string,
@@ -63,8 +79,34 @@ export async function resolveVidLinkStream(
 }
 
 /**
+ * Resolve a VidSrc HLS stream via native Android WebView (Kotlin).
+ * The Kotlin module creates a headless WebView, loads vidsrc.cc embed,
+ * and intercepts JWPlayer/HLS.js/fetch calls to capture the m3u8 URL
+ * from the upstream CDN (cloudnestra).
+ */
+export async function resolveVidSrcStream(
+  tmdbId: string,
+  type: 'movie' | 'tv',
+  season?: number,
+  episode?: number
+): Promise<NativeVidSrcStream | null> {
+  if (!isAvailable) return null;
+  try {
+    const result = await TvNativeModule.resolveVidSrcStream(
+      tmdbId,
+      type,
+      season ?? 0,
+      episode ?? 0
+    );
+    return result as NativeVidSrcStream;
+  } catch (e: any) {
+    console.warn(`[TvNative] resolveVidSrcStream error: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Resolve an IMDb trailer URL on the native thread.
- * Replaces the WebView-based TrailerResolver component.
  */
 export async function resolveTrailer(
   tmdbId: string | number,
@@ -102,11 +144,10 @@ export async function prefetchTrailers(
   }
 }
 
-
-
 /**
  * Check if the native module is available.
  */
 export function isTvNativeAvailable(): boolean {
   return isAvailable;
 }
+

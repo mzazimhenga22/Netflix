@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, StyleSheet, useWindowDimensions } from 'react-native';
 import { HorizontalCarousel } from './HorizontalCarousel';
 import { getImageUrl, getBackdropUrl } from '../services/tmdb';
 
-const { width } = Dimensions.get('window');
+// Removed static width constant to prevent orientation distortion.
+// useWindowDimensions() is used inside the component instead.
 
 interface LazyCarouselRowProps {
   title: string;
@@ -14,6 +15,7 @@ interface LazyCarouselRowProps {
 }
 
 const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'poster' }: LazyCarouselRowProps) => {
+  const { width } = useWindowDimensions();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   

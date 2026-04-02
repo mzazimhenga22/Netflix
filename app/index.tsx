@@ -36,11 +36,13 @@ export default function SplashScreen() {
 
 
   useEffect(() => {
-    // Animation Sequence: Fade in -> Zoom in (Impact) -> Guard Check
-    opacity.value = withTiming(1, { duration: 500 });
+    // Beginner-friendly fade-in animation
+    opacity.value = withTiming(1, { duration: 1000 });
+    
+    // Slight pop effect
     scale.value = withSequence(
-      withDelay(500, withTiming(1.2, { duration: 1000 })),
-      withTiming(15, { duration: 600 }, () => {
+      withTiming(1.05, { duration: 1000 }),
+      withTiming(1, { duration: 500 }, () => {
         runOnJS(startVersionGuard)();
       })
     );

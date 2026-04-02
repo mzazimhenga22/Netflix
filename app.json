@@ -49,8 +49,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "17ced755-90e8-4bdf-a3e8-7ae951dc6c95"
+        "projectId": "b24b7409-7470-4123-8a42-8c8b7247b088"
       }
-    }
+    },
+    "owner": "netflixtvclone"
   }
 }
