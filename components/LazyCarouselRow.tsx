@@ -12,9 +12,10 @@ interface LazyCarouselRowProps {
   tiltX?: any;
   tiltY?: any;
   variant?: 'poster' | 'landscape';
+  onCardLongPress?: (item: { id: string; title: string; imageUrl: string; type?: string }) => void;
 }
 
-const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'poster' }: LazyCarouselRowProps) => {
+const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'poster', onCardLongPress }: LazyCarouselRowProps) => {
   const { width } = useWindowDimensions();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,6 +72,7 @@ const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'pos
       variant={variant}
       tiltX={tiltX}
       tiltY={tiltY}
+      onCardLongPress={onCardLongPress}
     />
   );
 };

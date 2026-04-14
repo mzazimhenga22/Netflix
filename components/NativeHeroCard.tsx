@@ -2,14 +2,16 @@ import React from 'react';
 import { requireNativeComponent, ViewProps, StyleSheet, useWindowDimensions } from 'react-native';
 
 interface NativeHeroCardProps extends ViewProps {
-  item: {
+  items: Array<{
     id: string;
     title: string;
     imageUrl: string;
     nLogoUrl: string;
+    titleLogoUrl?: string;
     categories: string[];
     isInMyList?: boolean;
-  };
+    type?: string;
+  }>;
   onPlayPress?: (event: { nativeEvent: { id: string } }) => void;
   onListPress?: (event: { nativeEvent: { id: string } }) => void;
 }

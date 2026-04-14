@@ -102,8 +102,11 @@ export default function ProfilesScreen() {
     startProfileTransition(profile, layout);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     
-    // Navigate immediately so home screen starts loading in the background
-    router.replace('/(tabs)/home');
+    // Give the floating avatar animation time to fly across the screen
+    // while the profile screen smoothly fades to black before navigation.
+    setTimeout(() => {
+      router.replace('/(tabs)/home');
+    }, 800);
   };
 
   const handlePinPress = (digit: string) => {
@@ -118,7 +121,10 @@ export default function ProfilesScreen() {
       if (newVal === lockedProfile?.profile.pin) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowPinModal(false);
-        handleProfileSelect(lockedProfile.profile, lockedProfile.layout);
+        // Add a slight delay after modal closure for a smoother transition
+        setTimeout(() => {
+          handleProfileSelect(lockedProfile.profile, lockedProfile.layout);
+        }, 150);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setPinError(true);

@@ -201,7 +201,14 @@ export function parseVidLinkResponse(data: any): VidLinkStream | null {
     }
     if (Array.isArray(stream.skips)) {
       stream.skips.forEach((s: any) => {
-        markers.push({ type: s.type || (s.type === 1 ? 'intro' : 'outro'), start: s.start || 0, end: s.end || 0 });
+        // Handle type as string ('intro'/'outro') or number (1=intro, 2=outro)
+        let skipType: 'intro' | 'outro' = 'outro';
+        if (s.type === 'intro' || s.type === 1) {
+          skipType = 'intro';
+        } else if (s.type === 'outro' || s.type === 2) {
+          skipType = 'outro';
+        }
+        markers.push({ type: skipType, start: s.start || 0, end: s.end || 0 });
       });
     }
 

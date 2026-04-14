@@ -56,7 +56,6 @@ export const useTransition = () => useContext(TransitionContext);
  */
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const [showSplash, setShowSplash] = useState(true);
   const [themeColor, setThemeColor] = useState('#000000');
   const [isTransitioning, setIsTransitioning] = useState(false);
 
@@ -92,10 +91,6 @@ export default function RootLayout() {
               </Stack>
               <StatusBar style="light" />
             </ThemeProvider>
-            
-            {showSplash && (
-              <SplashAnimation onFinish={() => setShowSplash(false)} />
-            )}
           </BottomSheetModalProvider>
         </ThemeContext.Provider>
         </TransitionContext.Provider>

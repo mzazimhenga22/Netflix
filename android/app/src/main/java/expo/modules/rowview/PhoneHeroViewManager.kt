@@ -82,58 +82,57 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
         return root
     }
 
-    @ReactProp(name = "item")
-    fun setItem(view: FrameLayout, itemMap: ReadableMap?) {
-        val item = mutableMapOf<String, Any>()
-        itemMap?.let {
-            item["id"] = getSafeString(it, "id")
-            item["title"] = getSafeString(it, "title")
-            item["imageUrl"] = getSafeString(it, "imageUrl")
-            item["nLogoUrl"] = getSafeString(it, "nLogoUrl")
-            
-            val categories = mutableListOf<String>()
-            it.getArray("categories")?.let { arr ->
-                for (i in 0 until arr.size()) {
-                    categories.add(arr.getString(i) ?: "")
+    @ReactProp(name = "items")
+    fun setItems(view: FrameLayout, itemsArray: ReadableArray?) {
+        val itemsList = mutableListOf<Map<String, Any>>()
+        
+        itemsArray?.let { arr ->
+            for (i in 0 until arr.size()) {
+                val it = arr.getMap(i)
+                if (it != null) {
+                    val item = mutableMapOf<String, Any>()
+                    item["id"] = getSafeString(it, "id")
+                    item["title"] = getSafeString(it, "title")
+                    item["imageUrl"] = getSafeString(it, "imageUrl")
+                    item["nLogoUrl"] = getSafeString(it, "nLogoUrl")
+                    item["titleLogoUrl"] = getSafeString(it, "titleLogoUrl")
+                    
+                    val categories = mutableListOf<String>()
+                    it.getArray("categories")?.let { catArr ->
+                        for (j in 0 until catArr.size()) {
+                            categories.add(catArr.getString(j) ?: "")
+                        }
+                    }
+                    item["categories"] = categories
+                    item["isInMyList"] = if (it.hasKey("isInMyList")) it.getBoolean("isInMyList") else false
+                    item["type"] = getSafeString(it, "type")
+                    
+                    itemsList.add(item)
                 }
             }
-            item["categories"] = categories
-            item["isInMyList"] = if (it.hasKey("isInMyList")) it.getBoolean("isInMyList") else false
         }
         
-        view.setTag(TAG_HERO_ITEM, item)
+        view.setTag(TAG_HERO_ITEM, itemsList)
         
         if (view.isAttachedToWindow) {
             val composeView = view.getTag(TAG_COMPOSE_VIEW) as? ComposeView ?: return
-            applyContent(view, composeView, item, view.context as ThemedReactContext)
+            applyContent(view, composeView, itemsList, view.context as ThemedReactContext)
         }
     }
 
     private fun applyContent(
         view: FrameLayout,
         composeView: ComposeView,
-        item: Map<String, Any>,
+        items: List<Map<String, Any>>,
         context: ThemedReactContext
     ) {
-        val id = item["id"] as? String ?: ""
-        val title = item["title"] as? String ?: ""
-        val imageUrl = item["imageUrl"] as? String ?: ""
-        val nLogoUrl = item["nLogoUrl"] as? String ?: ""
-        val categories = item["categories"] as? List<String> ?: emptyList()
-        val isInMyList = item["isInMyList"] as? Boolean ?: false
-
         composeView.setContent {
             PhoneHeroComposable(
-                id = id,
-                title = title,
-                imageUrl = imageUrl,
-                nLogoUrl = nLogoUrl,
-                categories = categories,
-                isInMyList = isInMyList,
-                onPlayPress = {
+                items = items,
+                onPlayPress = { id ->
                     sendEvent(view, context, "onPlayPress", id)
                 },
-                onListPress = {
+                onListPress = { id ->
                     sendEvent(view, context, "onListPress", id)
                 }
             )

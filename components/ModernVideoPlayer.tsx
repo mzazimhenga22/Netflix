@@ -34,6 +34,13 @@ import { useProfile } from '../context/ProfileContext';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { RatingsService, RatingValue } from '../services/RatingsService';
 
+// Stable empty array references to prevent useEffect infinite loops.
+// Default param `= []` creates a new ref every render; if that ref is in
+// a useEffect dep array the effect fires on every render, resetting the
+// stream resolution and keeping the player stuck on "Resolving...".
+const EMPTY_TRACKS: any[] = [];
+const EMPTY_AUDIO_TRACKS: { id: string; label: string; language?: string }[] = [];
+
 // Removed static top-level Dimensions to prevent orientation distortion.
 // Component now uses useWindowDimensions() hook internally.
 
@@ -64,8 +71,8 @@ export function ModernVideoPlayer({
   onClose, 
   title, 
   headers,
-  tracks = [],
-  audioTracks = [],
+  tracks = EMPTY_TRACKS,
+  audioTracks = EMPTY_AUDIO_TRACKS,
   episodes = [],
   onEpisodeSelect,
   onNextEpisode,
@@ -197,8 +204,8 @@ export function ModernVideoPlayer({
     currentUrlRef.current = '';          // Clear cached URL so replaceAsync fires
     setInternalVideoUrl('');             // Clear old stream
     setInternalHeaders(undefined);
-    setInternalTracks([]);
-    setInternalAudioTracks([]);
+    setInternalTracks(EMPTY_TRACKS);
+    setInternalAudioTracks(EMPTY_AUDIO_TRACKS);
     setSelectedAudioTrackId(null);
     setCurrentTime(0);                  // Reset playback position display
     setDuration(0);
@@ -215,7 +222,14 @@ export function ModernVideoPlayer({
     // Start with VidLink as primary source
     setActiveSource('vidlink');
     setVidlinkEnabled(true);
-  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt, audioTracks, headers, progressPercentage, title, tracks]);
+  // NOTE: audioTracks, tracks, headers are intentionally EXCLUDED from deps.
+  // They are only consumed in the `if (videoUrl)` early-return branch above,
+  // and `videoUrl` is already in the dep list — so when an external URL is
+  // provided the effect will re-run and read the latest closure values.
+  // Including them caused an infinite render loop because the parent does
+  // not pass audioTracks, making the default `[]` a new ref every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt, title]);
 
   // VidLink stream resolved callback
   const handleVidLinkResolved = useCallback((stream: VidLinkStream) => {
@@ -380,12 +394,11 @@ export function ModernVideoPlayer({
       }
     }
 
-    // Skip Intro Logic
+    // Skip Intro Logic — only when stream metadata provides real intro markers
     const introMarker = skipMarkersRef.current.find(m => m.type === 'intro');
-    // Intelligent marker check, fallback to 30-90s mock if stream has no markers
-    const isIntroActive = introMarker 
+    const isIntroActive = introMarker
       ? (current >= introMarker.start && current <= introMarker.end)
-      : (current > 30 && current < 90);
+      : false; // No fake fallback — skip intro only from stream metadata
 
     if (isIntroActive) {
       if (!showSkipIntroRef.current) {
@@ -399,16 +412,15 @@ export function ModernVideoPlayer({
       }
     }
 
-    // Auto-Play Next Episode logic
-    // Require a realistic duration (>60s) so it doesn't trigger immediately on load when duration is 0
+    // Auto-Play Next Episode — only when stream metadata provides real outro markers
     if (contentType === 'tv' && onNextEpisode && activeDur > 60) {
       const outroMarker = skipMarkersRef.current.find(m => m.type === 'outro');
       const remaining = activeDur - current;
-      
-      // If we have a genuine API outro marker, trigger there. Otherwise fallback to the last 20 seconds.
+
+      // Only trigger from genuine API outro markers, no hardcoded time fallback
       const isOutroActive = outroMarker
          ? (current >= outroMarker.start && remaining > 0)
-         : (remaining <= 20 && remaining > 0);
+         : false;
 
       if (isOutroActive) {
         if (!isNextEpisodeCountdownRef.current) {

@@ -114,3 +114,25 @@ export const fetchDiscoverByGenre = async (type: 'movie' | 'tv', genreId: number
   });
   return data.results;
 };
+
+export const fetchTitleLogo = async (id: string, type: 'movie' | 'tv' = 'movie') => {
+  try {
+    const { data } = await tmdb.get(`/${type}/${id}/images`, {
+      params: {
+        include_image_language: 'en,null', // prioritize english, fallback to null (textless)
+      }
+    });
+    
+    // Find highest quality logo
+    const logos = data.logos;
+    if (logos && logos.length > 0) {
+      // Sort by file size/width to get the highest resolution
+      const bestLogo = logos.sort((a: any, b: any) => b.width - a.width)[0];
+      return getImageUrl(bestLogo.file_path);
+    }
+    return null;
+  } catch (error) {
+    console.error("Failed to fetch logo:", error);
+    return null;
+  }
+};

@@ -56,6 +56,7 @@ import { useProfile } from '../../context/ProfileContext';
 import { MyListService } from '../../services/MyListService';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 import { useNativeDetails } from '../../hooks/useNativeDetails';
+import { CastCarousel } from '../../components/CastCarousel';
 
 // Removed static SCREEN_WIDTH/HEIGHT constants to prevent orientation-change distortion;
 // using useWindowDimensions() inside MovieDetailsScreen instead.
@@ -818,11 +819,17 @@ export default function MovieDetailsScreen() {
           {movie.overview}
         </Animated.Text>
 
-        <Animated.View entering={FadeInUp.delay(1100).duration(800)} style={styles.bentoCard}>
-          <Text style={styles.bentoLabel}>Cast & Crew</Text>
-          <Text style={styles.credits} numberOfLines={2}>
-            {details?.castList || movie.credits?.cast?.slice(0, 5).map((c: any) => c.name).join(', ')}... more
-          </Text>
+        <Animated.View entering={FadeInUp.delay(1100).duration(800)}>
+          {movie.credits?.cast ? (
+            <CastCarousel cast={movie.credits.cast} />
+          ) : (
+            <View style={styles.bentoCard}>
+              <Text style={styles.bentoLabel}>Cast & Crew</Text>
+              <Text style={styles.credits} numberOfLines={2}>
+                {details?.castList || 'Cast information unavailable'}
+              </Text>
+            </View>
+          )}
         </Animated.View>
 
         <Animated.View entering={FadeInUp.delay(1200).duration(800)} style={styles.secondaryActions}>

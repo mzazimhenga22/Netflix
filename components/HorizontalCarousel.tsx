@@ -39,9 +39,10 @@ interface HorizontalCarouselProps {
   isTop10?: boolean;
   isGamesRow?: boolean;
   isWatchHistory?: boolean;
+  onCardLongPress?: (item: { id: string; title: string; imageUrl: string; type?: string }) => void;
 }
 
-const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY, isTop10, isGamesRow, isWatchHistory }: HorizontalCarouselProps) => {
+const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, tiltY, isTop10, isGamesRow, isWatchHistory, onCardLongPress }: HorizontalCarouselProps) => {
   const { width: windowWidth } = useWindowDimensions();
   const POSTER_W = windowWidth * 0.28;
   const LANDSCAPE_W = windowWidth * 0.35;
@@ -67,8 +68,9 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
       isRecentlyAdded={!isGamesRow && parseInt(item.id) % 5 === 0}
       isGame={isGamesRow}
       isWatchHistory={isWatchHistory}
+      onLongPress={onCardLongPress}
     />
-  ), [actualVariant, tiltX, tiltY, isListTop10, isGamesRow, isWatchHistory]);
+  ), [actualVariant, tiltX, tiltY, isListTop10, isGamesRow, isWatchHistory, onCardLongPress]);
 
   const viewabilityConfig = React.useRef({
     itemVisiblePercentThreshold: 50

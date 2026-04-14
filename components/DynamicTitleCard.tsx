@@ -148,9 +148,10 @@ interface DynamicTitleCardProps {
   isRecentlyAdded?: boolean;
   isGame?: boolean;
   isWatchHistory?: boolean;
+  onLongPress?: (item: { id: string; title: string; imageUrl: string; type?: string }) => void;
 }
 
-const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, index, isTop10, isOriginal, isRecentlyAdded, isGame, isWatchHistory }: DynamicTitleCardProps) => {
+const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, index, isTop10, isOriginal, isRecentlyAdded, isGame, isWatchHistory, onLongPress }: DynamicTitleCardProps) => {
   const { width } = useWindowDimensions();
   const POSTER_WIDTH = width * 0.28;
   const POSTER_HEIGHT = POSTER_WIDTH * 1.5;
@@ -217,6 +218,7 @@ const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, ind
         onPress={handlePress}
         onLongPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          if (onLongPress) onLongPress(item);
         }}
         delayLongPress={300}
         style={[styles.pressable, isTop10 && { width: POSTER_WIDTH, position: 'absolute', right: 0, height: '100%' }]}

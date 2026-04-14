@@ -4,10 +4,12 @@ import { Image as ExpoImage } from 'expo-image';
 import { NativeHeroCard } from '../../components/NativeHeroCard';
 import { MyListService } from '../../services/MyListService';
 import { HorizontalCarousel } from '../../components/HorizontalCarousel';
+import { LandscapeContinueWatchingRow } from '../../components/LandscapeContinueWatchingRow';
 import { LazyCarouselRow } from '../../components/LazyCarouselRow';
 import { ClipsRow } from '../../components/ClipsRow';
+import { QuickPreviewModal, QuickPreviewItem } from '../../components/QuickPreviewModal';
 import { COLORS, SPACING } from '../../constants/theme';
-import { fetchTrending, fetchPopular, fetchTopRated, fetchDiscoverByGenre, getBackdropUrl, getImageUrl } from '../../services/tmdb';
+import { fetchTrending, fetchPopular, fetchTopRated, fetchDiscoverByGenre, getBackdropUrl, getImageUrl, fetchTitleLogo } from '../../services/tmdb';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
@@ -105,6 +107,13 @@ export default function HomeScreen() {
   const [isCasting, setIsCasting] = useState(false);
   const [activeDevice, setActiveDevice] = useState<string | null>(null);
   const [heroIsInList, setHeroIsInList] = useState(false);
+  const [previewItem, setPreviewItem] = useState<QuickPreviewItem | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const handleCardLongPress = useCallback((item: QuickPreviewItem) => {
+    setPreviewItem(item);
+    setShowPreview(true);
+  }, []);
 
   const handleCastPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -173,6 +182,12 @@ export default function HomeScreen() {
     return { backgroundColor };
   });
 
+  const auraOpacityStyle = useAnimatedStyle(() => {
+    // Fades out the aura smoothly as the user scrolls down
+    const opacity = interpolate(scrollY.value, [0, height * 0.6], [0.45, 0], 'clamp');
+    return { opacity };
+  });
+
   const headerBackgroundOpacity = useAnimatedStyle(() => {
     const opacity = interpolate(scrollY.value, [0, 50, 100], [0, 0.4, 1], 'clamp');
     return { opacity: activeFilter !== 'home' ? 1 : opacity };
@@ -217,7 +232,18 @@ export default function HomeScreen() {
         genre_ids: item.genre_ids
       }));
 
-      setTrending(formatData(trendingData));
+      const trendingFormatted = formatData(trendingData);
+
+      // Concurrently fetch Official TMDB Title Logos for the Hero Carousel (Top 5 items)
+      const top5 = trendingFormatted.slice(0, 5);
+      const top5WithLogos = await Promise.all(top5.map(async (item: any) => {
+        const titleLogoUrl = await fetchTitleLogo(item.id, item.type as any) || '';
+        return { ...item, titleLogoUrl };
+      }));
+
+      // Merge the enhanced top 5 back into the full list
+      const finalTrending = [...top5WithLogos, ...trendingFormatted.slice(5)];
+      setTrending(finalTrending);
 
       setClips(trendingData.slice(10, 16).map((item: any) => ({
         id: item.id.toString(),
@@ -269,24 +295,29 @@ export default function HomeScreen() {
   // const _sensor = useAnimatedSensor(SensorType.ROTATION, { interval: 16 });
   // const _gesture = Gesture.Pan()...
 
-  const heroItem = useMemo(() => trending.length > 0 ? {
-    ...trending[0],
-    imageUrl: trending[0].imageUrl,
-    categories: selectedCategory ? [selectedCategory, 'Trending'] : ['Understated', 'Dark', 'Drama', 'Detectives'],
-  } : null, [trending, selectedCategory]);
+  const heroItems = useMemo(() => {
+    return trending.slice(0, 5).map(item => ({
+      ...item,
+      categories: selectedCategory ? [selectedCategory, 'Trending'] : ['Understated', 'Dark', 'Drama', 'Detectives'],
+      nLogoUrl: Image.resolveAssetSource(require('../../assets/images/netflix-n-logo.svg')).uri
+    }));
+  }, [trending, selectedCategory]);
 
   useEffect(() => {
-    if (!selectedProfile || !heroItem?.id) return;
+    if (!selectedProfile || heroItems.length === 0) return;
     
-    MyListService.isInList(selectedProfile.id, heroItem.id).then(setHeroIsInList);
+    // We only actively track My List for the first hero item to simplify the UI state 
+    // for this proof-of-concept, but ideally we'd track all 5.
+    const primaryHeroId = heroItems[0].id;
+    MyListService.isInList(selectedProfile.id, primaryHeroId).then(setHeroIsInList);
     
     const unsubscribe = MyListService.subscribeToList(selectedProfile.id, (items) => {
-      const exists = items.some(i => i.id.toString() === heroItem.id.toString());
+      const exists = items.some(i => i.id.toString() === primaryHeroId.toString());
       setHeroIsInList(exists);
     });
 
     return () => unsubscribe();
-  }, [selectedProfile, heroItem?.id]);
+  }, [selectedProfile, heroItems]);
 
   const [categorySubRows, setCategorySubRows] = useState<any[]>([]);
 
@@ -370,13 +401,13 @@ export default function HomeScreen() {
   const renderItem = useCallback(({ item }: { item: any }) => {
     switch (item.type) {
       case 'cw':
-        return <HorizontalCarousel title="Continue Watching" data={item.data} variant="poster" tiltX={tiltX} tiltY={tiltY} isWatchHistory={true} />;
+        return <LandscapeContinueWatchingRow title="Continue Watching" data={item.data} tiltX={tiltX} tiltY={tiltY} />;
       case 'games':
         return <HorizontalCarousel title="Mobile Games" data={item.data} tiltX={tiltX} tiltY={tiltY} isGamesRow={true} />;
       case 'clips':
         return <ClipsRow title="Fresh Clips for You" data={item.data} />;
       case 'static_carousel':
-        return <HorizontalCarousel title={item.title} data={item.data} tiltX={tiltX} tiltY={tiltY} />;
+        return <HorizontalCarousel title={item.title} data={item.data} tiltX={tiltX} tiltY={tiltY} onCardLongPress={handleCardLongPress} />;
       case 'lazy_carousel':
         // Generate fetch closures on-the-fly inside the component mapping, rather than recreating in the memoized config array. 
         // This ensures the row IDs stay perfectly stable.
@@ -385,36 +416,45 @@ export default function HomeScreen() {
           if (item.genreId === 'top_rated') return fetchTopRated(item.typeInput, isKids);
           return fetchDiscoverByGenre(item.typeInput, item.genreId as number, isKids);
         };
-        return <LazyCarouselRow title={item.title} fetchFn={rowFetchFn} tiltX={tiltX} tiltY={tiltY} />;
+        return <LazyCarouselRow title={item.title} fetchFn={rowFetchFn} tiltX={tiltX} tiltY={tiltY} onCardLongPress={handleCardLongPress} />;
       default:
         return null;
     }
-  }, [tiltX, tiltY, isKids]);
+  }, [tiltX, tiltY, isKids, handleCardLongPress]);
 
   // The very top hero that used to be inside the ScrollView is now the ListHeaderComponent
   const renderHeader = () => (
-    heroItem ? (
+    heroItems.length > 0 ? (
       <View style={{ zIndex: 1 }}>
         <NativeHeroCard
-          item={{
-            ...heroItem,
-            isInMyList: heroIsInList,
-            nLogoUrl: Image.resolveAssetSource(require('../../assets/images/netflix-n-logo.svg')).uri
+          items={heroItems.map((item, index) => ({
+            ...item,
+            isInMyList: index === 0 ? heroIsInList : false // For simplicity
+          }))}
+          onPlayPress={(e) => {
+            if (e?.nativeEvent?.id) {
+              const matched = heroItems.find(i => i.id.toString() === e.nativeEvent.id.toString());
+              if (matched) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                router.push({ pathname: "/movie/[id]", params: { id: matched.id, type: matched.type } });
+              }
+            }
           }}
-          onPlayPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            router.push({ pathname: "/movie/[id]", params: { id: heroItem!.id, type: heroItem!.type } });
-          }}
-          onListPress={async () => {
+          onListPress={async (e) => {
             if (!selectedProfile) return;
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            await MyListService.toggleItem(selectedProfile.id, {
-              id: heroItem.id.toString(),
-              title: heroItem.title,
-              poster_path: heroItem.imageUrl,
-              backdrop_path: heroItem.imageUrl,
-              type: heroItem.type || 'movie'
-            });
+            if (e?.nativeEvent?.id) {
+              const matched = heroItems.find(i => i.id.toString() === e.nativeEvent.id.toString());
+              if (matched) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                await MyListService.toggleItem(selectedProfile.id, {
+                  id: matched.id.toString(),
+                  title: matched.title,
+                  poster_path: matched.imageUrl,
+                  backdrop_path: matched.backdropUrl || matched.imageUrl,
+                  type: matched.type || 'movie'
+                });
+              }
+            }
           }}
           style={heroParallaxStyle}
         />
@@ -427,6 +467,24 @@ export default function HomeScreen() {
   return (
     <Animated.View style={[styles.container, animatedBackgroundStyle]}>
       
+      {/* Ambient Glass Aura Effect */}
+      {heroItems.length > 0 && (
+        <Animated.View style={[StyleSheet.absoluteFill, auraOpacityStyle, { zIndex: -1 }]}>
+          <ExpoImage 
+            source={{ uri: heroItems[0].imageUrl }} 
+            style={[StyleSheet.absoluteFill, { width: undefined, height: height * 0.8 }]} 
+            contentFit="cover"
+            blurRadius={90}
+          />
+          {/* Smooth blend wash so the aura fades perfectly into the lower dark container */}
+          <LinearGradient 
+            colors={['rgba(20,20,20,0.1)', 'rgba(20,20,20,0.8)', COLORS.background]} 
+            locations={[0, 0.5, 0.8]}
+            style={StyleSheet.absoluteFill}
+          />
+        </Animated.View>
+      )}
+
       {/* Absolute Translucent Header */}
       <View style={[styles.absoluteHeaderContainer, { paddingTop: insets.top }]}>
         {/* Permanent subtle gradient to ensure white icons are visible over bright hero images */}
@@ -495,8 +553,10 @@ export default function HomeScreen() {
       </View>
 
       <View style={{ flex: 1 }}>
-        {loading ? (
-          <HomeSkeleton />
+        {loading || isTransitioning ? (
+          // Don't show skeleton if we are currently transitioning from the profile screen (the avatar is floating in)
+          // to keep the visual entrance clean and unified.
+          !isTransitioning && <HomeSkeleton />
         ) : (
           <Animated.View entering={FadeIn.duration(400)} style={{ flex: 1 }}>
             <AnimatedFlatList
@@ -565,6 +625,16 @@ export default function HomeScreen() {
           )}
         </BottomSheetView>
       </BottomSheet>
+
+      {/* Quick Preview Modal (Long Press) */}
+      <QuickPreviewModal
+        visible={showPreview}
+        item={previewItem}
+        onClose={() => {
+          setShowPreview(false);
+          setPreviewItem(null);
+        }}
+      />
     </Animated.View>
   );
 }
