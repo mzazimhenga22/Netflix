@@ -234,6 +234,13 @@ export default function DownloadsScreen() {
           <ModernVideoPlayer 
             videoUrl={activePlaybackUri}
             title={selectedDownload.title}
+            headers={selectedDownload.streamHeaders}
+            tracks={(selectedDownload.subtitles || []).map((s) => ({
+              file: s.url,
+              label: s.label,
+              kind: s.kind || 'captions',
+            }))}
+            audioTracks={selectedDownload.audioTracks || []}
             onClose={() => {
               setIsPlaying(false);
               setActivePlaybackUri(null);

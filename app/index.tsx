@@ -6,11 +6,11 @@ import Animated, {
   useAnimatedStyle, 
   withTiming, 
   withSequence, 
-  withDelay,
   runOnJS,
   FadeIn
 } from 'react-native-reanimated';
 import { COLORS, SPACING } from '../constants/theme';
+import { SplashAnimation } from '../components/SplashAnimation';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -35,18 +35,16 @@ export default function SplashScreen() {
 
 
 
-  useEffect(() => {
-    // Beginner-friendly fade-in animation
-    opacity.value = withTiming(1, { duration: 1000 });
-    
-    // Slight pop effect
-    scale.value = withSequence(
-      withTiming(1.05, { duration: 1000 }),
-      withTiming(1, { duration: 500 }, () => {
-        runOnJS(startVersionGuard)();
-      })
-    );
-  }, []);
+  const [animating, setAnimating] = React.useState(true);
+
+  // Background version/auth check can begin during animation, but we won't navigate till both are done
+  // For simplicity and maximum impact of the 3s splash, we start the checks *after* the fast animation
+  // finishes.
+  
+  const handleSplashFinish = () => {
+    setAnimating(false);
+    startVersionGuard();
+  };
 
   const startVersionGuard = async () => {
     try {
@@ -179,11 +177,16 @@ export default function SplashScreen() {
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
-      <Animated.Image 
-        source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Netflix_icon.svg' }}
-        style={[styles.logo, logoStyle, showUpdateGate ? { opacity: 0 } : {}]}
-        resizeMode="contain"
-      />
+      
+      {animating ? (
+        <SplashAnimation onFinish={handleSplashFinish} />
+      ) : (
+        <Animated.Image 
+          source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Netflix_icon.svg' }}
+          style={[styles.logo, { opacity: showUpdateGate ? 0 : 0 }]}
+          resizeMode="contain"
+        />
+      )}
 
       {showUpdateGate && (
         <Animated.View entering={FadeIn.delay(200)} style={styles.gateOverlay}>

@@ -25,6 +25,7 @@ interface TvPosterCardProps {
   width?: number;
   height?: number;
   showBadge?: boolean;
+  progressPercentage?: number; // 0-100
 }
 
 export default function TvPosterCard({ 
@@ -37,7 +38,8 @@ export default function TvPosterCard({
   onFocus, 
   width = 200, 
   height = 300,
-  showBadge = false
+  showBadge = false,
+  progressPercentage,
 }: TvPosterCardProps) {
   const scale = useSharedValue(1);
   const borderOpacity = useSharedValue(0);
@@ -113,6 +115,13 @@ export default function TvPosterCard({
               </View>
               <Text style={styles.cardTitle} numberOfLines={1}>{title}</Text>
             </Animated.View>
+          )}
+          
+          {/* Progress Bar for Continue Watching */}
+          {progressPercentage !== undefined && progressPercentage > 0 && (
+            <View style={styles.progressBarContainer}>
+              <View style={[styles.progressBarFill, { width: `${Math.min(100, Math.max(0, progressPercentage))}%` }]} />
+            </View>
           )}
           
           {/* Default Title (Visible when not focused or as fallback) */}
@@ -223,5 +232,19 @@ const styles = StyleSheet.create({
   nBadgeImage: {
     width: 14,
     height: 22,
-  }
+  },
+  progressBarContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    zIndex: 20,
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#E50914',
+    borderRadius: 2,
+  },
 });

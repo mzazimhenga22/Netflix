@@ -25,6 +25,7 @@ import { NetflixLoader } from './NetflixLoader';
 import Svg, { Path, Defs, LinearGradient, Stop } from 'react-native-svg';
 // Native Kotlin module — both VidLink and VidSrc now use native Android WebView (not RN WebView)
 import { resolveVidLinkStream, NativeVidLinkStream } from '../utils/useTvNative';
+import { VidLinkResolver } from './VidLinkResolver';
 import { TrailerResolver, TrailerStream } from './TrailerResolver';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { VidLinkStream, VidLinkSkipMarker } from '../services/vidlink';
@@ -32,6 +33,22 @@ import { useProfile } from '../context/ProfileContext';
 import { NativeModules } from 'react-native';
 
 const { TvNativeModule } = NativeModules;
+const RESOLVE_TIMEOUT_MS = 22000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
 
 const { width, height } = Dimensions.get('window');
 
@@ -211,6 +228,8 @@ export function ModernVideoPlayer({
   const showUpNextRef = useRef(false);
   const hasSeekedRef = useRef(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [jsVidLinkEnabled, setJsVidLinkEnabled] = useState(false);
+  const [isTryingVidSrc, setIsTryingVidSrc] = useState(false);
 
   const { selectedProfile } = useProfile();
   
@@ -266,6 +285,78 @@ export function ModernVideoPlayer({
 
   const videoViewRef = useRef<any>(null);
 
+  const handleStreamResult = useCallback((result: any) => {
+    setInternalVideoUrl(result.url);
+    setInternalHeaders(result.headers || {});
+    setSkipMarkers(result.markers || []);
+    
+    const mappedTracks = (result.captions || []).map((c: any) => ({
+      file: c.url,
+      label: c.language,
+      kind: 'captions',
+    }));
+    setInternalTracks(mappedTracks);
+
+    if (preferredTrackLabel) {
+      const idx = mappedTracks.findIndex((t: any) => t.label === preferredTrackLabel);
+      if (idx >= 0) setSelectedTrackIndex(idx);
+    } else {
+      const engIdx = mappedTracks.findIndex((t: any) => t.label.toLowerCase().includes('english'));
+      if (engIdx >= 0) {
+        setSelectedTrackIndex(engIdx);
+        setPreferredTrackLabel(mappedTracks[engIdx].label);
+      }
+    }
+
+    setFetchError(false);
+    setStatus('readyToPlay');
+    setJsVidLinkEnabled(false);
+    setIsTryingVidSrc(false);
+  }, [preferredTrackLabel]);
+
+  const tryVidSrcFallback = useCallback(async () => {
+    if (isTryingVidSrc) return;
+    setIsTryingVidSrc(true);
+    setResolvingStatus('Trying alternate source...');
+    try {
+      console.log(`[Player] 🔗 Trying VidSrc native...`);
+      const result: any = await withTimeout<any>(
+        TvNativeModule.resolveVidSrcStream(
+          tmdbId,
+          contentType || 'movie',
+          seasonNum ?? 0,
+          episodeNum ?? 0
+        ),
+        RESOLVE_TIMEOUT_MS,
+        'VidSrc'
+      );
+
+      if (result?.url) {
+        console.log(`[Player] ✅ VidSrc resolved: ${result.url.substring(0, 80)}...`);
+        handleStreamResult(result);
+        return;
+      }
+    } catch (e: any) {
+      console.warn(`[Player] ⚠️ VidSrc failed: ${e.message}`);
+    }
+
+    console.error(`[Player] ❌ All sources failed for: ${title}`);
+    setFetchError(true);
+    setStatus('error');
+    setIsTryingVidSrc(false);
+  }, [tmdbId, contentType, seasonNum, episodeNum, title, isTryingVidSrc, handleStreamResult]);
+
+  const handleJsVidLinkResolved = useCallback((stream: VidLinkStream) => {
+    console.log(`[Player] ✅ JS VidLink fallback resolved: ${stream.url.substring(0, 80)}...`);
+    handleStreamResult(stream);
+  }, [handleStreamResult]);
+
+  const handleJsVidLinkError = useCallback((error: string) => {
+    console.warn(`[Player] ⚠️ JS VidLink fallback failed: ${error}`);
+    setJsVidLinkEnabled(false);
+    tryVidSrcFallback();
+  }, [tryVidSrcFallback]);
+
   // Internal Fetching Logic — uses Kotlin native module instead of WebView
   useEffect(() => {
     // If we already have a URL from props, prioritize it
@@ -306,16 +397,22 @@ export function ModernVideoPlayer({
       console.log(`[Player] 🚀 Resolving stream for: ${title} (TMDB: ${tmdbId})`);
       setStatus('loading');
       setFetchError(false);
+      setJsVidLinkEnabled(false);
+      setIsTryingVidSrc(false);
 
       // === ATTEMPT 1: VidLink (native Kotlin WebView) ===
       setResolvingStatus('Resolving via VidLink...');
       try {
         console.log(`[Player] 🔗 Trying VidLink native...`);
-        const result = await TvNativeModule.resolveVidLinkStream(
-          tmdbId,
-          contentType || 'movie',
-          seasonNum ?? 0,
-          episodeNum ?? 0
+        const result: any = await withTimeout<any>(
+          TvNativeModule.resolveVidLinkStream(
+            tmdbId,
+            contentType || 'movie',
+            seasonNum ?? 0,
+            episodeNum ?? 0
+          ),
+          RESOLVE_TIMEOUT_MS,
+          'VidLink'
         );
         
         if (cancelled || fetchId !== fetchIdRef.current) return;
@@ -329,68 +426,15 @@ export function ModernVideoPlayer({
         console.warn(`[Player] ⚠️ VidLink failed: ${e.message}`);
         if (cancelled || fetchId !== fetchIdRef.current) return;
       }
-
-      // === ATTEMPT 2: VidSrc (native Kotlin WebView → cloudnestra CDN) ===
-      setResolvingStatus('Trying alternate source...');
-      try {
-        console.log(`[Player] 🔗 Trying VidSrc native...`);
-        const result = await TvNativeModule.resolveVidSrcStream(
-          tmdbId,
-          contentType || 'movie',
-          seasonNum ?? 0,
-          episodeNum ?? 0
-        );
-        
-        if (cancelled || fetchId !== fetchIdRef.current) return;
-        
-        if (result?.url) {
-          console.log(`[Player] ✅ VidSrc resolved: ${result.url.substring(0, 80)}...`);
-          handleStreamResult(result);
-          return;
-        }
-      } catch (e: any) {
-        console.warn(`[Player] ⚠️ VidSrc failed: ${e.message}`);
-        if (cancelled || fetchId !== fetchIdRef.current) return;
-      }
-
-      // === ALL SOURCES FAILED ===
-      console.error(`[Player] ❌ All sources failed for: ${title}`);
-      setFetchError(true);
-      setStatus('error');
-    }
-
-    function handleStreamResult(result: any) {
-      setInternalVideoUrl(result.url);
-      setInternalHeaders(result.headers || {});
-      setSkipMarkers(result.markers || []);
-      
-      const tracks = (result.captions || []).map((c: any) => ({
-        file: c.url,
-        label: c.language,
-        kind: 'captions',
-      }));
-      setInternalTracks(tracks);
-
-      // Auto-select subtitles
-      if (preferredTrackLabel) {
-        const idx = tracks.findIndex((t: any) => t.label === preferredTrackLabel);
-        if (idx >= 0) setSelectedTrackIndex(idx);
-      } else {
-        const engIdx = tracks.findIndex((t: any) => t.label.toLowerCase().includes('english'));
-        if (engIdx >= 0) {
-          setSelectedTrackIndex(engIdx);
-          setPreferredTrackLabel(tracks[engIdx].label);
-        }
-      }
-
-      setFetchError(false);
-      setStatus('readyToPlay');
+      // === ATTEMPT 2: JS WebView fallback (same logic used on phone app) ===
+      setResolvingStatus('Trying JS fallback resolver...');
+      setJsVidLinkEnabled(true);
     }
 
     resolveStream();
 
     return () => { cancelled = true; };
-  }, [tmdbId, episodeNum, seasonNum, videoUrl]);
+  }, [tmdbId, episodeNum, seasonNum, videoUrl, title, contentType, handleStreamResult]);
 
   // Fetch Logo
   useEffect(() => {
@@ -831,6 +875,17 @@ export function ModernVideoPlayer({
     <GestureHandlerRootView style={styles.container}>
       <View style={styles.container}>
         {/* Stream resolution is now handled entirely by Kotlin native module */}
+        {jsVidLinkEnabled && tmdbId && (
+          <VidLinkResolver
+            tmdbId={tmdbId}
+            type={contentType || 'movie'}
+            season={seasonNum}
+            episode={episodeNum}
+            enabled={jsVidLinkEnabled}
+            onStreamResolved={handleJsVidLinkResolved}
+            onError={handleJsVidLinkError}
+          />
+        )}
 
         <VideoView
           ref={videoViewRef}
@@ -1016,6 +1071,23 @@ export function ModernVideoPlayer({
                   >
                     {({ focused }) => (
                       <Ionicons name="settings-outline" size={24} color={focused ? "black" : "white"} />
+                    )}
+                  </Pressable>
+                  <Pressable 
+                    onPress={() => {
+                      const newSpeed = playbackSpeed === 1 ? 1.25 : playbackSpeed === 1.25 ? 1.5 : playbackSpeed === 1.5 ? 2 : 1;
+                      setPlaybackSpeed(newSpeed);
+                      if (player) {
+                        try { player.playbackRate = newSpeed; } catch (e) {}
+                      }
+                    }}
+                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
+                  >
+                    {({ focused }) => (
+                      <>
+                        <Feather name="fast-forward" size={18} color={focused ? "black" : "white"} style={{ marginRight: 6 }} />
+                        <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>{playbackSpeed}x</Text>
+                      </>
                     )}
                   </Pressable>
                </View>

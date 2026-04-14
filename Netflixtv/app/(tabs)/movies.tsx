@@ -17,7 +17,7 @@ export default function MoviesScreen() {
     topRated: any[],
     horror: any[],
     action: any[],
-    comedy: any[]
+    comedy: any[],
   }>({
     popular: [],
     topRated: [],

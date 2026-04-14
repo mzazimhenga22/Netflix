@@ -5,7 +5,8 @@ import {
   FlatList, 
   ActivityIndicator,
   Text,
-  Dimensions
+  Dimensions,
+  Platform
 } from 'react-native';
 import { 
   fetchTrending, 
@@ -126,7 +127,7 @@ export default function HomeScreen() {
         const type = filter === 'all' ? 'movie' : filter;
         const trendingType = filter === 'all' ? 'all' : filter;
 
-        const [trendingData, popularData, topRatedData, actionData, comedyData, upcomingData, scifiData] = await Promise.all([
+        const results = await Promise.allSettled([
           fetchTrending(trendingType as any, isKids),
           fetchPopular(type as any, isKids),
           fetchTopRated(type as any, isKids),
@@ -135,6 +136,19 @@ export default function HomeScreen() {
           fetchUpcoming(isKids),
           fetchDiscoverByGenre(type as any, filter === 'tv' ? 10765 : 878, isKids),
         ]);
+
+        const toArray = (r: PromiseSettledResult<any[]>) =>
+          r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : [];
+
+        const [
+          trendingData,
+          popularData,
+          topRatedData,
+          actionData,
+          comedyData,
+          upcomingData,
+          scifiData
+        ] = results.map(toArray);
 
         setData({
           trending: trendingData,
@@ -145,10 +159,22 @@ export default function HomeScreen() {
           upcoming: upcomingData,
           scifi: scifiData,
         });
-        
-        setHeroMovie(trendingData[0]);
+
+        // Robust hero fallback chain — prevents blank home screen if one endpoint fails.
+        const heroCandidate =
+          trendingData[0] ||
+          popularData[0] ||
+          topRatedData[0] ||
+          actionData[0] ||
+          comedyData[0] ||
+          upcomingData[0] ||
+          scifiData[0] ||
+          null;
+
+        setHeroMovie(heroCandidate);
       } catch (error) {
         console.error('Error fetching TV data:', error);
+        setHeroMovie(null);
       } finally {
         setLoading(false);
       }
@@ -211,7 +237,7 @@ export default function HomeScreen() {
       title: `Comedy ${titleLabel}`,
       data: data.comedy
     }
-  ], [filter, titleLabel, history, myList, data]);
+  ].filter((row: any) => Array.isArray(row.data) && row.data.length > 0), [filter, titleLabel, history, myList, data]);
  
   const isInMyList = useMemo(() => {
     if (!heroMovie || !myList) return false;
@@ -291,6 +317,11 @@ export default function HomeScreen() {
         maxToRenderPerBatch={1}
         windowSize={3}
         removeClippedSubviews={true}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No content available right now. Try again shortly.</Text>
+          </View>
+        }
       />
     </View>
   );
@@ -333,5 +364,15 @@ const styles = StyleSheet.create({
   },
   rowContent: {
     paddingRight: 60,
-  }
+  },
+  emptyContainer: {
+    paddingTop: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 20,
+    fontWeight: '600',
+  },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, useWindowDimensions, ActivityIndicator, ScrollView, Modal, Image } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions, ScrollView, Modal, Image } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -44,6 +44,7 @@ interface ModernPlayerProps {
   headers?: Record<string, string>;
   // Subtitles
   tracks?: any[];
+  audioTracks?: { id: string; label: string; language?: string }[];
   // Episodes
   episodes?: any[];
   onEpisodeSelect?: (episodeNumber: number) => void;
@@ -64,6 +65,7 @@ export function ModernVideoPlayer({
   title, 
   headers,
   tracks = [],
+  audioTracks = [],
   episodes = [],
   onEpisodeSelect,
   onNextEpisode,
@@ -83,9 +85,10 @@ export function ModernVideoPlayer({
   const [internalVideoUrl, setInternalVideoUrl] = useState(videoUrl || '');
   const [internalHeaders, setInternalHeaders] = useState<Record<string, string> | undefined>(headers);
   const [internalTracks, setInternalTracks] = useState<any[]>(tracks);
+  const [internalAudioTracks, setInternalAudioTracks] = useState<{ id: string; label: string; language?: string }[]>(audioTracks);
+  const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(audioTracks[0]?.id || null);
   const [fetchError, setFetchError] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
-  const fetchIdRef = useRef(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const [showEpisodePicker, setShowEpisodePicker] = useState(false);
@@ -177,6 +180,8 @@ export function ModernVideoPlayer({
        setInternalVideoUrl(videoUrl);
        setInternalHeaders(headers);
        setInternalTracks(tracks);
+       setInternalAudioTracks(audioTracks);
+       setSelectedAudioTrackId(audioTracks[0]?.id || null);
        setFetchError(false);
        setIsRateLimited(false);
        setStatus('readyToPlay');
@@ -193,6 +198,8 @@ export function ModernVideoPlayer({
     setInternalVideoUrl('');             // Clear old stream
     setInternalHeaders(undefined);
     setInternalTracks([]);
+    setInternalAudioTracks([]);
+    setSelectedAudioTrackId(null);
     setCurrentTime(0);                  // Reset playback position display
     setDuration(0);
     progressPercentage.value = 0;
@@ -208,7 +215,7 @@ export function ModernVideoPlayer({
     // Start with VidLink as primary source
     setActiveSource('vidlink');
     setVidlinkEnabled(true);
-  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt]);
+  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt, audioTracks, headers, progressPercentage, title, tracks]);
 
   // VidLink stream resolved callback
   const handleVidLinkResolved = useCallback((stream: VidLinkStream) => {
@@ -221,6 +228,8 @@ export function ModernVideoPlayer({
       kind: 'captions',
     }));
     setInternalTracks(vidlinkTracks);
+    setInternalAudioTracks((stream as any).audioTracks || []);
+    setSelectedAudioTrackId((stream as any).audioTracks?.[0]?.id || null);
     
     if (stream.markers) {
       setSkipMarkers(stream.markers);
@@ -252,6 +261,8 @@ export function ModernVideoPlayer({
       kind: 'captions',
     }));
     setInternalTracks(vidsrcTracks);
+    setInternalAudioTracks((stream as any).audioTracks || []);
+    setSelectedAudioTrackId((stream as any).audioTracks?.[0]?.id || null);
     setFetchError(false);
     setIsRateLimited(false);
     setStatus('readyToPlay');
@@ -429,7 +440,7 @@ export function ModernVideoPlayer({
        currentSubtitleRef.current = '';
        setActiveSubtitle('');
     }
-  }, [duration, contentType, title, tmdbId, backdropUrl, primaryId, selectedProfile?.id, seasonNum, episodeNum]);
+  }, [duration, contentType, title, tmdbId, backdropUrl, selectedProfile?.id, seasonNum, episodeNum, onNextEpisode, progressPercentage]);
 
   // NOTE: Duplicate source-update effect removed — the effect at lines 185-207
   // already handles internalVideoUrl changes. Having two effects both calling
@@ -440,8 +451,8 @@ export function ModernVideoPlayer({
     async function lockOrientation() {
       try {
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      } catch (e) {
-        console.warn("Orientation lock failed:", e);
+      } catch {
+        console.warn("Orientation lock failed");
       }
     }
     lockOrientation();
@@ -472,7 +483,7 @@ export function ModernVideoPlayer({
           console.log(`[WatchHistory] Resuming S${seasonNum}E${episodeNum} from ${historyItem.currentTime}s`);
           try {
             player.currentTime = historyItem.currentTime;
-          } catch (e) {}
+          } catch {}
         } else {
           console.log(`[WatchHistory] Episode mismatch — starting from beginning`);
         }
@@ -482,7 +493,7 @@ export function ModernVideoPlayer({
     if (status === 'readyToPlay' && !hasSeekedRef.current) {
        checkHistory();
     }
-  }, [status, tmdbId, player, seasonNum, episodeNum]);
+  }, [status, tmdbId, player, seasonNum, episodeNum, contentType, selectedProfile?.id]);
 
   // NOTE: Separate 10s save progress interval removed.
   // Watch history is now saved every 180s inside handleProgressUpdate,
@@ -534,7 +545,7 @@ export function ModernVideoPlayer({
       }
       subscriptions.forEach(sub => sub.remove());
     };
-  }, [player, handleProgressUpdate, duration]);
+  }, [player, handleProgressUpdate, duration, tmdbId, title, backdropUrl, contentType, selectedProfile?.id, seasonNum, episodeNum]);
 
   // Loading Screen Crossfade Animation
   useEffect(() => {
@@ -544,22 +555,22 @@ export function ModernVideoPlayer({
       loadingOpacity.value = 1;
     } else if (status === 'readyToPlay' && isPlaying && !fetchError) {
       // Smooth cinematic 800ms crossfade to video
-      loadingOpacity.value = withTiming(0, { 
+      loadingOpacity.value = withTiming(0, {
         duration: 800,
-        easing: Easing.inOut(Easing.ease) 
+        easing: Easing.inOut(Easing.ease)
       });
     }
-  }, [status, isPlaying, internalVideoUrl, fetchError]);
+  }, [status, isPlaying, internalVideoUrl, fetchError, loadingOpacity]);
 
-  const resetHideTimer = () => {
+  const resetHideTimer = useCallback(() => {
     if (hideTimeout.current) clearTimeout(hideTimeout.current);
-    
+
     setIsControlsVisible(true);
     controlsOpacity.value = withTiming(1, { duration: 200 });
 
     if (!isLocked) {
       hideTimeout.current = setTimeout(() => {
-        controlsOpacity.value = withTiming(0, { 
+        controlsOpacity.value = withTiming(0, {
           duration: 500,
           easing: Easing.out(Easing.quad)
         }, (finished) => {
@@ -567,14 +578,14 @@ export function ModernVideoPlayer({
         });
       }, 5000); // Increased from 3500ms to 5000ms
     }
-  };
+  }, [isLocked, controlsOpacity]);
 
   useEffect(() => {
     resetHideTimer();
     return () => {
       if (hideTimeout.current) clearTimeout(hideTimeout.current);
     };
-  }, [isLocked]);
+  }, [isLocked, resetHideTimer]);
 
   const toggleControls = () => {
     if (controlsOpacity.value > 0) {
@@ -593,11 +604,22 @@ export function ModernVideoPlayer({
         else player.play();
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
-    } catch (e) {
-      console.warn("[Player] ⚠️ handlePlayPause safe-guarded:", e);
+    } catch {
+      console.warn("[Player] handlePlayPause safe-guarded");
     }
     resetHideTimer();
-  }, [player, isPlaying]);
+  }, [player, isPlaying, resetHideTimer]);
+
+  const handleSelectAudioTrack = useCallback((trackId: string) => {
+    setSelectedAudioTrackId(trackId);
+    try {
+      if (player && (player as any).audioTrack !== undefined) {
+        (player as any).audioTrack = trackId;
+      }
+    } catch {
+      console.warn('[Player] Audio track switch not supported on this device/runtime');
+    }
+  }, [player]);
 
   const skip = useCallback((seconds: number) => {
     try {
@@ -605,11 +627,11 @@ export function ModernVideoPlayer({
         player.currentTime += seconds;
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
-    } catch (e) {
-      console.warn("[Player] ⚠️ skip safe-guarded:", e);
+    } catch {
+      console.warn("[Player] skip safe-guarded");
     }
     resetHideTimer();
-  }, [player]);
+  }, [player, resetHideTimer]);
 
   // Ratings Subscription
   useEffect(() => {
@@ -632,7 +654,7 @@ export function ModernVideoPlayer({
        }, newRating);
     }
     resetHideTimer();
-  }, [selectedProfile, tmdbId, title, contentType, backdropUrl]);
+  }, [selectedProfile, tmdbId, title, contentType, backdropUrl, resetHideTimer]);
 
   // Gestures
   const tapGesture = Gesture.Tap()
@@ -728,8 +750,10 @@ export function ModernVideoPlayer({
       resetHideTimer();
       const delta = -e.translationY / 2000;
       const newVol = Math.max(0, Math.min(1, volumeLevel + delta));
-      setVolumeLevel(newVol);
-      player.volume = newVol;
+      // Round to 2 decimal places to prevent audio distortion from rapid micro-updates
+      const roundedVol = Math.round(newVol * 100) / 100;
+      setVolumeLevel(roundedVol);
+      player.volume = roundedVol;
     });
 
   const leftGestures = Gesture.Exclusive(doubleTapLeft, tapGesture);
@@ -1253,10 +1277,32 @@ export function ModernVideoPlayer({
                 <View style={styles.sidePanelCol}>
                   <Text style={styles.sidePanelColTitle}>Audio</Text>
                   <ScrollView showsVerticalScrollIndicator={false}>
-                    <Pressable style={styles.trackItemActive}>
-                      <Text style={styles.trackItemTextActive}>English [Original]</Text>
-                      <Ionicons name="checkmark" size={24} color="#E50914" />
-                    </Pressable>
+                    {internalAudioTracks.length > 0 ? (
+                      internalAudioTracks.map((track, index) => {
+                        const id = track.id || `${track.label}_${index}`;
+                        const isActive = selectedAudioTrackId === id || (!selectedAudioTrackId && index === 0);
+                        return (
+                          <Pressable
+                            key={id}
+                            style={isActive ? styles.trackItemActive : styles.trackItem}
+                            onPress={() => {
+                              handleSelectAudioTrack(id);
+                              setShowSubtitlePicker(false);
+                            }}
+                          >
+                            <Text style={isActive ? styles.trackItemTextActive : styles.trackItemText}>
+                              {track.label || track.language || `Audio ${index + 1}`}
+                            </Text>
+                            {isActive && <Ionicons name="checkmark" size={24} color="#E50914" />}
+                          </Pressable>
+                        );
+                      })
+                    ) : (
+                      <Pressable style={styles.trackItemActive}>
+                        <Text style={styles.trackItemTextActive}>Default Audio</Text>
+                        <Ionicons name="checkmark" size={24} color="#E50914" />
+                      </Pressable>
+                    )}
                   </ScrollView>
                 </View>
 

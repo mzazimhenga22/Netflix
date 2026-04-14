@@ -138,3 +138,13 @@ export const searchMulti = async (query: string, isKids?: boolean) => {
     data.results.filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
   );
 };
+
+export const fetchSimilar = async (id: string | number | undefined, type: 'movie' | 'tv' = 'movie'): Promise<any[]> => {
+  if (!id) return [];
+  try {
+    const { data } = await tmdb.get(`/${type}/${id}/similar`);
+    return filterReleased(data.results || [], type);
+  } catch (e) {
+    return [];
+  }
+};

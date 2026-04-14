@@ -5,13 +5,15 @@ import {
   StyleSheet, 
   Pressable, 
   ScrollView, 
+  FlatList,
   ActivityIndicator,
   Dimensions,
-  Alert
+  Alert,
+  Modal
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { fetchMovieDetails, getBackdropUrl, fetchMovieImages, getLogoUrl, fetchSeasonDetails, getImageUrl } from '../../services/tmdb';
+import { fetchMovieDetails, getBackdropUrl, fetchMovieImages, getLogoUrl, fetchSeasonDetails, getImageUrl, fetchSimilar } from '../../services/tmdb';
 import { useProfile } from '../../context/ProfileContext';
 import { MyListService } from '../../services/MyListService';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -22,6 +24,7 @@ import ColorExtractor from '../../components/ColorExtractor';
 import { COLORS } from '../../constants/theme';
 import { VidLinkResolver } from '../../components/VidLinkResolver';
 import { downloadVideo, DownloadItem, loadMetadata } from '../../services/downloads';
+import { fetchImdbTrailer, TrailerSource } from '../../services/trailers';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 import { VidLinkStream } from '../../services/vidlink';
 
@@ -58,7 +61,25 @@ export default function MovieDetailScreen() {
   
   // Watch History State
   const [watchProgress, setWatchProgress] = useState<WatchHistoryItem | null>(null);
-  
+
+  // Rating State (0 = unrated, 1 = thumbs down, 2 = thumbs up, 3 = love it)
+  const [userRating, setUserRating] = useState<0 | 1 | 2 | 3>(0);
+
+  // More Like This state
+  const [showMoreLikeThis, setShowMoreLikeThis] = useState(false);
+  const [similarTitles, setSimilarTitles] = useState<any[]>([]);
+  const [similarLoading, setSimilarLoading] = useState(false);
+
+  // Episode download resolver
+  const [episodeToDownload, setEpisodeToDownload] = useState<any | null>(null);
+  const [isResolvingEpDownload, setIsResolvingEpDownload] = useState(false);
+
+  // Trailers & More state (in Episodes View)
+  const [activeTab, setActiveTab] = useState<'episodes' | 'trailers'>('episodes');
+  const [trailers, setTrailers] = useState<TrailerSource[]>([]);
+  const [trailersLoading, setTrailersLoading] = useState(false);
+  const [playingTrailerUrl, setPlayingTrailerUrl] = useState<string | null>(null);
+
   const router = useRouter();
 
   useEffect(() => {
@@ -183,11 +204,32 @@ export default function MovieDetailScreen() {
     }
 
     if (!resolvedStream) {
-      // We need a way to resolve specific episodes. 
-      // The VidLinkResolver in the main view is tied to the main resolution.
-      // For now, let's use a simpler approach or show an alert.
-      Alert.alert('Download', 'Episode downloading is coming soon to TV. For now, please use the main Download button for movies.');
+      // Trigger VidLinkResolver for this specific episode
+      setEpisodeToDownload(episode);
+      setIsResolvingEpDownload(true);
       return;
+    }
+
+    // Stream resolved — start the download
+    try {
+      await downloadVideo(
+        movie.id.toString(),
+        movie.name || movie.title,
+        'tv',
+        getImageUrl(movie.poster_path),
+        selectedSeason,
+        episode.episode_number,
+        undefined,
+        movie.first_air_date?.split('-')[0],
+        undefined,
+        resolvedStream
+      );
+      Alert.alert('Download Started', `S${selectedSeason}E${episode.episode_number} is downloading.`);
+    } catch (error) {
+      Alert.alert('Error', 'Download failed for this episode.');
+    } finally {
+      setEpisodeToDownload(null);
+      setIsResolvingEpDownload(false);
     }
   };
 
@@ -245,6 +287,39 @@ export default function MovieDetailScreen() {
      setHeroColors([`${color}B3`, `${color}66`, '#000000']);
   }, []);
 
+  const handleRating = useCallback(async (rating: 0 | 1 | 2 | 3) => {
+    setUserRating(prev => prev === rating ? 0 : rating);
+    // TODO: persist to Firestore if you add a RatingsService
+  }, []);
+
+  const handleMoreLikeThis = useCallback(async () => {
+    setShowMoreLikeThis(true);
+    if (similarTitles.length > 0) return;
+    setSimilarLoading(true);
+    try {
+      const data = await fetchSimilar(movie?.id?.toString(), contentType as any);
+      setSimilarTitles(data || []);
+    } catch (e) {
+      console.error('[MoreLikeThis]', e);
+    } finally {
+      setSimilarLoading(false);
+    }
+  }, [movie?.id, contentType, similarTitles.length]);
+
+  const handleOpenTrailersTab = useCallback(async () => {
+    setActiveTab('trailers');
+    if (trailers.length > 0) return;
+    setTrailersLoading(true);
+    try {
+      const results = await fetchImdbTrailer(id as string, contentType as any);
+      if (results) setTrailers(results);
+    } catch (e) {
+      console.error('[Trailers] Error:', e);
+    } finally {
+      setTrailersLoading(false);
+    }
+  }, [id, contentType, trailers.length]);
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -271,20 +346,21 @@ export default function MovieDetailScreen() {
     );
   }
 
-  if (isPlaying || playEpisode) {
+  if (isPlaying || playEpisode || playingTrailerUrl) {
     return (
       <View style={styles.fullScreenPlayer}>
         <ModernVideoPlayer
-          tmdbId={movie.id.toString()}
-          contentType={contentType as any}
-          title={movie.title || movie.name}
+          videoUrl={playingTrailerUrl || undefined}
+          tmdbId={playingTrailerUrl ? undefined : movie.id.toString()}
+          contentType={playingTrailerUrl ? undefined : contentType as any}
+          title={playingTrailerUrl ? `${movie.title || movie.name} (Trailer)` : (movie.title || movie.name)}
           seasonNum={playEpisode?.season}
           episodeNum={playEpisode?.episode}
           episodes={episodes}
           itemData={movie}
           onEpisodeSelect={(epNum) => setPlayEpisode({ season: selectedSeason, episode: epNum })}
-          onClose={() => { setIsPlaying(false); setPlayEpisode(null); }}
-          initialTime={watchProgress && watchProgress.id.toString() === movie.id.toString() ? watchProgress.currentTime : 0}
+          onClose={() => { setIsPlaying(false); setPlayEpisode(null); setPlayingTrailerUrl(null); }}
+          initialTime={(!playingTrailerUrl && watchProgress && watchProgress.id.toString() === movie.id.toString()) ? watchProgress.currentTime : 0}
         />
       </View>
     );
@@ -338,21 +414,30 @@ export default function MovieDetailScreen() {
             </View>
 
             <View style={styles.episodesMenu}>
-               <Pressable style={styles.episodesMenuItemActive}>
-                  <Text style={styles.episodesMenuItemTextActive} numberOfLines={1}>{movie.name || movie.title}</Text>
-                  <Text style={styles.episodesMenuItemTextActive}>{movie.number_of_episodes || episodes.length || 6} episodes</Text>
+               <Pressable 
+                 style={({ focused }) => [styles.episodesMenuItem, (activeTab === 'episodes' || focused) && styles.episodesMenuItemFocused, activeTab === 'episodes' && styles.episodesMenuItemActiveCard]}
+                 onPress={() => setActiveTab('episodes')}
+                 hasTVPreferredFocus={activeTab === 'episodes'}
+               >
+                  <Text style={[styles.episodesMenuItemText, activeTab === 'episodes' && styles.episodesMenuItemTextActive]} numberOfLines={1}>{movie.name || movie.title}</Text>
+                  <Text style={[styles.episodesMenuItemText, activeTab === 'episodes' && styles.episodesMenuItemTextActive]}>{movie.number_of_episodes || episodes.length || 6} episodes</Text>
                </Pressable>
-               <Pressable style={({ focused }) => [styles.episodesMenuItem, focused && styles.episodesMenuItemFocused]}>
-                  <Text style={styles.episodesMenuItemText}>Trailers & More</Text>
-                  <Text style={styles.episodesMenuItemText}>1 video</Text>
+               <Pressable 
+                 style={({ focused }) => [styles.episodesMenuItem, (activeTab === 'trailers' || focused) && styles.episodesMenuItemFocused, activeTab === 'trailers' && styles.episodesMenuItemActiveCard]}
+                 onPress={handleOpenTrailersTab}
+               >
+                  <Text style={[styles.episodesMenuItemText, activeTab === 'trailers' && styles.episodesMenuItemTextActive]}>Trailers & More</Text>
+                  <Text style={[styles.episodesMenuItemText, activeTab === 'trailers' && styles.episodesMenuItemTextActive]}>{trailers.length > 0 ? trailers.length : 1} video</Text>
                </Pressable>
             </View>
          </View>
 
-         {/* Right Pane: Episode List */}
+         {/* Right Pane */}
          <View style={styles.episodesRightPane}>
-            {/* Season Selector Tabs */}
-            {movie.number_of_seasons > 1 && (
+            {activeTab === 'episodes' ? (
+              <>
+                {/* Season Selector Tabs */}
+                {movie.number_of_seasons > 1 && (
               <ScrollView 
                 horizontal 
                 showsHorizontalScrollIndicator={false} 
@@ -431,6 +516,37 @@ export default function MovieDetailScreen() {
                  ))
                )}
             </ScrollView>
+            </>
+            ) : (
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.episodesScrollContent}>
+               <Text style={styles.trailerTabHeader}>Trailers & Featurettes</Text>
+               {trailersLoading ? (
+                 <ActivityIndicator size="large" color="#E50914" style={{ marginTop: 100 }} />
+               ) : trailers.length === 0 ? (
+                 <Text style={{color: 'rgba(255,255,255,0.5)', fontSize: 18, marginTop: 40}}>No trailers found.</Text>
+               ) : (
+                 <View style={styles.trailerGrid}>
+                   {trailers.map((t, i) => (
+                     <Pressable
+                       key={i}
+                       style={({ focused }) => [styles.trailerCard, focused && styles.trailerCardFocused]}
+                       onPress={() => setPlayingTrailerUrl(t.url)}
+                     >
+                       <Image
+                         source={{ uri: getBackdropUrl(movie.backdrop_path) || getImageUrl(movie.poster_path) }}
+                         style={styles.trailerThumb}
+                         contentFit="cover"
+                       />
+                       <View style={styles.trailerPlayOverlay}>
+                         <Ionicons name="play-circle-outline" size={40} color="white" />
+                       </View>
+                       <Text style={styles.trailerTitle}>Trailer {i + 1} ({t.quality})</Text>
+                     </Pressable>
+                   ))}
+                 </View>
+               )}
+            </ScrollView>
+            )}
          </View>
 
 
@@ -520,14 +636,35 @@ export default function MovieDetailScreen() {
 
            {/* Rating Icons Row (Above standard buttons) */}
            <View style={styles.iconsRow}>
-              <Pressable style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused]}>
-                 <MaterialCommunityIcons name="thumb-down-outline" size={28} color="white" />
+              <Pressable 
+                style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused, userRating === 1 && styles.iconOnlyBtnActive]}
+                onPress={() => handleRating(1)}
+              >
+                 <MaterialCommunityIcons 
+                   name={userRating === 1 ? 'thumb-down' : 'thumb-down-outline'} 
+                   size={28} 
+                   color={userRating === 1 ? '#E50914' : 'white'} 
+                 />
               </Pressable>
-              <Pressable style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused]}>
-                 <MaterialCommunityIcons name="thumb-up-outline" size={28} color="white" />
+              <Pressable 
+                style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused, userRating === 2 && styles.iconOnlyBtnActive]}
+                onPress={() => handleRating(2)}
+              >
+                 <MaterialCommunityIcons 
+                   name={userRating === 2 ? 'thumb-up' : 'thumb-up-outline'} 
+                   size={28} 
+                   color={userRating === 2 ? '#46d369' : 'white'} 
+                 />
               </Pressable>
-              <Pressable style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused]}>
-                 <MaterialCommunityIcons name="thumb-up" size={28} color="white" />
+              <Pressable 
+                style={({ focused }) => [styles.iconOnlyBtn, focused && styles.iconOnlyBtnFocused, userRating === 3 && styles.iconOnlyBtnActive]}
+                onPress={() => handleRating(3)}
+              >
+                 <MaterialCommunityIcons 
+                   name="thumb-up" 
+                   size={28} 
+                   color={userRating === 3 ? '#46d369' : 'rgba(255,255,255,0.4)'} 
+                 />
               </Pressable>
            </View>
 
@@ -592,6 +729,7 @@ export default function MovieDetailScreen() {
                   styles.actionBtnSecondary,
                   focused && styles.actionBtnSecondaryFocused
                 ]}
+                onPress={handleMoreLikeThis}
               >
                  <MaterialCommunityIcons name="grid" size={30} color="white" />
                  <Text style={styles.actionBtnTextSecondary}>More Like This</Text>
@@ -657,6 +795,84 @@ export default function MovieDetailScreen() {
       >
          <Ionicons name="arrow-back" size={32} color="white" />
       </Pressable>
+
+      {/* Episode Download VidLink Resolver (hidden) */}
+      {episodeToDownload && (
+        <VidLinkResolver
+          tmdbId={movie.id.toString()}
+          type="tv"
+          season={selectedSeason}
+          episode={episodeToDownload.episode_number}
+          enabled={isResolvingEpDownload}
+          onStreamResolved={(stream) => handleEpisodeDownload(episodeToDownload, stream)}
+          onError={() => {
+            setEpisodeToDownload(null);
+            setIsResolvingEpDownload(false);
+            Alert.alert('Error', 'Could not resolve a download link for this episode.');
+          }}
+        />
+      )}
+
+      {/* More Like This Modal */}
+      <Modal
+        visible={showMoreLikeThis}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMoreLikeThis(false)}
+      >
+        <View style={styles.moreLikeThisOverlay}>
+          <View style={styles.moreLikeThisPanel}>
+            <View style={styles.moreLikeThisHeader}>
+              <Text style={styles.moreLikeThisTitle}>More Like This</Text>
+              <Pressable
+                style={({ focused }) => [styles.closePanelBtn, focused && { backgroundColor: 'rgba(255,255,255,0.2)' }]}
+                onPress={() => setShowMoreLikeThis(false)}
+              >
+                <Ionicons name="close" size={32} color="white" />
+              </Pressable>
+            </View>
+
+            {similarLoading ? (
+              <View style={styles.moreLikeThisCenter}>
+                <ActivityIndicator size="large" color="#E50914" />
+                <Text style={styles.moreLikeThisLoadingText}>Finding similar titles...</Text>
+              </View>
+            ) : similarTitles.length === 0 ? (
+              <View style={styles.moreLikeThisCenter}>
+                <Text style={styles.moreLikeThisEmptyText}>No similar titles found.</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={similarTitles}
+                keyExtractor={(item) => item.id.toString()}
+                numColumns={5}
+                contentContainerStyle={styles.moreLikeThisGrid}
+                renderItem={({ item }) => (
+                  <Pressable
+                    style={({ focused }) => [styles.moreLikeThisCard, focused && styles.moreLikeThisCardFocused]}
+                    onPress={() => {
+                      setShowMoreLikeThis(false);
+                      router.push({
+                        pathname: `/movie/${item.id}`,
+                        params: { type: item.media_type || contentType }
+                      });
+                    }}
+                  >
+                    <Image
+                      source={{ uri: getImageUrl(item.poster_path) }}
+                      style={styles.moreLikeThisCardImage}
+                      contentFit="cover"
+                    />
+                    <Text style={styles.moreLikeThisCardTitle} numberOfLines={2}>
+                      {item.title || item.name}
+                    </Text>
+                  </Pressable>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -791,6 +1007,11 @@ const styles = StyleSheet.create({
   iconOnlyBtnFocused: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     transform: [{ scale: 1.1 }],
+  },
+  iconOnlyBtnActive: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
   },
   actionStack: {
     gap: 15,
@@ -1053,5 +1274,128 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 20,
     marginLeft: 10,
+  },
+
+  // Trailer Tab Styles
+  trailerTabHeader: {
+    color: 'white',
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
+  },
+  trailerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 20,
+  },
+  trailerCard: {
+    width: 300,
+    marginBottom: 20,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    backgroundColor: '#111',
+  },
+  trailerCardFocused: {
+    borderColor: 'white',
+    transform: [{ scale: 1.02 }],
+  },
+  trailerThumb: {
+    width: '100%',
+    height: 160,
+  },
+  trailerPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 160,
+  },
+  trailerTitle: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    padding: 12,
+  },
+
+  // Episodes List Item Active Fix
+  episodesMenuItemActiveCard: {
+    backgroundColor: '#E50914',
+    borderLeftWidth: 0,
+  },
+
+  // More Like This Modal
+  moreLikeThisOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  moreLikeThisPanel: {
+    width: '90%',
+    maxHeight: '85%',
+    backgroundColor: '#141414',
+    borderRadius: 16,
+    padding: 40,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  moreLikeThisHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+  moreLikeThisTitle: {
+    color: 'white',
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  closePanelBtn: {
+    padding: 12,
+    borderRadius: 40,
+  },
+  moreLikeThisCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    gap: 20,
+  },
+  moreLikeThisLoadingText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 18,
+  },
+  moreLikeThisEmptyText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 20,
+  },
+  moreLikeThisGrid: {
+    paddingBottom: 20,
+    gap: 16,
+  },
+  moreLikeThisCard: {
+    width: 160,
+    marginRight: 16,
+    marginBottom: 20,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#1a1a1a',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  moreLikeThisCardFocused: {
+    borderColor: 'white',
+    transform: [{ scale: 1.05 }],
+  },
+  moreLikeThisCardImage: {
+    width: '100%',
+    height: 220,
+  },
+  moreLikeThisCardTitle: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
+    padding: 8,
   },
 });

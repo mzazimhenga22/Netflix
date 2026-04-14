@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { searchMulti, getImageUrl, fetchTrending } from '../../services/tmdb';
+import { searchMulti, getImageUrl, fetchTrending, fetchDiscoverByGenre } from '../../services/tmdb';
 import { SearchService } from '../../services/SearchService';
 import { useProfile } from '../../context/ProfileContext';
 import TvPosterCard from '../../components/TvPosterCard';
@@ -26,6 +26,7 @@ export default function SearchScreen() {
   const [trending, setTrending] = useState<any[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeGenre, setActiveGenre] = useState<string | null>(null);
 
   React.useEffect(() => {
     async function loadTrending() {
@@ -87,7 +88,33 @@ export default function SearchScreen() {
     }
   };
 
-  const GENRES = isKids ? ["Animation", "Comedy", "Sci-Fi", "Anime", "Fantasy"] : ["Action", "Comedy", "Sci-Fi", "Horror", "Documentaries", "Anime", "Romance"];
+  const GENRE_MAP: Record<string, number> = isKids
+    ? { Animation: 16, Comedy: 35, 'Sci-Fi': 878, Anime: 16, Fantasy: 14 }
+    : { Action: 28, Comedy: 35, 'Sci-Fi': 878, Horror: 27, Documentaries: 99, Anime: 16, Romance: 10749 };
+
+  const GENRES = Object.keys(GENRE_MAP);
+
+  const handleGenrePress = async (genre: string) => {
+    if (activeGenre === genre) {
+      // Toggle off — go back to trending
+      setActiveGenre(null);
+      setResults([]);
+      setQuery('');
+      return;
+    }
+    setActiveGenre(genre);
+    setQuery('');
+    setLoading(true);
+    try {
+      const genreId = GENRE_MAP[genre];
+      const data = await fetchDiscoverByGenre('movie', genreId, isKids);
+      setResults(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -135,9 +162,14 @@ export default function SearchScreen() {
             {GENRES.map((genre) => (
               <Pressable
                 key={genre}
-                style={({ focused }) => [styles.genreButton, focused && styles.focusedGenre]}
+                style={({ focused }) => [
+                  styles.genreButton,
+                  focused && styles.focusedGenre,
+                  activeGenre === genre && styles.activeGenre,
+                ]}
+                onPress={() => handleGenrePress(genre)}
               >
-                <Text style={styles.genreText}>{genre}</Text>
+                <Text style={[styles.genreText, activeGenre === genre && styles.activeGenreText]}>{genre}</Text>
               </Pressable>
             ))}
           </View>
@@ -146,7 +178,11 @@ export default function SearchScreen() {
         {/* Right Content */}
         <View style={styles.mainContent}>
           <Text style={styles.resultsTitle}>
-            {query.length > 2 ? `Results for "${query}"` : "Your Search Recommendations"}
+            {activeGenre
+              ? `${activeGenre} Titles`
+              : query.length > 2
+              ? `Results for "${query}"`
+              : 'Your Search Recommendations'}
           </Text>
 
           {loading ? (
@@ -155,7 +191,7 @@ export default function SearchScreen() {
             </View>
           ) : (
             <FlatList
-              data={query.length > 2 ? results : trending}
+              data={query.length > 2 ? results : activeGenre ? results : trending}
               keyExtractor={(item) => item.id.toString()}
               numColumns={4}
               contentContainerStyle={styles.listContent}
@@ -265,6 +301,12 @@ const styles = StyleSheet.create({
   },
   focusedGenre: {
     backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  activeGenre: {
+    backgroundColor: '#E50914',
+  },
+  activeGenreText: {
+    color: 'white',
   },
   genreText: {
     color: 'rgba(255,255,255,0.7)',

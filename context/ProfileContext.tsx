@@ -46,11 +46,7 @@ const AVATAR_MAP: Record<string, any> = {
 };
 
 const DEFAULT_PROFILES: Profile[] = [
-  { id: '1', name: 'Brian', avatar: AVATAR_MAP.avatar1, avatarId: 'avatar1', isLocked: false },
-  { id: '2', name: 'Addams', avatar: AVATAR_MAP.avatar2, avatarId: 'avatar2', isLocked: false },
-  { id: '3', name: 'Saurabh', avatar: AVATAR_MAP.avatar3, avatarId: 'avatar3', isLocked: false },
-  { id: '4', name: 'Money', avatar: AVATAR_MAP.avatar4, avatarId: 'avatar4', isLocked: true, pin: '1234' },
-  { id: '5', name: 'Kids', avatar: AVATAR_MAP.avatar5, avatarId: 'avatar5', isLocked: false, isKids: true },
+  { id: '1', name: 'My Profile', avatar: AVATAR_MAP.avatar1, avatarId: 'avatar1', isLocked: false },
 ];
 
 interface ProfileContextType {

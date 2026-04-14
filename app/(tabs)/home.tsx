@@ -1,15 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, StyleSheet, Text, Pressable, useWindowDimensions, Modal, FlatList, Image as RNImage, ScrollView, NativeModules, Image } from 'react-native';
+import { View, StyleSheet, Text, Pressable, useWindowDimensions, Modal, FlatList, ScrollView, NativeModules, Image } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { NativeHeroCard } from '../../components/NativeHeroCard';
 import { MyListService } from '../../services/MyListService';
-import { NetflixHero } from '../../components/NetflixHero';
 import { HorizontalCarousel } from '../../components/HorizontalCarousel';
 import { LazyCarouselRow } from '../../components/LazyCarouselRow';
 import { ClipsRow } from '../../components/ClipsRow';
 import { COLORS, SPACING } from '../../constants/theme';
 import { fetchTrending, fetchPopular, fetchTopRated, fetchDiscoverByGenre, getBackdropUrl, getImageUrl } from '../../services/tmdb';
-import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -17,36 +16,22 @@ import * as Haptics from 'expo-haptics';
 import { useTheme, useTransition } from '../_layout';
 import { useProfile } from '../../context/ProfileContext';
 import { WatchHistoryService } from '../../services/WatchHistoryService';
-import Animated, { 
-  useSharedValue, 
-  useAnimatedScrollHandler, 
-  useAnimatedStyle, 
+import Animated, {
+  useSharedValue,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
   interpolateColor,
   interpolate,
   withTiming,
   withRepeat,
-  withSequence,
   FadeIn,
   FadeInDown,
-  SharedTransition,
-  withSpring,
   Easing,
-  runOnJS,
-  useAnimatedSensor,
-  SensorType,
-  useAnimatedRef
+  runOnJS
 } from 'react-native-reanimated';
 
 import BottomSheet, { BottomSheetView, BottomSheetBackdrop } from '@gorhom/bottom-sheet';
-import { DeviceMotion } from 'expo-sensors';
 import { LinearGradient } from 'expo-linear-gradient';
-import {
-  GestureHandlerRootView,
-  Gesture,
-  GestureDetector
-} from 'react-native-gesture-handler';
-
-const AnimatedBlurView = Animated.createAnimatedComponent(BlurView);
 
 const CAST_DEVICES = [
   { id: '1', name: 'Living Room TV', icon: 'television' },
@@ -94,13 +79,11 @@ const MOCK_GAMES = [
 // Removed static Dimensions measurement to prevent orientation-change distortion;
 // using useWindowDimensions() inside components instead.
 
-const HERO_H = 720;
-
 // We use an Animated.FlatList
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
 
 export default function HomeScreen() {
-  const { width, height } = useWindowDimensions();
+  const { height } = useWindowDimensions();
   const router = useRouter();
   const { selectedProfile } = useProfile();
   const { isTransitioning } = useTransition();
@@ -150,7 +133,6 @@ export default function HomeScreen() {
   // Global Tilt Values
   const tiltX = useSharedValue(0);
   const tiltY = useSharedValue(0);
-  const shineX = useSharedValue(-width);
 
   // For dynamic background
   const scrollY = useSharedValue(0);
@@ -165,12 +147,12 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       setThemeColor(isPastHero.value ? '#000000' : themeColor);
-    }, [themeColor, isPastHero.value])
+    }, [themeColor, isPastHero, setThemeColor])
   );
 
   useEffect(() => {
     setThemeColor(isPastHero.value ? '#000000' : themeColor);
-  }, [themeColor, isPastHero.value]);
+  }, [themeColor, isPastHero, setThemeColor]);
 
   const scrollHandler = useAnimatedScrollHandler((event: any) => {
     scrollY.value = event.contentOffset.y;
@@ -191,9 +173,9 @@ export default function HomeScreen() {
     return { backgroundColor };
   });
 
-  const headerOpacity = useAnimatedStyle(() => {
+  const headerBackgroundOpacity = useAnimatedStyle(() => {
     const opacity = interpolate(scrollY.value, [0, 50, 100], [0, 0.4, 1], 'clamp');
-    return { opacity: activeFilter === 'home' ? 0 : opacity };
+    return { opacity: activeFilter !== 'home' ? 1 : opacity };
   });
 
   const tabsStyle = useAnimatedStyle(() => {
@@ -209,7 +191,7 @@ export default function HomeScreen() {
   });
 
   // Load only the initial viewport data to prevent blocking
-  const loadInitialData = async (filter: string) => {
+  const loadInitialData = useCallback(async (filter: string) => {
     setLoading(true);
     try {
       const type = filter === 'home' ? 'all' : (filter === 'tv' ? 'tv' : 'movie');
@@ -251,11 +233,11 @@ export default function HomeScreen() {
     } finally {
       setTimeout(() => setLoading(false), 300);
     }
-  };
+  }, [selectedCategory, isKids]);
 
   useEffect(() => {
     loadInitialData(activeFilter);
-  }, [activeFilter, selectedCategory, isKids]);
+  }, [activeFilter, selectedCategory, isKids, loadInitialData]);
 
   // Real-time Watch History Subscription
   useEffect(() => {
@@ -272,8 +254,8 @@ export default function HomeScreen() {
         return {
           ...historyObj,
           title: itemData.title || itemData.name || 'Unknown',
-          imageUrl: itemData.poster_path 
-            ? getImageUrl(itemData.poster_path) 
+          imageUrl: itemData.poster_path
+            ? getImageUrl(itemData.poster_path)
             : (itemData.backdrop_path ? getBackdropUrl(itemData.backdrop_path) : ''),
         };
       });
@@ -283,30 +265,9 @@ export default function HomeScreen() {
     return () => unsubscribe();
   }, [selectedProfile]);
 
-  const sensor = useAnimatedSensor(SensorType.ROTATION, { interval: 16 });
-
-  // Use a derived effect to update tilt values on the UI thread
-  useEffect(() => {
-    // We don't need a manual listener anymore, Reanimated handles it.
-    // However, if we want to apply springs, we can use useDerivedValue or just 
-    // access sensor.sensor.value directly in NetflixHero (preferable for perf).
-  }, []);
-
-  const gesture = Gesture.Pan()
-    .onUpdate((event) => {
-      const centerX = width / 2;
-      const centerY = height / 3;
-      const dx = (event.y - centerY) / 20;
-      const dy = -(event.x - centerX) / 20;
-      tiltX.value = withSpring(dx, { damping: 15, stiffness: 100 });
-      tiltY.value = withSpring(dy, { damping: 15, stiffness: 100 });
-      shineX.value = withSpring((event.x - centerX) * 0.5, { damping: 15, stiffness: 100 });
-    })
-    .onEnd(() => {
-      tiltX.value = withSpring(0);
-      tiltY.value = withSpring(0);
-      shineX.value = withSpring(-width);
-    });
+  // Legacy sensor/gesture code - preserved for future 3D tilt features
+  // const _sensor = useAnimatedSensor(SensorType.ROTATION, { interval: 16 });
+  // const _gesture = Gesture.Pan()...
 
   const heroItem = useMemo(() => trending.length > 0 ? {
     ...trending[0],
@@ -428,7 +389,7 @@ export default function HomeScreen() {
       default:
         return null;
     }
-  }, [tiltX, tiltY]);
+  }, [tiltX, tiltY, isKids]);
 
   // The very top hero that used to be inside the ScrollView is now the ListHeaderComponent
   const renderHeader = () => (
@@ -458,7 +419,7 @@ export default function HomeScreen() {
           style={heroParallaxStyle}
         />
         {/* We use a negative margin on the first row to tuck slightly under hero bottom, just like before */}
-        <View style={{ marginTop: -20 }} /> 
+        <View style={{ marginTop: -10 }} /> 
       </View>
     ) : null
   );
@@ -468,9 +429,17 @@ export default function HomeScreen() {
       
       {/* Absolute Translucent Header */}
       <View style={[styles.absoluteHeaderContainer, { paddingTop: insets.top }]}>
-        <Animated.View style={[StyleSheet.absoluteFill, headerOpacity]}>
+        {/* Permanent subtle gradient to ensure white icons are visible over bright hero images */}
+        <LinearGradient 
+          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0)']} 
+          style={StyleSheet.absoluteFill} 
+          pointerEvents="none" 
+        />
+        
+        {/* Scroll-dependent solid/blur background for text legibility during scroll */}
+        <Animated.View style={[StyleSheet.absoluteFill, headerBackgroundOpacity]}>
           <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
-          <LinearGradient colors={['rgba(0,0,0,0.8)', 'rgba(0,0,0,0)']} style={StyleSheet.absoluteFill} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
         </Animated.View>
         
         <View style={styles.header}>
@@ -603,7 +572,7 @@ export default function HomeScreen() {
 // Skeleton Components intact
 function Shimmer({ width, height, borderRadius = 4, style }: { width: any, height: any, borderRadius?: number, style?: any }) {
   const translateX = useSharedValue(-width);
-  useEffect(() => { translateX.value = withRepeat(withTiming(width, { duration: 1500, easing: Easing.bezier(0.4, 0, 0.6, 1) }), -1, false); }, [width]);
+  useEffect(() => { translateX.value = withRepeat(withTiming(width, { duration: 1500, easing: Easing.bezier(0.4, 0, 0.6, 1) }), -1, false); }, [width, translateX]);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ translateX: translateX.value }] }));
   return (
     <View style={[{ width, height, borderRadius, backgroundColor: '#141414', overflow: 'hidden' }, style]}>
@@ -674,11 +643,20 @@ const styles = StyleSheet.create({
   headerIcons: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md },
   iconButton: { padding: 4 },
   avatarButton: { marginLeft: 4 },
-  headerAvatar: { width: 28, height: 28, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  tabsRow: { flexDirection: 'row', alignItems: 'center', paddingBottom: SPACING.md },
-  pillButton: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
-  pillButtonActive: { backgroundColor: 'white', borderColor: 'white' },
-  pillText: { color: 'white', fontSize: 14, fontWeight: '600' },
+  headerAvatar: { width: 30, height: 30, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)' },
+  tabsRow: { flexDirection: 'row', alignItems: 'center', paddingBottom: SPACING.md, marginTop: 4 },
+  pillButton: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: 16, 
+    paddingVertical: 8, 
+    borderRadius: 20, 
+    backgroundColor: 'rgba(100,100,100,0.4)', 
+    borderWidth: 1, 
+    borderColor: 'transparent' 
+  },
+  pillButtonActive: { backgroundColor: 'white' },
+  pillText: { color: 'white', fontSize: 13, fontWeight: '700' },
   pillTextActive: { color: 'black' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { width: '100%', height: '100%', paddingTop: 60, paddingHorizontal: 40 },

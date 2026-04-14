@@ -46,7 +46,7 @@ class GameDetailsViewManager : SimpleViewManager<FrameLayout>() {
                     root.addView(composeView)
                 }
 
-                reactContext.currentActivity?.let { activity ->
+                reactContext.getCurrentActivity()?.let { activity ->
                     if (activity is LifecycleOwner) {
                         composeView.setViewTreeLifecycleOwner(activity)
                     }

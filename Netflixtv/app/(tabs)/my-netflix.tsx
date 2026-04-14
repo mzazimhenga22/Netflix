@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchPopular, getImageUrl, getBackdropUrl } from '../../services/tmdb';
@@ -100,18 +100,24 @@ export default function MyNetflixScreen() {
            
            {/* Account Quick Actions */}
            <View style={styles.actionRow}>
-              <View style={styles.actionBtn}>
-                 <View style={styles.actionIconBox}>
-                   <Ionicons name="notifications" size={32} color="white" />
-                 </View>
-                 <Text style={styles.actionText}>Notifications</Text>
-              </View>
-              <View style={styles.actionBtn}>
+              <Pressable 
+                style={({ focused }) => [styles.actionBtn, focused && styles.actionBtnFocused]}
+                onPress={() => router.push('/(tabs)/downloads')}
+              >
                  <View style={styles.actionIconBox}>
                    <Ionicons name="download" size={32} color="white" />
                  </View>
                  <Text style={styles.actionText}>Downloads</Text>
-              </View>
+              </Pressable>
+              <Pressable
+                style={({ focused }) => [styles.actionBtn, focused && styles.actionBtnFocused]}
+                onPress={() => router.push('/notifications')}
+              >
+                 <View style={styles.actionIconBox}>
+                   <Ionicons name="notifications" size={32} color="white" />
+                 </View>
+                 <Text style={styles.actionText}>Notifications</Text>
+              </Pressable>
            </View>
         </View>
 
@@ -192,6 +198,12 @@ const styles = StyleSheet.create({
   actionBtn: {
     alignItems: 'center',
     gap: 15,
+    padding: 10,
+    borderRadius: 12,
+  },
+  actionBtnFocused: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    transform: [{ scale: 1.05 }],
   },
   actionIconBox: {
     width: 80,

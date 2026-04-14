@@ -15,6 +15,7 @@ import { fetchUpcoming, getBackdropUrl } from '../../services/tmdb';
 import { TrailerResolver, TrailerStream } from '../../components/TrailerResolver';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { useRouter } from 'expo-router';
 
 const { width, height } = Dimensions.get('window');
 
@@ -78,6 +79,7 @@ function FeedItem({ item, isActive, onFocus }: { item: any, isActive: boolean, o
   const [reminded, setReminded] = useState(false);
   const [showTrailer, setShowTrailer] = useState(false);
   const focusTimeout = useRef<NodeJS.Timeout | null>(null);
+  const router = useRouter();
 
   // Re-fetch or reset trailer when active state changes
   useEffect(() => {
@@ -186,6 +188,7 @@ function FeedItem({ item, isActive, onFocus }: { item: any, isActive: boolean, o
                 styles.actionBtn, 
                 focused && styles.actionBtnFocused
               ]}
+              onPress={() => router.push({ pathname: `/movie/${item.id}`, params: { type: 'movie' } })}
             >
                <Ionicons name="information-circle-outline" size={36} color="white" />
                <Text style={styles.actionText}>Info</Text>

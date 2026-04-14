@@ -19,7 +19,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { fetchTrending, getBackdropUrl } from '../services/tmdb';
+import { fetchTrending, getBackdropUrl, getImageUrl } from '../services/tmdb';
 import { useProfile } from '../context/ProfileContext';
 import { useTransition } from './_layout';
 import * as Haptics from 'expo-haptics';
@@ -151,7 +151,7 @@ export default function ProfilesScreen() {
         <Animated.View entering={FadeIn.duration(1200)} style={styles.billboardContainer}>
           {featured && (
             <>
-              <Image source={{ uri: getBackdropUrl(featured.backdrop_path) }} style={styles.billboardImage} />
+              <Image source={{ uri: getImageUrl(featured.poster_path) || getBackdropUrl(featured.backdrop_path) }} style={styles.billboardImage} />
               <LinearGradient
                 colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.8)', '#000']}
                 style={styles.gradient}

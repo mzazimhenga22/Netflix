@@ -17,11 +17,15 @@ interface NativeHeroCardProps extends ViewProps {
 const PhoneHeroView = requireNativeComponent<NativeHeroCardProps>('PhoneHeroView');
 
 export const NativeHeroCard = (props: NativeHeroCardProps) => {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
+  // Ensure the hero card looks great on all phone sizes by dynamically sizing it.
+  // Standard Netflix ratio usually covers ~80% of screen height or a 1.4x aspect ratio on width.
+  const dynamicHeight = Math.min(height * 0.75, width * 1.45);
+
   return (
     <PhoneHeroView 
       {...props} 
-      style={[styles.container, props.style]} 
+      style={[styles.container, { height: dynamicHeight }, props.style]} 
     />
   );
 };
@@ -29,7 +33,6 @@ export const NativeHeroCard = (props: NativeHeroCardProps) => {
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    height: 720,
     alignItems: 'center',
   }
 });

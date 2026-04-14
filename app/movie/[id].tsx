@@ -9,7 +9,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { TrailerResolver } from '../../components/TrailerResolver';
 import { VidLinkResolver } from '../../components/VidLinkResolver';
+import { VidSrcResolver } from '../../components/VidSrcResolver';
 import { VidLinkStream } from '../../services/vidlink';
+import { VidSrcStream } from '../../services/vidsrc';
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
@@ -174,6 +176,7 @@ export default function MovieDetailsScreen() {
 
   // Download Resolution State
   const [downloadVidlinkEnabled, setDownloadVidlinkEnabled] = useState(false);
+  const [downloadVidsrcEnabled, setDownloadVidsrcEnabled] = useState(false);
   const [downloadTarget, setDownloadTarget] = useState<{
     episodeNum?: number;
     title: string;
@@ -416,6 +419,7 @@ export default function MovieDetailsScreen() {
         title: movieTitle,
         image: image || ''
       });
+      setDownloadVidsrcEnabled(false);
       setDownloadVidlinkEnabled(true);
 
     } catch (error: any) {
@@ -451,13 +455,36 @@ export default function MovieDetailsScreen() {
 
     // Cleanup
     setDownloadVidlinkEnabled(false);
+    setDownloadVidsrcEnabled(false);
     setDownloadTarget(null);
+  };
+
+  const handleDownloadVidSrcResolved = (stream: VidSrcStream) => {
+    if (!downloadTarget) return;
+    const normalized: VidLinkStream = {
+      url: stream.url,
+      headers: stream.headers,
+      captions: stream.captions.map((c: any) => ({
+        id: c.id || c.url,
+        url: c.url,
+        language: c.language || 'Unknown',
+        type: c.type || 'vtt',
+      })),
+      sourceId: stream.sourceId || 'vidsrc',
+    };
+    handleDownloadStreamResolved(normalized);
   };
 
   const handleDownloadError = (error: string) => {
     console.error(`[Download] ❌ VidLink Error: ${error}`);
-    Alert.alert("Download Failed", "Could not resolve a valid download link. Please try again.");
     setDownloadVidlinkEnabled(false);
+    setDownloadVidsrcEnabled(true);
+  };
+
+  const handleDownloadVidSrcError = (error: string) => {
+    console.error(`[Download] ❌ VidSrc Error: ${error}`);
+    Alert.alert("Download Failed", "Could not resolve a valid download link. Please try again.");
+    setDownloadVidsrcEnabled(false);
     setDownloadTarget(null);
   };
 
@@ -651,6 +678,15 @@ export default function MovieDetailsScreen() {
           enabled={downloadVidlinkEnabled}
           onStreamResolved={handleDownloadStreamResolved}
           onError={handleDownloadError}
+        />
+        <VidSrcResolver
+          tmdbId={id as string}
+          type={isTV ? 'tv' : 'movie'}
+          season={isTV ? selectedSeason : undefined}
+          episode={isTV ? downloadTarget?.episodeNum : undefined}
+          enabled={downloadVidsrcEnabled}
+          onStreamResolved={handleDownloadVidSrcResolved}
+          onError={handleDownloadVidSrcError}
         />
 
         {resolvedTrailerUrl && !trailerHasEnded ? (

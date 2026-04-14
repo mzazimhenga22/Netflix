@@ -98,6 +98,7 @@ export default function ShowsScreen() {
     const allRows = [
       { id: 'scifi', title: 'Sci-Fi & Fantasy', data: data.scifi, genreId: 10765 },
       { id: 'popular', title: 'Trending Series', data: data.popular, genreId: null },
+      { id: 'topRated', title: 'Top Rated Series', data: data.topRated, genreId: null },
       { id: 'drama', title: 'Acclaimed Drama', data: data.drama, genreId: 18 },
       { id: 'mystery', title: 'Binge-worthy Mystery', data: data.mystery, genreId: 9648 },
     ];

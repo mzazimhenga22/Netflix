@@ -1,36 +1,45 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { StyleSheet, View, Dimensions } from 'react-native';
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
   withTiming, 
-  withSequence, 
   withDelay,
   Easing,
   runOnJS,
   interpolate,
-  Extrapolate
+  Extrapolate,
+  SharedValue
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
 
-const RIBBON_WIDTH = 40;
-const N_SIZE = 120;
-const N_HEIGHT = 160;
+const RIBBON_WIDTH = 42;
+const N_SIZE = 130;
+const N_HEIGHT = 175;
+
+// Color palette for the 'N'
+const RED_HILITE = '#E50914';
+const RED_BASE = '#DB0000';
+const RED_DARK = '#830A0A';
 
 const Ribbon = ({ 
   style, 
   delay = 0, 
-  duration = 800, 
+  duration = 500, 
   isDiagonal = false,
-  skewX = '0deg'
+  skewX = '0deg',
+  drawDirection = 'down',
+  colors = [RED_BASE, RED_BASE]
 }: { 
   style?: any, 
   delay?: number, 
   duration?: number, 
   isDiagonal?: boolean,
-  skewX?: string
+  skewX?: string,
+  drawDirection?: 'up' | 'down',
+  colors?: readonly [string, string, ...string[]]
 }) => {
   const progress = useSharedValue(0);
   const glowPos = useSharedValue(-1);
@@ -38,27 +47,30 @@ const Ribbon = ({
   useEffect(() => {
     progress.value = withDelay(delay, withTiming(1, { 
       duration, 
-      easing: Easing.bezier(0.4, 0, 0.2, 1) 
+      easing: Easing.bezier(0.4, 0, 0.2, 1.2) // slight bounce
     }));
 
-    glowPos.value = withDelay(delay + 400, withTiming(2, { 
-      duration: 1500, 
-      easing: Easing.linear 
+    // Start a specular shimmer down the ribbon
+    glowPos.value = withDelay(delay + duration - 100, withTiming(2, { 
+      duration: 1200, 
+      easing: Easing.inOut(Easing.ease) 
     }));
   }, []);
 
   const animatedStyle = useAnimatedStyle(() => {
     const scaleY = progress.value;
-    const opacity = interpolate(progress.value, [0, 0.2], [0, 1]);
+    const translateYOffset = drawDirection === 'down' 
+      ? -(1 - scaleY) * (N_HEIGHT / 2) 
+      : (1 - scaleY) * (N_HEIGHT / 2);
     
     return {
       height: '100%', 
       transform: [
         { skewX },
-        { scaleY },
-        { translateY: isDiagonal ? 0 : (1 - scaleY) * (N_HEIGHT / 2) * (style?.bottom === 0 ? 1 : -1) }
+        { translateY: translateYOffset },
+        { scaleY }
       ],
-      opacity,
+      opacity: interpolate(progress.value, [0, 0.1], [0, 1]),
     };
   });
 
@@ -71,20 +83,25 @@ const Ribbon = ({
 
   return (
     <Animated.View style={[styles.ribbonBase, style, animatedStyle]}>
-      <LinearGradient
-        colors={['#E50914', '#B20710', '#E50914']}
-        style={StyleSheet.absoluteFill}
-      />
+      <LinearGradient colors={colors} style={StyleSheet.absoluteFill} />
+      
+      {/* Dynamic drop shadow strictly on diagonal to shade right leg */}
+      {isDiagonal && (
+        <LinearGradient 
+          start={{x:0, y:0}} end={{x:1, y:0}}
+          colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.6)']}
+          style={StyleSheet.absoluteFill}
+        />
+      )}
+
       {/* Spectral Glow Streamer */}
       <Animated.View style={[StyleSheet.absoluteFill, glowStyle]}>
         <LinearGradient
           colors={[
             'transparent', 
-            'rgba(255, 255, 255, 0)', 
-            'rgba(255, 255, 255, 0.1)', 
-            'rgba(255, 50, 50, 0.3)',
-            'rgba(255, 255, 255, 0.1)',
-            'rgba(255, 255, 255, 0)',
+            'rgba(255,255,255,0)', 
+            'rgba(255,255,255,0.4)', 
+            'rgba(255,255,255,0)',
             'transparent'
           ]}
           style={StyleSheet.absoluteFill}
@@ -94,23 +111,65 @@ const Ribbon = ({
   );
 };
 
+// Generates the vibrant barcode-like vertical light spectra for the "Tudum" burst
+const SPECTRUM_COLORS = [
+  '#FF003C', '#00F0FF', '#7C00FF', '#FFE600', '#FF003C', '#00FF66'
+];
+
+const LightStreak = ({ index, zoomProgress }: { index: number, zoomProgress: SharedValue<number> }) => {
+  const randomX = useMemo(() => (Math.random() - 0.5) * width * 1.5, []);
+  const randomW = useMemo(() => 4 + Math.random() * 8, []);
+  const color = useMemo(() => SPECTRUM_COLORS[index % SPECTRUM_COLORS.length], [index]);
+  const delay = useMemo(() => Math.random() * 0.4, []);
+  
+  const animatedScale = useAnimatedStyle(() => {
+    // Only start extending outward when zoom crosses 0.5
+    const streakProgress = Math.max(0, zoomProgress.value - 0.4 - delay * 0.2) * 2;
+    return {
+      height: height * 1.5,
+      opacity: interpolate(streakProgress, [0, 0.2, 0.8, 1], [0, 0.8, 0.8, 0]),
+      transform: [
+        { translateX: randomX * interpolate(streakProgress, [0, 1], [0.2, 2]) },
+        { scaleY: interpolate(streakProgress, [0, 1], [0.01, 1]) }
+      ]
+    };
+  });
+
+  return (
+    <Animated.View style={[
+      styles.streak, 
+      { width: randomW, backgroundColor: color }, 
+      animatedScale
+    ]} />
+  );
+};
+
 export function SplashAnimation({ onFinish }: { onFinish: () => void }) {
-  const containerScale = useSharedValue(1);
   const containerOpacity = useSharedValue(1);
   const zoomProgress = useSharedValue(0);
+  const nFade = useSharedValue(1);
+
+  // Generate 40 random light streaks
+  const streaks = useMemo(() => Array.from({ length: 40 }).map((_, i) => i), []);
 
   useEffect(() => {
-    // Total animation time is approx 2.5s
-    const totalDuration = 2800;
+    // 1. Draw N (0 - 1500ms)
+    // 2. Initial hold
+    // 3. Zoom into diagonal (approx 2000 - 3000ms)
+    // 4. Burst spectrum rays
     
     // Zoom in dramatically through the N center
-    zoomProgress.value = withDelay(2000, withTiming(1, {
-      duration: 1000,
-      easing: Easing.bezier(0.7, 0, 0.84, 0)
+    zoomProgress.value = withDelay(1800, withTiming(1, {
+      duration: 1500,
+      easing: Easing.bezier(0.8, 0, 0.2, 1) // Exponential acceleration
     }));
 
-    containerOpacity.value = withDelay(2600, withTiming(0, {
-      duration: 400
+    // Fade the solid N out midway through zoom so spectrum overtakes it
+    nFade.value = withDelay(2400, withTiming(0, { duration: 400 }));
+
+    // Fade out whole container to app
+    containerOpacity.value = withDelay(3100, withTiming(0, {
+      duration: 500
     }, (finished) => {
       if (finished) {
         runOnJS(onFinish)();
@@ -119,59 +178,65 @@ export function SplashAnimation({ onFinish }: { onFinish: () => void }) {
   }, []);
 
   const zoomStyle = useAnimatedStyle(() => {
-    const scale = interpolate(zoomProgress.value, [0, 1], [1, 50], Extrapolate.CLAMP);
-    const opacity = interpolate(zoomProgress.value, [0.8, 1], [1, 0]);
-    
+    const scale = interpolate(zoomProgress.value, [0, 1], [1, 55], Extrapolate.CLAMP);
     return {
       transform: [{ scale }],
-      opacity,
+      opacity: nFade.value
     };
   });
 
   return (
     <Animated.View style={[styles.container, { opacity: containerOpacity }]}>
+      
+      {/* Light Burst Spectra array running behind the N and expanding vastly */}
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        <View style={styles.burstContainer}>
+          {streaks.map((i) => <LightStreak key={i} index={i} zoomProgress={zoomProgress} />)}
+        </View>
+      </View>
+
+      {/* Primary N Wrapper */}
       <Animated.View style={[styles.nWrapper, zoomStyle]}>
-        {/* Left Ribbon */}
+        {/* Left Ribbon (Draws bottom -> up) */}
         <Ribbon 
-          style={{ left: 0, bottom: 0 }} 
-          delay={100} 
+          style={{ left: 0 }} 
+          delay={100}
+          duration={400}
+          drawDirection="up"
+          colors={[RED_BASE, RED_HILITE]}
         />
         
-        {/* Right Ribbon */}
-        <Ribbon 
-          style={{ right: 0, top: 0 }} 
-          delay={600} 
-        />
-        
-        {/* Diagonal Ribbon (Middle) */}
+        {/* Diagonal Ribbon (Draws top -> down) OVERLAPS */}
         <Ribbon 
           isDiagonal 
-          skewX="-26.565deg"
+          skewX="-26.8deg"
           style={{ 
-            left: 40, 
-            top: 0,
-            width: RIBBON_WIDTH,
-            zIndex: 2,
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 0 },
-            shadowOpacity: 0.5,
-            shadowRadius: 10,
+            left: 44, 
+            width: RIBBON_WIDTH + 4,
+            zIndex: 10,
           }} 
-          delay={350} 
-          duration={700}
+          delay={400} 
+          duration={500}
+          drawDirection="down"
+          colors={[RED_HILITE, RED_HILITE, RED_BASE]}
+        />
+
+        {/* Right Ribbon (Draws bottom -> up) - Darkest to simulate shadow beneath diagonal */}
+        <Ribbon 
+          style={{ right: 0 }} 
+          delay={800} 
+          duration={400}
+          drawDirection="up"
+          colors={[RED_DARK, RED_DARK]}
         />
       </Animated.View>
 
-      {/* Subtle background light explosion during zoom */}
-      <Animated.View style={[styles.lightBurst, useAnimatedStyle(() => ({
-        opacity: interpolate(zoomProgress.value, [0.4, 0.8], [0, 0.3]),
-        transform: [{ scale: interpolate(zoomProgress.value, [0.4, 1], [0.5, 2]) }]
-      }))]}>
-        <LinearGradient
-          colors={['rgba(229, 9, 20, 0.5)', 'transparent']}
-          style={StyleSheet.absoluteFill}
-        />
-      </Animated.View>
+      {/* Screen flood (the flash at end of tudum) */}
+      <Animated.View style={[StyleSheet.absoluteFill, useAnimatedStyle(() => ({
+        backgroundColor: '#000',
+        opacity: interpolate(zoomProgress.value, [0.8, 0.9, 1], [0, 1, 0])
+      }))]} pointerEvents="none" />
+      
     </Animated.View>
   );
 }
@@ -179,10 +244,24 @@ export function SplashAnimation({ onFinish }: { onFinish: () => void }) {
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'black',
+    backgroundColor: '#000',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 99999,
+  },
+  burstContainer: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  streak: {
+    position: 'absolute',
+    borderRadius: 10,
+    shadowColor: '#fff',
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 }
   },
   nWrapper: {
     width: N_SIZE,
@@ -192,15 +271,7 @@ const styles = StyleSheet.create({
   ribbonBase: {
     position: 'absolute',
     width: RIBBON_WIDTH,
-    backgroundColor: '#E50914',
     borderRadius: 2,
     overflow: 'hidden',
-  },
-  lightBurst: {
-    position: 'absolute',
-    width: width,
-    height: width,
-    borderRadius: width / 2,
-    zIndex: -1,
   }
 });

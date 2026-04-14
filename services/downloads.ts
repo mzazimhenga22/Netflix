@@ -20,11 +20,15 @@ export interface DownloadItem {
   isPaused?: boolean;
   streamUrl?: string; // Stored for resuming without re-resolving
   streamHeaders?: Record<string, string>;
+  subtitles?: { url: string; label: string; kind?: string }[];
+  audioTracks?: { id: string; label: string; language?: string }[];
 }
 
 export interface VidLinkStream {
   url: string;
   headers: Record<string, string>;
+  captions?: { url: string; language?: string; type?: string }[];
+  audioTracks?: { id: string; label: string; language?: string }[];
 }
 
 const DOWNLOADS_DIR = `${FileSystem.documentDirectory}downloads/`;
@@ -175,7 +179,26 @@ export const downloadVideo = async (
   if (!linkData) throw new Error('Could not find a download link.');
 
   if (linkData.url.includes('.m3u8')) {
-    return downloadHlsVideo(downloadId, linkData.url, linkData.headers, localUri, tmdbId, title, type, image, season, episode, onProgress);
+    const subtitles = (resolvedStream?.captions || []).map((c: any) => ({
+      url: c.url,
+      label: c.language || 'Unknown',
+      kind: c.type || 'captions',
+    }));
+    return downloadHlsVideo(
+      downloadId,
+      linkData.url,
+      linkData.headers,
+      localUri,
+      tmdbId,
+      title,
+      type,
+      image,
+      season,
+      episode,
+      onProgress,
+      subtitles,
+      resolvedStream?.audioTracks || []
+    );
   }
 
   // Progress tracking — only persist every 20% to reduce I/O pressure
@@ -229,6 +252,12 @@ export const downloadVideo = async (
     status: 'downloading',
     streamUrl: linkData.url,
     streamHeaders: linkData.headers,
+    subtitles: resolvedStream?.captions?.map((c: any) => ({
+      url: c.url,
+      label: c.language || 'Unknown',
+      kind: c.type || 'captions',
+    })) || [],
+    audioTracks: resolvedStream?.audioTracks || [],
   };
   if (existingIndex > -1) items[existingIndex] = newItem;
   else items.push(newItem);
@@ -386,6 +415,29 @@ export const initializeDownloads = async () => {
   }
 };
 
+function extractAudioTracksFromM3u8(m3u8Content: string): { id: string; label: string; language?: string }[] {
+  const tracks: { id: string; label: string; language?: string }[] = [];
+  const lines = m3u8Content.split('\n');
+
+  for (const line of lines) {
+    if (!line.includes('#EXT-X-MEDIA') || !line.includes('TYPE=AUDIO')) continue;
+
+    const nameMatch = line.match(/NAME="([^"]+)"/i);
+    const langMatch = line.match(/LANGUAGE="([^"]+)"/i);
+    const groupMatch = line.match(/GROUP-ID="([^"]+)"/i);
+
+    const label = nameMatch?.[1] || langMatch?.[1] || 'Audio';
+    const language = langMatch?.[1];
+    const id = `${groupMatch?.[1] || 'audio'}_${label}`.replace(/\s+/g, '_');
+
+    if (!tracks.some(t => t.id === id)) {
+      tracks.push({ id, label, language });
+    }
+  }
+
+  return tracks;
+}
+
 // ─── Delete & Cleanup ───────────────────────────────────────────────
 
 export const deleteDownload = async (id: string) => {
@@ -462,7 +514,9 @@ async function downloadHlsVideo(
   image: string,
   season?: number,
   episode?: number,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  incomingSubtitles: { url: string; label: string; kind?: string }[] = [],
+  incomingAudioTracks: { id: string; label: string; language?: string }[] = []
 ) {
   // If localUri ended in .mp4 (from caller default), fix it to .m3u8
   const actualLocalUri = localUri.endsWith('.m3u8') ? localUri : localUri.replace('.mp4', '.m3u8');
@@ -523,6 +577,11 @@ async function downloadHlsVideo(
 
     if (segmentUrls.length === 0) throw new Error('No segments found in playlist.');
 
+    const detectedAudioTracks = incomingAudioTracks.length > 0
+      ? incomingAudioTracks
+      : extractAudioTracksFromM3u8(m3u8Content);
+    const subtitleTracks = incomingSubtitles;
+
     // 2b. Write initial local M3U8 immediately to allow "Preview" during download
     const initialM3U8 = localLines.join('\n');
     await FileSystem.writeAsStringAsync(actualLocalUri, initialM3U8);
@@ -532,7 +591,9 @@ async function downloadHlsVideo(
     const newItem: DownloadItem = {
       id: downloadId, tmdbId, title, type, season, episode, image,
       localUri: actualLocalUri, progress: 0, status: 'downloading',
-      streamUrl: url, streamHeaders: headers // Persist stream info
+      streamUrl: url, streamHeaders: headers, // Persist stream info
+      subtitles: subtitleTracks,
+      audioTracks: detectedAudioTracks,
     };
     const existingIdx = items.findIndex(i => i.id === downloadId);
     if (existingIdx > -1) {

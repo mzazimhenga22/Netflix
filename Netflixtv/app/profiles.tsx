@@ -286,9 +286,27 @@ export default function ProfilesScreen() {
                     {featured.release_date?.split('-')[0] || featured.first_air_date?.split('-')[0]} • {featured.vote_average?.toFixed(1)} Rating
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.watchNowButton}>
-                   <Text style={styles.watchNowText}>Watch Now</Text>
-                </TouchableOpacity>
+                <Pressable 
+                  style={({ focused }) => [
+                    styles.watchNowButton,
+                    focused && styles.watchNowButtonFocused
+                  ]}
+                  onPress={() => {
+                    if (featured) {
+                      router.push({
+                        pathname: `/movie/${featured.id}`,
+                        params: { type: featured.media_type || (featured.first_air_date ? 'tv' : 'movie') }
+                      });
+                    }
+                  }}
+                >
+                  {({ focused }) => (
+                    <>
+                      <Ionicons name="play" size={24} color={focused ? "black" : "white"} style={{ marginRight: 8 }} />
+                      <Text style={[styles.watchNowText, focused && { color: 'black' }]}>Watch Now</Text>
+                    </>
+                  )}
+                </Pressable>
               </Animated.View>
             )}
           </View>
@@ -391,15 +409,20 @@ const styles = StyleSheet.create({
   },
   netflixLogoText: {
     color: '#E50914',
-    fontSize: 48,
+    fontSize: 56,
     fontWeight: '900',
-    letterSpacing: -1,
+    letterSpacing: -2,
+    textShadowColor: 'rgba(0,0,0,0.4)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
   },
   subHeaderText: {
     color: '#fff',
-    fontSize: 24,
+    fontSize: 32,
+    fontWeight: '300',
     opacity: 0.9,
-    marginTop: 10,
+    marginTop: 15,
+    letterSpacing: 1,
   },
   profilesListContainer: {
     flex: 1,
@@ -506,15 +529,28 @@ const styles = StyleSheet.create({
   },
   watchNowButton: {
     marginTop: 30,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  watchNowButtonFocused: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
+    transform: [{ scale: 1.05 }],
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
   },
   watchNowText: {
     color: '#fff',
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: 22,
+    fontWeight: 'bold',
   },
   pinModalOverlay: {
     ...StyleSheet.absoluteFillObject,

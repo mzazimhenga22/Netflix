@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sdkmanager *)",
+      "Bash(where *)",
+      "Bash(dir *)",
+      "Bash(\"c:\\users\\mzazimhenga\\appdata\\local\\android\\sdk\\cmdline-tools\\latest\\bin\\sdkmanager.bat\" *)",
+      "Bash(cmd *)",
+      "Bash(android-33)",
+      "Bash(google-tv)",
+      "Bash(x86_64\" --no_https\")",
+      "Bash(android-tv)",
+      "Bash(x86\" --no_https\")"
+    ]
+  },
+  "$version": 3
+}

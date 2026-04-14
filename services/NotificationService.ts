@@ -1,14 +1,28 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Configure how notifications are handled when the app is foregrounded
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
 });
+
+export interface NetflixNotification {
+  id: string;
+  title: string;
+  desc: string;
+  date: string;
+  image?: string;
+  type: string;
+  isRead: boolean;
+}
+
+const getNotificationsKey = (profileId: string) => `notifications_${profileId}`;
 
 export class NotificationService {
   /**
@@ -64,9 +78,9 @@ export class NotificationService {
         sound: true,
       },
       trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
         date,
       },
-      identifier: `reminder_${id}` // unique ID so we can cancel it later
     });
   }
 
@@ -101,5 +115,63 @@ export class NotificationService {
       },
       trigger: null,
     });
+  }
+
+  // Local in-app notifications feed
+  static subscribeToNotifications(profileId: string, cb: (items: NetflixNotification[]) => void) {
+    let active = true;
+
+    const load = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(getNotificationsKey(profileId));
+        const items: NetflixNotification[] = raw ? JSON.parse(raw) : [];
+        if (active) cb(items);
+      } catch {
+        if (active) cb([]);
+      }
+    };
+
+    load();
+    const interval = setInterval(load, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }
+
+  static async seedMockNotifications(profileId: string) {
+    const key = getNotificationsKey(profileId);
+    const raw = await AsyncStorage.getItem(key);
+    const existing: NetflixNotification[] = raw ? JSON.parse(raw) : [];
+    if (existing.length > 0) return;
+
+    const now = new Date();
+    const mock: NetflixNotification[] = [
+      {
+        id: `n_${Date.now()}_1`,
+        title: 'New Episode Available',
+        desc: 'A new episode in your continue watching list is out now.',
+        date: now.toLocaleDateString(),
+        type: 'New',
+        isRead: false,
+      },
+      {
+        id: `n_${Date.now()}_2`,
+        title: 'Download Complete',
+        desc: 'Your recent download is ready for offline viewing.',
+        date: now.toLocaleDateString(),
+        type: 'Downloads',
+        isRead: false,
+      },
+    ];
+    await AsyncStorage.setItem(key, JSON.stringify(mock));
+  }
+
+  static async markAsRead(profileId: string, id: string) {
+    const key = getNotificationsKey(profileId);
+    const raw = await AsyncStorage.getItem(key);
+    const items: NetflixNotification[] = raw ? JSON.parse(raw) : [];
+    const updated = items.map(item => item.id === id ? { ...item, isRead: true } : item);
+    await AsyncStorage.setItem(key, JSON.stringify(updated));
   }
 }
