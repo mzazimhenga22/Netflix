@@ -56,9 +56,9 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
                     }
                 }
 
-                val item = root.getTag(TAG_HERO_ITEM) as? Map<String, Any>
-                if (item != null) {
-                    applyContent(root, composeView, item, reactContext)
+                val items = root.getTag(TAG_HERO_ITEM) as? List<Map<String, Any>>
+                if (items != null) {
+                    applyContent(root, composeView, items, reactContext)
                 }
 
                 frameCallback = object : Choreographer.FrameCallback {
