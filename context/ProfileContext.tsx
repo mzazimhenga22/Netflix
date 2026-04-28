@@ -94,8 +94,8 @@ export function useProfile() {
   return useContext(ProfileContext);
 }
 
-const SELECTED_PROFILE_KEY = 'netflix_selected_profile_id';
 const getProfilesCacheKey = (uid: string) => `netflix_profiles_cache_${uid}`;
+const getSelectedProfileKey = (uid: string) => `netflix_selected_profile_id_${uid}`;
 
 type StoredProfile = Omit<Profile, 'avatar'>;
 
@@ -134,6 +134,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(PLAN_PROFILE_LIMITS.none);
   const [activeProfileCacheUid, setActiveProfileCacheUid] = useState('dev-guest');
+  const [activeSelectedProfileKey, setActiveSelectedProfileKey] = useState(getSelectedProfileKey('dev-guest'));
 
   useEffect(() => {
     const unsub = SubscriptionService.listenToSubscription((sub) => {
@@ -146,32 +147,36 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   // 1. Listen for Auth Changes and Fetch Profiles
   useEffect(() => {
     let unsubProfiles: (() => void) | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       const activeUid = user ? user.uid : 'dev-guest';
       const profilesCacheKey = getProfilesCacheKey(activeUid);
+      const selectedProfileKey = getSelectedProfileKey(activeUid);
       setActiveProfileCacheUid(activeUid);
+      setActiveSelectedProfileKey(selectedProfileKey);
       
       setIsLoading(true);
       
       // Clean up previous listener
       if (unsubProfiles) unsubProfiles();
 
-      AsyncStorage.getItem(profilesCacheKey).then((cached) => {
+      AsyncStorage.getItem(profilesCacheKey).then(async (cached) => {
         if (!cached) return;
         try {
           const parsed = JSON.parse(cached) as StoredProfile[];
           if (!Array.isArray(parsed) || parsed.length === 0) return;
           const cachedProfiles = parsed.map((profile) => normalizeProfile(profile));
+          const savedId = await AsyncStorage.getItem(selectedProfileKey);
           setProfiles(cachedProfiles);
-          AsyncStorage.getItem(SELECTED_PROFILE_KEY).then((savedId) => {
-            setSelectedProfile((current) => {
-              if (current) {
-                return cachedProfiles.find((profile) => profile.id === current.id) || current;
-              }
-              if (!savedId) return current;
-              return cachedProfiles.find((profile) => profile.id === savedId) || current;
-            });
+          setSelectedProfile((current) => {
+            if (current) {
+              return cachedProfiles.find((profile) => profile.id === current.id) || current;
+            }
+            if (savedId) {
+              return cachedProfiles.find((profile) => profile.id === savedId) || cachedProfiles[0] || null;
+            }
+            return cachedProfiles[0] || null;
           });
         } catch (e) {
           console.warn('[ProfileContext] Failed to restore cached profiles:', e);
@@ -180,10 +185,17 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         }
       });
 
+      // Offline fallback: don't leave the app in a loading state forever while waiting
+      // for Firestore if the device has no network and no cache is immediately available.
+      fallbackTimer = setTimeout(() => {
+        setIsLoading(false);
+      }, 2500);
+
       const profilesCol = collection(db, 'users', activeUid, 'profiles');
       
       // Listen for realtime profile changes
       unsubProfiles = onSnapshot(profilesCol, (snapshot) => {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
         let fetchedProfiles: Profile[] = [];
         snapshot.forEach((doc) => {
           const data = doc.data();
@@ -200,8 +212,10 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
         setProfiles(fetchedProfiles);
         setSelectedProfile((current) => {
-          if (!current) return current;
-          return fetchedProfiles.find((profile) => profile.id === current.id) || current;
+          if (current) {
+            return fetchedProfiles.find((profile) => profile.id === current.id) || current;
+          }
+          return fetchedProfiles[0] || null;
         });
         AsyncStorage.setItem(profilesCacheKey, JSON.stringify(serializeProfiles(fetchedProfiles))).catch((e) => {
           console.warn('[ProfileContext] Failed to cache profiles:', e);
@@ -223,7 +237,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
         // Restore selected profile from storage if not set in memory
         if (fetchedProfiles.length > 0) {
-          AsyncStorage.getItem(SELECTED_PROFILE_KEY).then(savedId => {
+          AsyncStorage.getItem(selectedProfileKey).then(savedId => {
             if (savedId && !selectedProfile) {
               const matched = fetchedProfiles.find(p => p.id === savedId);
               if (matched) setSelectedProfile(matched);
@@ -233,12 +247,14 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
         setIsLoading(false);
       }, (error) => {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
         console.warn('[ProfileContext] Profile snapshot failed, using cached profiles if available:', error);
         setIsLoading(false);
       });
     });
 
     return () => {
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       unsubAuth();
       if (unsubProfiles) unsubProfiles();
     };
@@ -255,7 +271,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
   const selectProfile = async (profile: Profile) => {
     setSelectedProfile(profile);
-    await AsyncStorage.setItem(SELECTED_PROFILE_KEY, profile.id);
+    await AsyncStorage.setItem(activeSelectedProfileKey, profile.id);
     
     // Sync watch history for the newly selected profile
     try {

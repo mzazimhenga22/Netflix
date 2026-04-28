@@ -5,7 +5,7 @@ import { resolveStreamFromCloud, invalidateCacheEntry } from '../../services/clo
 import { useProfile } from '../../context/ProfileContext';
 import NativeHeroBanner from '../../components/NativeHeroBanner';
 import ExpandingRow from '../../components/ExpandingRow';
-import HeroMeta from '../../components/HeroMeta';
+
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TV_TOP_NAV_TOTAL_OFFSET } from './_layout';
@@ -26,7 +26,7 @@ export default function MoviesScreen() {
   const [heroStreamHeaders, setHeroStreamHeaders] = useState<string | undefined>(undefined);
   // Scoped: only the focused card's row ever gets a stream URL
   const [focusedCardStream, setFocusedCardStream] = useState<{ id: string; url: string; headers?: string } | null>(null);
-  const [heroLogoUrl, setHeroLogoUrl] = useState<string | undefined>();
+
 
   const [popular, setPopular] = useState([]);
   const [topRated, setTopRated] = useState([]);
@@ -71,25 +71,13 @@ export default function MoviesScreen() {
       setPopular(pop); setTopRated(trt); setAction(act); setComedy(com);
       if (pop.length > 0) {
         setHeroMovie(pop[0]);
-        fetchHeroBranding(pop[0]);
+
       }
     } catch (e) { console.error('Failed to load movies:', e); }
     finally { setLoading(false); }
   };
 
-  const fetchHeroBranding = async (movie: any) => {
-    if (!movie) return;
-    try {
-      const { fetchMovieImages, getLogoUrl } = require('../../services/tmdb');
-      const images = await fetchMovieImages(movie.id, 'movie');
-      if (images?.logos?.length > 0) {
-        const enLogo = images.logos.find((l: any) => l.iso_639_1 === 'en');
-        setHeroLogoUrl(getLogoUrl(enLogo?.file_path || images.logos[0].file_path));
-      } else {
-        setHeroLogoUrl(undefined);
-      }
-    } catch (e) { setHeroLogoUrl(undefined); }
-  };
+
 
   const resolveStream = useCallback(async (movie: any, setUrl: Function, setHeaders: Function, idRef: React.MutableRefObject<string | null>) => {
     const tmdbId = String(movie.id);
@@ -109,7 +97,7 @@ export default function MoviesScreen() {
     if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
     heroUpdateTimeout.current = setTimeout(() => {
       setHeroMovie(movie);
-      fetchHeroBranding(movie);
+
       if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
       heroStreamTimeout.current = setTimeout(() => resolveStream(movie, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId), 1500);
     }, 300);
@@ -169,15 +157,11 @@ export default function MoviesScreen() {
             onFocus={handleHeroFocus}
             style={styles.hero} 
           />
-          <View style={styles.heroOverlay}>
+          <View style={styles.heroOverlay} pointerEvents="none">
             <LinearGradient
               colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.92)']}
               style={StyleSheet.absoluteFill}
-              pointerEvents="none"
             />
-            <View style={styles.heroMetaWrapper}>
-              <HeroMeta movie={heroMovie} logoUrl={heroLogoUrl} />
-            </View>
           </View>
         </View>
         <View style={styles.rowsContainer}>
@@ -220,11 +204,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 180,
-    justifyContent: 'flex-end',
-  },
-  heroMetaWrapper: {
-    paddingBottom: 15,
-    zIndex: 10,
   },
   rowsContainer: { marginTop: 0, zIndex: 10 },
 });

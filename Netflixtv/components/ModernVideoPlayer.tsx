@@ -218,6 +218,7 @@ export function ModernVideoPlayer({
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const [isFullControlsVisible, setIsFullControlsVisible] = useState(false);
+  const [isProgressBarFocused, setIsProgressBarFocused] = useState(false);
   const fullControlsOpacity = useSharedValue(0);
   const [skipMarkers, setSkipMarkers] = useState<VidLinkSkipMarker[]>([]);
   const [showSkipIntro, setShowSkipIntro] = useState(false);
@@ -1030,11 +1031,19 @@ export function ModernVideoPlayer({
         // playingChange listener will handle showing/hiding via useEffect
       }
     } else if (evt.eventType === 'left') {
-      skip(-10);
-      resetHideTimer(!isPlaying);
+      if (!isControlsVisible) {
+        resetHideTimer(!isPlaying);
+      } else if (isProgressBarFocused) {
+        skip(-10);
+        resetHideTimer(!isPlaying);
+      }
     } else if (evt.eventType === 'right') {
-      skip(10);
-      resetHideTimer(!isPlaying);
+      if (!isControlsVisible) {
+        resetHideTimer(!isPlaying);
+      } else if (isProgressBarFocused) {
+        skip(10);
+        resetHideTimer(!isPlaying);
+      }
     } else if (evt.eventType === 'up') {
       // Show or refresh controls
       resetHideTimer(!isPlaying);
@@ -1062,6 +1071,11 @@ export function ModernVideoPlayer({
 
   const animatedProgressStyle = useAnimatedStyle(() => ({
     width: withTiming(`${progressPercentage.value}%`, { duration: 1100, easing: Easing.linear }),
+  }));
+
+  const animatedProgressThumbStyle = useAnimatedStyle(() => ({
+    left: `${progressPercentage.value}%`,
+    transform: [{ translateX: -8 }],
   }));
 
   const formatTime = useCallback((secs: number) => {
@@ -1226,11 +1240,34 @@ export function ModernVideoPlayer({
 
                   <Text style={styles.timeTextTv}>{formatTime(currentTime)}</Text>
 
-                  <View style={styles.progressBarContainerTv}>
-                    <View style={styles.progressTrackTv}>
-                       <Animated.View style={[styles.progressFillTv, animatedProgressStyle]} />
+                  <Pressable
+                    onPress={() => resetHideTimer(!isPlaying)}
+                    onFocus={() => {
+                      setIsProgressBarFocused(true);
+                      resetHideTimer(true);
+                    }}
+                    onBlur={() => setIsProgressBarFocused(false)}
+                    style={({ focused }) => [
+                      styles.progressBarContainerTv,
+                      focused && styles.progressBarContainerTvFocused,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.progressTrackTv,
+                        isProgressBarFocused && styles.progressTrackTvFocused,
+                      ]}
+                    >
+                      <Animated.View style={[styles.progressFillTv, animatedProgressStyle]} />
                     </View>
-                  </View>
+                    <Animated.View
+                      style={[
+                        styles.progressThumbTv,
+                        isProgressBarFocused && styles.progressThumbTvFocused,
+                        animatedProgressThumbStyle,
+                      ]}
+                    />
+                  </Pressable>
 
                   <Text style={styles.timeTextTv}>{formatTime(duration)}</Text>
                </View>
@@ -1452,10 +1489,10 @@ const styles = StyleSheet.create({
   },
   subtitleText: {
     color: 'white',
-    fontSize: 42,
+    fontSize: 32,
     fontWeight: '700',
     textAlign: 'center',
-    lineHeight: 44,
+    lineHeight: 36,
     textShadowColor: 'black',
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 8,
@@ -1605,8 +1642,12 @@ const styles = StyleSheet.create({
   },
   progressBarContainerTv: {
     flex: 1,
-    height: 40,
+    height: 32,
     justifyContent: 'center',
+    position: 'relative',
+  },
+  progressBarContainerTvFocused: {
+    transform: [{ scaleY: 1.05 }],
   },
   timeTextTv: {
     color: 'white',
@@ -1617,14 +1658,42 @@ const styles = StyleSheet.create({
   },
   progressTrackTv: {
     flex: 1,
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.3)',
-    borderRadius: 1.5,
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.26)',
+    borderRadius: 999,
     overflow: 'hidden',
+  },
+  progressTrackTvFocused: {
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.34)',
   },
   progressFillTv: {
     height: '100%',
     backgroundColor: '#E50914',
+    borderRadius: 999,
+  },
+  progressThumbTv: {
+    position: 'absolute',
+    top: '50%',
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    marginTop: -8,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#E50914',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.28,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  progressThumbTvFocused: {
+    width: 18,
+    height: 18,
+    marginTop: -9,
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
   },
   
   bottomControlsRowTv: {

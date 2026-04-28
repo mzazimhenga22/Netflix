@@ -101,19 +101,12 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         attribute vec4 aTextureCoord;
         varying vec2 vTC;
         varying vec3 vWP;
-        uniform float uVideoFormat;
-        uniform sampler2D sTexture;
         
         void main() {
             vec3 pos = aPosition.xyz;
             vTC = aTextureCoord.xy;
-            
-            if (uVideoFormat > 0.5) {
-                vec2 depthTC = vec2(vTC.x, vTC.y * 0.5);
-                float depth = texture2D(sTexture, depthTC).r;
-                pos.z += (depth - 0.5) * 0.3;
-            }
-            
+            // Note: vertex texture fetch removed — not reliable in GLES 2.0.
+            // Depth displacement is handled in the fragment shader instead.
             gl_Position = uMVPMatrix * vec4(pos, 1.0);
             vWP = pos;
         }
@@ -132,55 +125,55 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         uniform vec2 uSubjectCenter;
         uniform vec2 uSubjectScale;
         uniform float uSubjectBoost;
-        uniform float uVideoFormat;
-        uniform float uLayer; // 0=all, 1=bg, 2=fg
 
         void main() {
             vec2 colorTC = vTC;
-            if (uVideoFormat > 0.5) {
-                float depth = texture2D(sTexture, vec2(vTC.x, vTC.y * 0.5)).r;
-                if (uLayer == 1.0 && depth > 0.5) discard;
-                if (uLayer == 2.0 && depth <= 0.5) discard;
-                colorTC = vec2(vTC.x, 0.5 + vTC.y * 0.5);
-            }
-            
             vec4 c = texture2D(sTexture, colorTC);
             float luma = dot(c.rgb, vec3(0.299, 0.587, 0.114));
 
+            // Subject/focus masking for holographic depth separation
             vec2 focusDelta = (vTC - uSubjectCenter) / uSubjectScale;
             float focusMask = 1.0 - smoothstep(0.45, 1.15, length(focusDelta));
-            float verticalBias = smoothstep(0.92, 0.18, vTC.y);
-            float luminanceMask = smoothstep(0.12, 0.45, luma);
-            float mask = clamp(max(luminanceMask, focusMask * 0.75) * verticalBias, 0.0, 1.0);
-            vec3 extracted = c.rgb * mask * (1.45 + uSubjectBoost);
+            float verticalBias = smoothstep(0.95, 0.15, vTC.y);
+            // Lowered luminance threshold so more of the video is visible in hologram
+            float luminanceMask = smoothstep(0.04, 0.30, luma);
+            float mask = clamp(max(luminanceMask, focusMask * 0.85) * verticalBias, 0.0, 1.0);
+            vec3 extracted = c.rgb * mask * (1.55 + uSubjectBoost);
 
+            // Edge detection for rim / glow
             vec2 ts = vec2(1.0 / 720.0, 1.0 / 405.0);
             float lL = dot(texture2D(sTexture, colorTC - vec2(ts.x, 0.0)).rgb, vec3(0.3, 0.59, 0.11));
             float lR = dot(texture2D(sTexture, colorTC + vec2(ts.x, 0.0)).rgb, vec3(0.3, 0.59, 0.11));
             float lU = dot(texture2D(sTexture, colorTC - vec2(0.0, ts.y)).rgb, vec3(0.3, 0.59, 0.11));
             float lD = dot(texture2D(sTexture, colorTC + vec2(0.0, ts.y)).rgb, vec3(0.3, 0.59, 0.11));
             float edge = length(vec2(lR - lL, lD - lU));
-            float rim = smoothstep(0.04, 0.18, edge) * 0.45;
+            float rim = smoothstep(0.04, 0.18, edge) * 0.55;
 
-            float shimmer = 0.96 + 0.04 * sin(uTime * 14.0 + edge * 40.0 + vTC.x * 15.0);
+            // Holographic shimmer animation
+            float shimmer = 0.93 + 0.07 * sin(uTime * 14.0 + edge * 40.0 + vTC.x * 15.0);
             extracted *= shimmer;
-            extracted += vec3(0.08, 0.55, 0.75) * rim;
-            extracted += uAmbientTint * (0.12 + rim * 0.45) * uAmbientStrength;
+            // Cyan hologram rim glow
+            extracted += vec3(0.05, 0.70, 0.95) * rim * 1.2;
+            extracted += uAmbientTint * (0.15 + rim * 0.5) * uAmbientStrength;
 
-            vec2 ef = smoothstep(0.0, 0.06, vTC) * smoothstep(0.0, 0.06, 1.0 - vTC);
+            // Soft edge vignette to avoid hard borders on each slice
+            vec2 ef = smoothstep(0.0, 0.05, vTC) * smoothstep(0.0, 0.05, 1.0 - vTC);
             float edgeAlpha = ef.x * ef.y;
 
             if (uProfile > 0.5) {
+                // LCD display profile — slightly stronger contrast
                 vec2 vc = vTC * 2.0 - 1.0;
-                float vignette = 1.0 - dot(vc, vc) * 0.4;
-                luminanceMask = smoothstep(0.2, 0.55, luma);
-                mask = clamp(max(luminanceMask, focusMask * 0.8) * verticalBias, 0.0, 1.0);
-                extracted = c.rgb * mask * (1.35 + uSubjectBoost * 0.8);
-                extracted += vec3(0.08, 0.55, 0.75) * rim;
+                float vignette = 1.0 - dot(vc, vc) * 0.35;
+                luminanceMask = smoothstep(0.06, 0.40, luma);
+                mask = clamp(max(luminanceMask, focusMask * 0.88) * verticalBias, 0.0, 1.0);
+                extracted = c.rgb * mask * (1.45 + uSubjectBoost * 0.85);
+                extracted += vec3(0.05, 0.70, 0.95) * rim * 1.2;
                 extracted *= shimmer * vignette;
             }
 
-            float a = edgeAlpha * uAlpha * mask * smoothstep(0.01, 0.08, luma + focusMask * 0.12);
+            // With additive blending, alpha controls how much this slice adds light.
+            // Use a more generous threshold so video is clearly visible as a hologram.
+            float a = edgeAlpha * uAlpha * clamp(mask * 1.4, 0.0, 1.0) * smoothstep(0.005, 0.06, luma + focusMask * 0.18);
             gl_FragColor = vec4(extracted, a);
         }
     """.trimIndent()
@@ -327,7 +320,8 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        // Additive blending: hologram slices accumulate as glowing light on black
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
 
         copyProg = createProgram(copyVS, copyFS)
         videoProg = createProgram(videoVS, videoFS)
@@ -411,40 +405,12 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         Matrix.setIdentityM(viewMatrix, 0)
         Matrix.translateM(viewMatrix, 0, -camX, -camY, -camZ)
 
-        if (videoFormat == 1) {
-            // MULTI-PASS ARCHITECTURE FOR 3D TOPOGRAPHY
-
-            // Pass 1: Render Background into bgFbo
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bgFbo[0])
-            GLES20.glViewport(0, 0, screenWidth, screenHeight)
-            GLES20.glClearColor(0f, 0f, 0f, 0f) // Transparent clear
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-            drawVolumetricVideo(t, layer = 1f) // BG only
-
-            // Pass 2: Run Inpainting Shader to fill holes
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, inpaintFbo[0])
-            GLES20.glViewport(0, 0, screenWidth, screenHeight)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            runInpaintingPass()
-
-            // Pass 3: Draw Inpainted Background to Screen
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            GLES20.glViewport(0, 0, screenWidth, screenHeight)
-            GLES20.glClearColor(0f, 0f, 0f, 1f)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-            drawTextureToScreen(inpaintFboTex[0])
-
-            // Pass 4: Render Foreground onto Screen
-            drawVolumetricVideo(t, layer = 2f) // FG only
-
-        } else {
-            // STANDARD ARCHITECTURE
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            GLES20.glViewport(0, 0, screenWidth, screenHeight)
-            GLES20.glClearColor(0f, 0f, 0f, 1f)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-            drawVolumetricVideo(t, layer = 0f)
-        }
+        // STANDARD HOLOGRAM ARCHITECTURE: black background + additive glow slices
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, screenWidth, screenHeight)
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawVolumetricVideo(t)
     }
 
     private fun runInpaintingPass() {
@@ -532,7 +498,7 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         synchronized(this) { updateSurface = true }
     }
 
-    private fun drawVolumetricVideo(t: Float, layer: Float) {
+    private fun drawVolumetricVideo(t: Float) {
         GLES20.glUseProgram(videoProg)
 
         val posH = GLES20.glGetAttribLocation(videoProg, "aPosition")
@@ -546,8 +512,6 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         val subjectCenterH = GLES20.glGetUniformLocation(videoProg, "uSubjectCenter")
         val subjectScaleH = GLES20.glGetUniformLocation(videoProg, "uSubjectScale")
         val subjectBoostH = GLES20.glGetUniformLocation(videoProg, "uSubjectBoost")
-        val formatH = GLES20.glGetUniformLocation(videoProg, "uVideoFormat")
-        val layerH = GLES20.glGetUniformLocation(videoProg, "uLayer")
 
         gridVertBuf.position(0)
         gridTexBuf.position(0)
@@ -564,8 +528,6 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         GLES20.glUniform2f(subjectCenterH, subjectCenterX, subjectCenterY - tableModeBlend * 0.06f)
         GLES20.glUniform2f(subjectScaleH, subjectScaleX, subjectScaleY + tableModeBlend * 0.08f)
         GLES20.glUniform1f(subjectBoostH, subjectBoost + tableModeBlend * 0.32f)
-        GLES20.glUniform1f(formatH, videoFormat.toFloat())
-        GLES20.glUniform1f(layerH, layer)
         
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, videoFboTex[0])
@@ -586,8 +548,6 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
             
             gridIdxBuf.position(0)
             GLES20.glDrawElements(GLES20.GL_TRIANGLES, gridIndexCount, GLES20.GL_UNSIGNED_SHORT, gridIdxBuf)
-            
-            if (videoFormat == 1) break
         }
 
         GLES20.glDisableVertexAttribArray(posH)

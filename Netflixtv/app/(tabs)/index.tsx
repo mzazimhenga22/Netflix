@@ -10,7 +10,7 @@ import { useProfile } from '../../context/ProfileContext';
 import { usePageColor } from '../../context/PageColorContext';
 import NativeHeroBanner from '../../components/NativeHeroBanner';
 import ExpandingRow from '../../components/ExpandingRow';
-import HeroMeta from '../../components/HeroMeta';
+
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TV_TOP_NAV_TOTAL_OFFSET } from './_layout';
@@ -33,7 +33,7 @@ export default function HomeScreen() {
   // Scoped card stream — only the one focused card ever gets a stream URL.
   // This prevents multiple ExoPlayer instances spawning across all rows.
   const [focusedCardStream, setFocusedCardStream] = useState<{ id: string; url: string; headers?: string } | null>(null);
-  const [heroLogoUrl, setHeroLogoUrl] = useState<string | undefined>();
+
 
   // Categories
   const [trending, setTrending] = useState<any[]>([]);
@@ -142,7 +142,6 @@ export default function HomeScreen() {
         currentHeroIndex.current = (currentHeroIndex.current + 1) % Math.min(10, trending.length);
         const nextHero = trending[currentHeroIndex.current];
         setHeroMovie(nextHero);
-        fetchHeroBranding(nextHero);
 
         // Resolve stream for auto-cycled hero
         if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
@@ -153,23 +152,7 @@ export default function HomeScreen() {
     }, 30000); // 30 seconds
   };
 
-  const fetchHeroBranding = async (movie: any) => {
-    if (!movie) return;
-    try {
-      const type = movie.media_type || (movie.first_air_date ? 'tv' : 'movie');
-      const { fetchMovieImages, getLogoUrl } = require('../../services/tmdb');
-      const images = await fetchMovieImages(movie.id, type);
-      if (images?.logos?.length > 0) {
-        // Prefer English logos
-        const enLogo = images.logos.find((l: any) => l.iso_639_1 === 'en');
-        setHeroLogoUrl(getLogoUrl(enLogo?.file_path || images.logos[0].file_path));
-      } else {
-        setHeroLogoUrl(undefined);
-      }
-    } catch (e) {
-      setHeroLogoUrl(undefined);
-    }
-  };
+
 
   const stopAutoCycle = () => {
     if (autoCycleInterval.current) clearInterval(autoCycleInterval.current);
@@ -233,7 +216,6 @@ export default function HomeScreen() {
       if (tr.length > 0) {
         setHeroMovie(tr[0]);
         currentHeroIndex.current = 0;
-        fetchHeroBranding(tr[0]);
 
         // Resolve initial hero stream
         setTimeout(() => {
@@ -331,7 +313,7 @@ export default function HomeScreen() {
       setPreferredMovieId(movieId);
       setPreferredRowTitle(rowTitle || null);
       setHeroMovie(movie);
-      fetchHeroBranding(movie);
+
 
       // Resolve hero banner stream
       if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
@@ -467,15 +449,11 @@ export default function HomeScreen() {
             onFocus={handleHeroFocus}
             style={styles.hero}
           />
-          <View style={styles.heroOverlay}>
+          <View style={styles.heroOverlay} pointerEvents="none">
             <LinearGradient
               colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.92)']}
               style={StyleSheet.absoluteFill}
-              pointerEvents="none"
             />
-            <View style={styles.heroMetaWrapper}>
-              <HeroMeta movie={heroMovie} logoUrl={heroLogoUrl} />
-            </View>
           </View>
         </View>
 
@@ -561,11 +539,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 180,
-    justifyContent: 'flex-end',
-  },
-  heroMetaWrapper: {
-    paddingBottom: 15,
-    zIndex: 10,
   },
   rowsContainer: { marginTop: -20, zIndex: 10 },
 });

@@ -888,7 +888,7 @@ export function ModernVideoPlayer({
             <HologramNativeView 
               videoUrl={internalVideoUrl}
               title={title || ''}
-              videoFormat="3d-top-bottom"
+              videoFormat="standard"
               style={StyleSheet.absoluteFill}
             />
           ) : (

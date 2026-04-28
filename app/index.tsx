@@ -2,39 +2,27 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Dimensions, Text, Pressable, Platform } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import Animated, { 
-  useSharedValue, 
-  useAnimatedStyle, 
-  withTiming, 
-  withSequence, 
-  runOnJS,
   FadeIn
 } from 'react-native-reanimated';
-import { COLORS, SPACING } from '../constants/theme';
+import { COLORS } from '../constants/theme';
 import { SplashAnimation } from '../components/SplashAnimation';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { SubscriptionService } from '../services/SubscriptionService';
 
 const { width } = Dimensions.get('window');
 
 export default function SplashScreen() {
   const router = useRouter();
-  const scale = useSharedValue(1);
-  const opacity = useSharedValue(0);
   const [showUpdateGate, setShowUpdateGate] = React.useState(false);
   const [updateConfig, setUpdateConfig] = React.useState<any>(null);
-  const [isChecking, setIsChecking] = React.useState(true);
   const [downloadProgress, setDownloadProgress] = React.useState(0);
   const [isDownloading, setIsDownloading] = React.useState(false);
-
-
-
+  const [updateStatusText, setUpdateStatusText] = React.useState('');
   const [animating, setAnimating] = React.useState(true);
 
   // Background version/auth check can begin during animation, but we won't navigate till both are done
@@ -61,8 +49,8 @@ export default function SplashScreen() {
 
         if (isOutdated) {
           setUpdateConfig(data);
+          setUpdateStatusText(`Version ${remoteVersion} is required to continue.`);
           setShowUpdateGate(true);
-          setIsChecking(false);
           return;
         }
       }
@@ -95,6 +83,7 @@ export default function SplashScreen() {
 
   const handleUpdatePress = async () => {
     if (Platform.OS !== 'android') {
+      setUpdateStatusText('Opening the update page...');
       Linking.openURL(updateConfig?.updateUrl || 'https://movieflixproxy.netlify.app');
       return;
     }
@@ -102,13 +91,15 @@ export default function SplashScreen() {
     // Direct APK Download & Install for Android
     const updateUrl = updateConfig?.directDownloadUrl || updateConfig?.updateUrl;
     if (!updateUrl || !updateUrl.endsWith('.apk')) {
-        // Fallback to browser if no direct APK is provided
-        Linking.openURL(updateConfig?.updateUrl || 'https://movieflixproxy.netlify.app');
-        return;
+      setUpdateStatusText('Update link is missing a direct APK download.');
+      Linking.openURL(updateConfig?.updateUrl || 'https://movieflixproxy.netlify.app');
+      return;
     }
 
     try {
       setIsDownloading(true);
+      setDownloadProgress(0);
+      setUpdateStatusText('Downloading update...');
       const filename = `movieflix_v${updateConfig.minRequiredVersion}.apk`;
       const localUri = `${FileSystem.cacheDirectory}${filename}`;
       
@@ -116,29 +107,33 @@ export default function SplashScreen() {
         updateUrl,
         localUri,
         {},
-        (downloadProgress) => {
-          const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
+        (progressEvent) => {
+          const total = progressEvent.totalBytesExpectedToWrite || 1;
+          const progress = progressEvent.totalBytesWritten / total;
           setDownloadProgress(progress);
+          setUpdateStatusText(`Downloading update... ${Math.round(progress * 100)}%`);
         }
       );
 
       const result = await downloadResumable.downloadAsync();
       
       if (result) {
+        await installApk(result.uri);
+      } else {
+        setUpdateStatusText('Download failed. Please try again.');
         setIsDownloading(false);
-        installApk(result.uri);
       }
     } catch (e) {
       console.error('[Update] Download failed:', e);
+      setUpdateStatusText('Download failed. Please try again.');
       setIsDownloading(false);
-      // Fallback
-      Linking.openURL(updateConfig.updateUrl);
     }
   };
 
   const installApk = async (uri: string) => {
     try {
       const contentUri = await FileSystem.getContentUriAsync(uri);
+      setUpdateStatusText('Download complete. Opening installer...');
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: contentUri,
         flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
@@ -146,6 +141,8 @@ export default function SplashScreen() {
       });
     } catch (e) {
       console.error('[Update] Install failed:', e);
+      setUpdateStatusText('Install launch failed. Please try again.');
+      setIsDownloading(false);
     }
   };
 
@@ -160,13 +157,6 @@ export default function SplashScreen() {
       }
     });
   };
-
-  const logoStyle = useAnimatedStyle(() => {
-    return {
-      opacity: opacity.value,
-      transform: [{ scale: scale.value }],
-    };
-  });
 
   return (
     <View style={styles.container}>
@@ -184,29 +174,32 @@ export default function SplashScreen() {
 
       {showUpdateGate && (
         <Animated.View entering={FadeIn.delay(200)} style={styles.gateOverlay}>
-          <Ionicons name="cloud-download-outline" size={80} color={COLORS.primary} style={{ marginBottom: 30 }} />
-          <Text style={styles.gateTitle}>Update Required</Text>
+          <Text style={styles.updateEyebrow}>Update Available</Text>
+          <Text style={styles.updateTitle}>A newer version of MovieFlix is ready</Text>
           <Text style={styles.gateSubtitle}>
-            {updateConfig?.message || "A new, mandatory version of MovieFlix is available. Please update to continue watching."}
+            {updateConfig?.message || `Version ${updateConfig?.minRequiredVersion || 'latest'} is required before continuing.`}
           </Text>
+
+          <View style={styles.versionRow}>
+            <Text style={styles.versionText}>Current: {Constants.expoConfig?.version || 'Unknown'}</Text>
+            <Text style={styles.versionText}>Required: {updateConfig?.minRequiredVersion || 'Unknown'}</Text>
+          </View>
           
           <Pressable 
             style={[styles.updateBtn, isDownloading && { opacity: 0.6 }]}
             onPress={isDownloading ? undefined : handleUpdatePress}
           >
             <Text style={styles.updateBtnText}>
-              {isDownloading ? `Downloading ${Math.round(downloadProgress * 100)}%` : `Download v${updateConfig?.minRequiredVersion || 'Now'}`}
+              {isDownloading ? `Downloading ${Math.round(downloadProgress * 100)}%` : `Update to v${updateConfig?.minRequiredVersion || 'latest'}`}
             </Text>
           </Pressable>
 
-          {isDownloading && (
-            <View style={styles.progressContainer}>
-              <View style={[styles.progressBar, { width: `${downloadProgress * 100}%` }]} />
-            </View>
-          )}
+          <View style={styles.progressContainer}>
+            <View style={[styles.progressBar, { width: `${Math.max(downloadProgress > 0 ? 6 : 0, downloadProgress * 100)}%` }]} />
+          </View>
 
           <Text style={styles.versionInfo}>
-            Your version: {Constants.expoConfig?.version || 'Unknown'}
+            {updateStatusText || 'This update cannot be skipped.'}
           </Text>
         </Animated.View>
       )}
@@ -227,16 +220,25 @@ const styles = StyleSheet.create({
   },
   gateOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'black',
+    backgroundColor: 'rgba(0,0,0,0.96)',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 40,
     zIndex: 1000,
   },
-  gateTitle: {
+  updateEyebrow: {
+    color: '#E50914',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  updateTitle: {
     color: 'white',
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: '900',
+    textAlign: 'center',
     marginBottom: 12,
   },
   gateSubtitle: {
@@ -244,14 +246,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
     lineHeight: 22,
-    marginBottom: 40,
+    marginBottom: 24,
+  },
+  versionRow: {
+    flexDirection: 'row',
+    gap: 18,
+    marginBottom: 28,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  versionText: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 14,
+    fontWeight: '600',
   },
   updateBtn: {
     backgroundColor: COLORS.primary,
     paddingHorizontal: 32,
     paddingVertical: 14,
     borderRadius: 4,
-    width: '100%',
+    minWidth: 280,
     alignItems: 'center',
   },
   updateBtnText: {
@@ -261,19 +275,23 @@ const styles = StyleSheet.create({
   },
   progressContainer: {
     width: '100%',
-    height: 4,
-    backgroundColor: '#333',
-    marginTop: 20,
-    borderRadius: 2,
+    maxWidth: 360,
+    height: 10,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    marginTop: 24,
+    borderRadius: 999,
     overflow: 'hidden',
   },
   progressBar: {
     height: '100%',
     backgroundColor: COLORS.primary,
+    borderRadius: 999,
   },
   versionInfo: {
-    color: '#444',
-    fontSize: 12,
-    marginTop: 20,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 14,
+    marginTop: 18,
+    textAlign: 'center',
+    minHeight: 22,
   }
 });

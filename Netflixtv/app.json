@@ -42,6 +42,7 @@
     "newArchEnabled": true,
     "name": "Netflixtv",
     "slug": "Netflixtv",
+    "version": "1.0.9",
     "orientation": "landscape",
     "userInterfaceStyle": "automatic",
     "extra": {

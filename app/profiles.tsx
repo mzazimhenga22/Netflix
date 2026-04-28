@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, Image, Dimensions, ActivityIndicator, StatusBar, Alert } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, SPACING } from '../constants/theme';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { 
@@ -26,13 +27,13 @@ import * as Haptics from 'expo-haptics';
 
 const { width, height } = Dimensions.get('window');
 const PROFILE_SIZE = Math.min(width * 0.22, 100); 
+const FEATURED_CACHE_KEY = 'netflix_profiles_featured_cache';
 
 export default function ProfilesScreen() {
   const router = useRouter();
-  const { profiles, selectProfile, canAddProfile, maxProfilesAllowed } = useProfile();
+  const { profiles, selectProfile, canAddProfile, maxProfilesAllowed, isLoading } = useProfile();
   const { startProfileTransition, isTransitioning } = useTransition();
   const [featured, setFeatured] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
   const [isManaging, setIsManaging] = useState(false);
   
   // PIN Modal State
@@ -53,14 +54,28 @@ export default function ProfilesScreen() {
   useEffect(() => {
     async function loadFeatured() {
       try {
+        const cached = await AsyncStorage.getItem(FEATURED_CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed) {
+            setFeatured(parsed);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to restore featured cache', e);
+      }
+
+      try {
         const trending = await fetchTrending('all');
         if (trending && trending.length > 0) {
-          setFeatured(trending[Math.floor(Math.random() * 5)]);
+          const picked = trending[Math.floor(Math.random() * Math.min(trending.length, 5))];
+          setFeatured(picked);
+          AsyncStorage.setItem(FEATURED_CACHE_KEY, JSON.stringify(picked)).catch((cacheError) => {
+            console.warn('Failed to cache featured billboard', cacheError);
+          });
         }
       } catch (e) {
         console.warn("Failed to load billboard", e);
-      } finally {
-        setLoading(false);
       }
     }
     loadFeatured();
@@ -145,7 +160,9 @@ export default function ProfilesScreen() {
     opacity: contentOpacity.value 
   }));
 
-  if (loading) return <View style={[styles.container, styles.center]}><ActivityIndicator color={COLORS.primary} /></View>;
+  if (isLoading && profiles.length === 0) {
+    return <View style={[styles.container, styles.center]}><ActivityIndicator color={COLORS.primary} /></View>;
+  }
 
   return (
     <View style={styles.container}>
@@ -155,7 +172,7 @@ export default function ProfilesScreen() {
       {/* Background Fades Out on Selection */}
       <Animated.View style={[{ flex: 1 }, animatedContentStyle]}>
         <Animated.View entering={FadeIn.duration(1200)} style={styles.billboardContainer}>
-          {featured && (
+          {featured ? (
             <>
               <Image source={{ uri: getImageUrl(featured.poster_path) || getBackdropUrl(featured.backdrop_path) }} style={styles.billboardImage} />
               <LinearGradient
@@ -172,6 +189,11 @@ export default function ProfilesScreen() {
                 </Animated.Text>
               </View>
             </>
+          ) : (
+            <LinearGradient
+              colors={['#080808', '#111111', '#000000']}
+              style={styles.gradientFallback}
+            />
           )}
         </Animated.View>
 
@@ -353,6 +375,7 @@ const styles = StyleSheet.create({
   billboardContainer: { ...StyleSheet.absoluteFillObject, height: height * 0.8 },
   billboardImage: { width: '100%', height: '100%', opacity: 0.7 },
   gradient: { ...StyleSheet.absoluteFillObject },
+  gradientFallback: { ...StyleSheet.absoluteFillObject },
   billboardContent: { position: 'absolute', bottom: height * 0.25, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 40 },
   badge: { backgroundColor: COLORS.primary, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 2, marginBottom: 16 },
   badgeText: { color: 'white', fontSize: 11, fontWeight: '900', letterSpacing: 2 },

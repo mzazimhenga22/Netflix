@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
-import { View, StyleSheet, Dimensions, useTVEventHandler, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Dimensions, useTVEventHandler, TouchableOpacity, Platform } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { FilterProvider } from '../context/FilterContext';
@@ -29,6 +29,11 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { SubscriptionService, SubscriptionStatus } from '../services/SubscriptionService';
 import { Text, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
+import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 
 function RootLayoutContent() {
@@ -37,6 +42,11 @@ function RootLayoutContent() {
   const [appIsReady, setAppIsReady] = useState(false);
   const [initialRoute, setInitialRoute] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(true);
+  const [showUpdateGate, setShowUpdateGate] = useState(false);
+  const [updateConfig, setUpdateConfig] = useState<any>(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [updateStatusText, setUpdateStatusText] = useState('');
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
   const [payHeroUrl, setPayHeroUrl] = useState<string | null>(null);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
@@ -79,6 +89,96 @@ function RootLayoutContent() {
     });
   }, []);
 
+  const compareVersions = useCallback((v1: string, v2: string) => {
+    const s1 = v1.split('.').map(Number);
+    const s2 = v2.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      const n1 = s1[i] || 0;
+      const n2 = s2[i] || 0;
+      if (n1 > n2) return 1;
+      if (n1 < n2) return -1;
+    }
+    return 0;
+  }, []);
+
+  const checkVersionGate = useCallback(async () => {
+    try {
+      const configDoc = await getDoc(doc(db, 'app_config', 'versioning'));
+      if (!configDoc.exists()) return;
+
+      const data = configDoc.data();
+      const localVersion = Constants.expoConfig?.version || '1.0.0';
+      const remoteVersion = data.minRequiredVersion || '1.0.0';
+
+      if (compareVersions(localVersion, remoteVersion) < 0) {
+        setUpdateConfig(data);
+        setUpdateStatusText(`Version ${remoteVersion} is required to continue.`);
+        setShowUpdateGate(true);
+      }
+    } catch (error) {
+      console.warn('[TV VersionGate] Fetch failed, bypassing for safety', error);
+    }
+  }, [compareVersions]);
+
+  const installApk = useCallback(async (uri: string) => {
+    try {
+      const contentUri = await FileSystem.getContentUriAsync(uri);
+      setUpdateStatusText('Download complete. Opening installer…');
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: 1,
+        type: 'application/vnd.android.package-archive',
+      });
+    } catch (error) {
+      console.error('[TV Update] Install failed:', error);
+      setUpdateStatusText('Install launch failed. Please try again.');
+      setIsDownloadingUpdate(false);
+    }
+  }, []);
+
+  const handleUpdatePress = useCallback(async () => {
+    if (Platform.OS !== 'android' || !updateConfig) return;
+
+    const updateUrl = updateConfig.directDownloadUrl || updateConfig.updateUrl;
+    if (!updateUrl || !String(updateUrl).endsWith('.apk')) {
+      setUpdateStatusText('Update link is missing a direct APK download.');
+      return;
+    }
+
+    try {
+      setIsDownloadingUpdate(true);
+      setDownloadProgress(0);
+      setUpdateStatusText('Downloading update…');
+
+      const filename = `netflixtv_v${updateConfig.minRequiredVersion || 'latest'}.apk`;
+      const localUri = `${FileSystem.cacheDirectory}${filename}`;
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        updateUrl,
+        localUri,
+        {},
+        (progressEvent) => {
+          const total = progressEvent.totalBytesExpectedToWrite || 1;
+          const progress = progressEvent.totalBytesWritten / total;
+          setDownloadProgress(progress);
+          setUpdateStatusText(`Downloading update… ${Math.round(progress * 100)}%`);
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (result?.uri) {
+        await installApk(result.uri);
+      } else {
+        setUpdateStatusText('Download failed. Please try again.');
+        setIsDownloadingUpdate(false);
+      }
+    } catch (error) {
+      console.error('[TV Update] Download failed:', error);
+      setUpdateStatusText('Download failed. Please try again.');
+      setIsDownloadingUpdate(false);
+    }
+  }, [installApk, updateConfig]);
+
   useEffect(() => {
     let subUnsubscribe = () => {};
     
@@ -101,6 +201,7 @@ function RootLayoutContent() {
 
         // Hide native Expo splash immediately — our animation takes over
         await SplashScreen.hideAsync();
+        await checkVersionGate();
 
         return () => {
           unsubscribe();
@@ -114,7 +215,7 @@ function RootLayoutContent() {
     }
 
     prepare();
-  }, [fetchSubscription]);
+  }, [checkVersionGate, fetchSubscription]);
 
   const handleRetrySub = () => {
     setSubscription({ status: 'loading' });
@@ -263,6 +364,37 @@ function RootLayoutContent() {
       {showSplash && (
         <SplashAnimation onFinish={() => setShowSplash(false)} />
       )}
+
+      {showUpdateGate && (
+        <View style={styles.updateOverlay}>
+          <Text style={styles.updateEyebrow}>Update Available</Text>
+          <Text style={styles.updateTitle}>A newer version of Netflixtv is ready</Text>
+          <Text style={styles.updateSubtitle}>
+            {updateConfig?.message || `Version ${updateConfig?.minRequiredVersion || 'latest'} is required before continuing to profiles.`}
+          </Text>
+
+          <View style={styles.versionRow}>
+            <Text style={styles.versionText}>Current: {Constants.expoConfig?.version || 'Unknown'}</Text>
+            <Text style={styles.versionText}>Required: {updateConfig?.minRequiredVersion || 'Unknown'}</Text>
+          </View>
+
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={isDownloadingUpdate ? undefined : handleUpdatePress}
+            style={[styles.updateButton, isDownloadingUpdate && styles.updateButtonDisabled]}
+          >
+            <Text style={styles.updateButtonText}>
+              {isDownloadingUpdate ? `Downloading ${Math.round(downloadProgress * 100)}%` : `Update to v${updateConfig?.minRequiredVersion || 'latest'}`}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${Math.max(downloadProgress > 0 ? 6 : 0, downloadProgress * 100)}%` }]} />
+          </View>
+
+          <Text style={styles.updateStatus}>{updateStatusText || 'This update cannot be skipped.'}</Text>
+        </View>
+      )}
       
       {/* Global Screensaver Overlay */}
       {isIdle && <Screensaver onDismiss={resetIdleTimer} />}
@@ -336,5 +468,83 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  updateOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.96)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 120,
+    zIndex: 100000,
+  },
+  updateEyebrow: {
+    color: '#E50914',
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  updateTitle: {
+    color: '#FFFFFF',
+    fontSize: 42,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginBottom: 16,
+    maxWidth: 900,
+  },
+  updateSubtitle: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 24,
+    textAlign: 'center',
+    lineHeight: 34,
+    maxWidth: 980,
+    marginBottom: 28,
+  },
+  versionRow: {
+    flexDirection: 'row',
+    gap: 30,
+    marginBottom: 30,
+  },
+  versionText: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  updateButton: {
+    backgroundColor: '#E50914',
+    paddingHorizontal: 42,
+    paddingVertical: 18,
+    borderRadius: 6,
+    minWidth: 420,
+    alignItems: 'center',
+  },
+  updateButtonDisabled: {
+    opacity: 0.9,
+  },
+  updateButtonText: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  progressTrack: {
+    width: 520,
+    height: 12,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    overflow: 'hidden',
+    marginTop: 26,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#E50914',
+    borderRadius: 999,
+  },
+  updateStatus: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 18,
+    marginTop: 18,
+    textAlign: 'center',
+    minHeight: 26,
   }
 });
