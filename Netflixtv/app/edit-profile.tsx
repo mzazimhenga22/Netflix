@@ -35,11 +35,29 @@ const AVATARS = [
 export default function EditProfileScreen() {
   const router = useRouter();
   const { id, name: initialName, avatarId: initialAvatarId } = useLocalSearchParams();
-  const { addProfile, updateProfile, deleteProfile } = useProfile();
+  const { profiles, addProfile, updateProfile, deleteProfile, canAddProfile } = useProfile();
   
   const [name, setName] = useState((initialName as string) || '');
   const [selectedAvatarId, setSelectedAvatarId] = useState((initialAvatarId as string) || 'avatar1');
   const [isKids, setIsKids] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [pin, setPin] = useState('');
+  const [maturityLevel, setMaturityLevel] = useState<'G' | 'PG' | 'TV-14' | 'MA'>('MA');
+
+  // Load existing data if editing
+  useEffect(() => {
+    if (id) {
+      const p = profiles.find(p => p.id === id);
+      if (p) {
+        setName(p.name);
+        setSelectedAvatarId(p.avatarId);
+        setIsKids(p.isKids || false);
+        setIsLocked(p.isLocked || false);
+        setPin(p.pin || '');
+        setMaturityLevel(p.maturityLevel || (p.isKids ? 'G' : 'MA'));
+      }
+    }
+  }, [id, profiles]);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [focusedBtn, setFocusedBtn] = useState<string | null>(null);
 
@@ -47,11 +65,15 @@ export default function EditProfileScreen() {
 
   const handleSave = async () => {
     if (!name.trim()) return;
+    if (!id && !canAddProfile) {
+      router.replace('/profiles');
+      return;
+    }
     try {
       if (id) {
-         await updateProfile(id as string, name, selectedAvatarId);
+         await updateProfile(id as string, name, selectedAvatarId, isLocked, pin, isKids, maturityLevel);
       } else {
-         await addProfile(name, selectedAvatarId);
+         await addProfile(name, selectedAvatarId, isLocked, pin, isKids, maturityLevel);
       }
       router.replace('/profiles');
     } catch (err) {
@@ -160,7 +182,7 @@ export default function EditProfileScreen() {
           </View>
 
           <View style={styles.settingRow}>
-             <View>
+             <View style={{ flex: 1 }}>
                 <Text style={styles.settingTitle}>Kids Profile</Text>
                 <Text style={styles.settingDesc}>Only show movies and TV shows for kids.</Text>
              </View>
@@ -172,7 +194,65 @@ export default function EditProfileScreen() {
              />
           </View>
 
-          {id && (
+          <View style={styles.settingRow}>
+             <View style={{ flex: 1 }}>
+                <Text style={styles.settingTitle}>Profile Lock</Text>
+                <Text style={styles.settingDesc}>Require a 4-digit PIN to access this profile.</Text>
+             </View>
+             <Switch 
+               value={isLocked} 
+               onValueChange={(val) => {
+                 setIsLocked(val);
+                 if (val && !pin) setPin('1234'); // Default PIN if enabling
+               }}
+               trackColor={{ false: '#333', true: '#E50914' }}
+               thumbColor="#fff"
+             />
+          </View>
+
+          {isLocked && (
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Profile PIN</Text>
+              <TextInput
+                style={[styles.input, focusedBtn === 'pin' && styles.inputFocused]}
+                value={pin}
+                onChangeText={(val) => setPin(val.replace(/[^0-9]/g, '').slice(0, 4))}
+                onFocus={() => setFocusedBtn('pin')}
+                placeholder="4-digit PIN"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                keyboardType="numeric"
+              />
+            </View>
+          )}
+
+          {!isKids && (
+            <View style={styles.settingContainer}>
+              <Text style={styles.label}>Maturity Rating</Text>
+              <Text style={styles.settingDesc}>Limit this profile to certain age ratings.</Text>
+              <View style={styles.ratingPicker}>
+                {['G', 'PG', 'TV-14', 'MA'].map((level) => (
+                  <TouchableOpacity
+                    key={level}
+                    onFocus={() => setFocusedBtn(`maturity-${level}`)}
+                    onPress={() => setMaturityLevel(level as any)}
+                    style={[
+                      styles.ratingOption,
+                      maturityLevel === level && styles.ratingSelected,
+                      focusedBtn === `maturity-${level}` && styles.btnFocused
+                    ]}
+                  >
+                    <Text style={[
+                      styles.ratingOptionText, 
+                      maturityLevel === level && { color: 'white', fontWeight: 'bold' },
+                      focusedBtn === `maturity-${level}` && { color: 'black' }
+                    ]}>
+                      {level}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
             <TouchableOpacity 
               onFocus={() => setFocusedBtn('delete')}
               onPress={handleDelete}
@@ -181,7 +261,6 @@ export default function EditProfileScreen() {
               <Ionicons name="trash-outline" size={24} color="rgba(255,255,255,0.6)" />
               <Text style={styles.deleteText}>Delete Profile</Text>
             </TouchableOpacity>
-          )}
         </View>
       </View>
     </View>
@@ -347,5 +426,31 @@ const styles = StyleSheet.create({
   avatarImg: {
     width: '100%',
     height: '100%',
+  },
+  settingContainer: {
+    gap: 10,
+    marginTop: 20,
+  },
+  ratingPicker: {
+    flexDirection: 'row',
+    gap: 15,
+    marginTop: 10,
+  },
+  ratingOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  ratingSelected: {
+    borderColor: '#E50914',
+    backgroundColor: 'rgba(229, 9, 20, 0.2)',
+  },
+  ratingOptionText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 18,
+    fontWeight: '600',
   }
 });

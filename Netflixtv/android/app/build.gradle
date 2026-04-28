@@ -89,9 +89,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.com1'
+    namespace 'com.movieflix.tv'
     defaultConfig {
-        applicationId 'com.com1'
+        applicationId 'com.movieflix.tv'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
@@ -181,6 +181,7 @@ dependencies {
 
 
     implementation("io.coil-kt:coil-compose:2.6.0") // Native image loading for Compose Cards
+    implementation("androidx.palette:palette-ktx:1.0.0") // Dominant color extraction from hero backdrops
     implementation("androidx.media3:media3-exoplayer:1.2.0") // Native Trailer playback
     implementation("androidx.media3:media3-exoplayer-hls:1.2.0") // HLS trailer support
     implementation("androidx.media3:media3-ui:1.2.0")

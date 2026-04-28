@@ -4,12 +4,13 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -21,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -37,8 +39,10 @@ import kotlinx.coroutines.delay
 @Composable
 fun PhoneHeroComposable(
     items: List<Map<String, Any>>,
+    spatialEnabled: Boolean = true,
     onPlayPress: (String) -> Unit,
-    onListPress: (String) -> Unit
+    onListPress: (String) -> Unit,
+    onLongPress: (String) -> Unit
 ) {
     if (items.isEmpty()) return
 
@@ -48,10 +52,74 @@ fun PhoneHeroComposable(
     var roll by remember { mutableStateOf(0f) }
     var pitch by remember { mutableStateOf(0f) }
 
-    val animatedRoll by animateFloatAsState(targetValue = roll, animationSpec = spring(stiffness = Spring.StiffnessLow))
-    val animatedPitch by animateFloatAsState(targetValue = pitch, animationSpec = spring(stiffness = Spring.StiffnessLow))
+    val animatedRoll by animateFloatAsState(
+        targetValue = roll,
+        animationSpec = spring(dampingRatio = 0.92f, stiffness = 55f),
+        label = "hero_roll"
+    )
+    val animatedPitch by animateFloatAsState(
+        targetValue = pitch,
+        animationSpec = spring(dampingRatio = 0.92f, stiffness = 55f),
+        label = "hero_pitch"
+    )
+    val cardRotationY by animateFloatAsState(
+        targetValue = animatedRoll * 1.15f,
+        animationSpec = spring(dampingRatio = 0.88f, stiffness = 65f),
+        label = "hero_card_rotation_y"
+    )
+    val cardRotationX by animateFloatAsState(
+        targetValue = -animatedPitch * 1.1f,
+        animationSpec = spring(dampingRatio = 0.88f, stiffness = 65f),
+        label = "hero_card_rotation_x"
+    )
+    val imageOffsetX by animateFloatAsState(
+        targetValue = -animatedRoll * 6.5f,
+        animationSpec = spring(dampingRatio = 0.94f, stiffness = 48f),
+        label = "hero_image_offset_x"
+    )
+    val imageOffsetY by animateFloatAsState(
+        targetValue = animatedPitch * 4.5f,
+        animationSpec = spring(dampingRatio = 0.94f, stiffness = 48f),
+        label = "hero_image_offset_y"
+    )
+    val contentOffsetX by animateFloatAsState(
+        targetValue = animatedRoll * 2.4f,
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = 62f),
+        label = "hero_content_offset_x"
+    )
+    val contentOffsetY by animateFloatAsState(
+        targetValue = -animatedPitch * 2.6f,
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = 62f),
+        label = "hero_content_offset_y"
+    )
+    val ambientHighlightOffsetX by animateFloatAsState(
+        targetValue = animatedRoll * 14f,
+        animationSpec = spring(dampingRatio = 0.95f, stiffness = 40f),
+        label = "hero_highlight_offset_x"
+    )
+    val ambientHighlightOffsetY by animateFloatAsState(
+        targetValue = -animatedPitch * 8f,
+        animationSpec = spring(dampingRatio = 0.95f, stiffness = 40f),
+        label = "hero_highlight_offset_y"
+    )
+    val shineOffsetX by animateFloatAsState(
+        targetValue = animatedRoll * 18f,
+        animationSpec = spring(dampingRatio = 0.96f, stiffness = 38f),
+        label = "hero_shine_offset_x"
+    )
+    val shineOffsetY by animateFloatAsState(
+        targetValue = animatedPitch * 6f,
+        animationSpec = spring(dampingRatio = 0.96f, stiffness = 38f),
+        label = "hero_shine_offset_y"
+    )
 
-    DisposableEffect(Unit) {
+    DisposableEffect(spatialEnabled) {
+        if (!spatialEnabled) {
+            roll = 0f
+            pitch = 0f
+            return@DisposableEffect onDispose {}
+        }
+
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
                 if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
@@ -60,8 +128,8 @@ fun PhoneHeroComposable(
                     val orientation = FloatArray(3)
                     SensorManager.getOrientation(rotationMatrix, orientation)
                     
-                    roll = Math.toDegrees(orientation[2].toDouble()).toFloat().coerceIn(-15f, 15f)
-                    pitch = Math.toDegrees(orientation[1].toDouble()).toFloat().coerceIn(-15f, 15f)
+                    roll = (Math.toDegrees(orientation[2].toDouble()).toFloat() * 0.72f).coerceIn(-10f, 10f)
+                    pitch = (Math.toDegrees(orientation[1].toDouble()).toFloat() * 0.68f).coerceIn(-10f, 10f)
                 }
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -72,33 +140,41 @@ fun PhoneHeroComposable(
         onDispose { sensorManager.unregisterListener(listener) }
     }
 
-    val pagerState = rememberPagerState(pageCount = { items.size })
+    var currentIndex by remember(items) { mutableIntStateOf(0) }
 
-    // Auto-advance every 5 seconds
-    LaunchedEffect(pagerState.currentPage) {
+    // Auto-advance every 5 seconds with a full-card crossfade.
+    LaunchedEffect(items, currentIndex) {
         delay(5000L)
-        var nextPage = pagerState.currentPage + 1
-        if (nextPage >= items.size) nextPage = 0
-        pagerState.animateScrollToPage(nextPage)
+        currentIndex = (currentIndex + 1) % items.size
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
+            .shadow(
+                elevation = if (spatialEnabled) 22.dp else 12.dp,
+                shape = RoundedCornerShape(12.dp),
+                ambientColor = Color.Black.copy(alpha = 0.65f),
+                spotColor = Color.Black.copy(alpha = 0.85f)
+            )
             .graphicsLayer {
-                rotationY = animatedRoll * 0.8f
-                rotationX = -animatedPitch * 0.8f
-                cameraDistance = 12f * density
+                rotationY = cardRotationY
+                rotationX = cardRotationX
+                scaleX = 1.01f
+                scaleY = 1.01f
+                cameraDistance = if (spatialEnabled) 18f * density else 12f * density
             }
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF141414))
     ) {
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
+        Crossfade(
+            targetState = currentIndex,
+            animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+            modifier = Modifier.fillMaxSize(),
+            label = "hero_card_crossfade"
         ) { page ->
-            val item = items[page]
+            val item = items[page.coerceIn(0, items.lastIndex)]
             val id = item["id"] as? String ?: ""
             val title = item["title"] as? String ?: ""
             val imageUrl = item["imageUrl"] as? String ?: ""
@@ -116,7 +192,18 @@ fun PhoneHeroComposable(
             val isInMyList = item["isInMyList"] as? Boolean ?: false
             val type = item["type"] as? String ?: "tv"
 
-            Box(modifier = Modifier.fillMaxSize()) {
+            val interactionSource = remember { MutableInteractionSource() }
+
+            Box(modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { clip = true }
+                .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = {},
+                    onLongClick = { onLongPress(id) }
+                )
+            ) {
                 // Poster Layer (Parallax)
                 AsyncImage(
                     model = imageUrl,
@@ -124,11 +211,31 @@ fun PhoneHeroComposable(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
-                        .scale(1.2f)
+                        .scale(1.28f)
                         .graphicsLayer {
-                            translationX = -animatedRoll * 2f
-                            translationY = animatedPitch * 2f
+                            translationX = imageOffsetX
+                            translationY = imageOffsetY
                         }
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = ambientHighlightOffsetX
+                            translationY = ambientHighlightOffsetY
+                            alpha = if (spatialEnabled) 0.22f else 0.12f
+                        }
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.58f),
+                                    Color.White.copy(alpha = 0.12f),
+                                    Color.Transparent
+                                ),
+                                radius = 820f
+                            )
+                        )
                 )
 
                 // Gradient Layer
@@ -137,7 +244,12 @@ fun PhoneHeroComposable(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f), Color.Black),
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.04f),
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.42f),
+                                    Color.Black.copy(alpha = 0.9f)
+                                ),
                                 startY = 0f,
                                 endY = Float.POSITIVE_INFINITY
                             )
@@ -149,12 +261,31 @@ fun PhoneHeroComposable(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            translationX = animatedRoll * 10f
-                            alpha = 0.3f
+                            translationX = shineOffsetX
+                            translationY = shineOffsetY
+                            alpha = if (spatialEnabled) 0.18f else 0.08f
                         }
                         .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.2f), Color.Transparent)
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.White.copy(alpha = 0.28f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.22f)
+                                )
                             )
                         )
                 )
@@ -165,8 +296,8 @@ fun PhoneHeroComposable(
                         .fillMaxSize()
                         .padding(bottom = 24.dp, start = 16.dp, end = 16.dp)
                         .graphicsLayer {
-                            translationX = animatedRoll * 1.5f
-                            translationY = -animatedPitch * 1.5f
+                            translationX = contentOffsetX
+                            translationY = contentOffsetY
                         },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Bottom
@@ -301,27 +432,6 @@ fun PhoneHeroComposable(
                             )
                         }
                     }
-                }
-            }
-        }
-
-        // Pager indicators (Netflix Style Dots)
-        if (items.size > 1) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                repeat(items.size) { iteration ->
-                    val isSelected = pagerState.currentPage == iteration
-                    val color = if (isSelected) Color.White else Color.White.copy(alpha = 0.4f)
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = 3.dp)
-                            .size(if (isSelected) 6.dp else 4.dp)
-                            .background(color, CircleShape)
-                    )
                 }
             }
         }

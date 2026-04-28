@@ -1,0 +1,166 @@
+<svg width="375" height="812" viewBox="0 0 375 812" fill="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg-grad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#2a0a14"/>
+      <stop offset="20%" stop-color="#14050a"/>
+      <stop offset="100%" stop-color="#050505"/>
+    </linearGradient>
+
+    <!-- Noise Texture -->
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.04"/>
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" operator="over"/>
+    </filter>
+
+    <filter id="text-shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.8"/>
+    </filter>
+
+    <clipPath id="screen-clip">
+      <rect x="0" y="0" width="375" height="812" rx="40"/>
+    </clipPath>
+
+    <clipPath id="hero-clip">
+      <rect x="0" y="0" width="335" height="400" rx="12"/>
+    </clipPath>
+    
+    <clipPath id="row-clip">
+       <rect x="0" y="0" width="105" height="135" rx="6"/>
+    </clipPath>
+  </defs>
+
+  <!-- Phone Frame -->
+  <rect x="2" y="2" width="371" height="808" rx="44" fill="#0A0A0A" stroke="#333" stroke-width="4"/>
+  
+  <!-- Screen Content -->
+  <g clip-path="url(#screen-clip)">
+    <rect width="375" height="812" fill="url(#bg-grad)"/>
+    <rect width="375" height="812" fill="white" fill-opacity="0.02" filter="url(#noise)"/>
+
+    <!-- Status Bar -->
+    <g transform="translate(30, 15)">
+      <text x="0" y="15" fill="white" font-family="Inter, sans-serif" font-weight="700" font-size="14">12:45</text>
+      <g transform="translate(250, 0)">
+         <path d="M0 15H3V12H0V15ZM5 15H8V9H5V15ZM10 15H13V6H10V15ZM15 15H18V3H15V15Z" fill="white"/>
+         <path d="M25 15L30 10L35 15" stroke="white" stroke-width="1.2" fill="none"/>
+         <rect x="42" y="6" width="20" height="9" rx="2" stroke="white" stroke-width="1"/>
+         <rect x="44" y="8" width="10" height="5" rx="1" fill="white"/>
+      </g>
+    </g>
+
+    <!-- Header -->
+    <g transform="translate(20, 60)">
+      <text x="0" y="10" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="20">For Saurabh Saini</text>
+      <g transform="translate(240, -8)">
+         <rect x="0" y="0" width="20" height="15" rx="2" stroke="white" stroke-width="1.5" fill="none"/>
+         <path d="M0 12C2 12 4 14 4 16" stroke="white" stroke-width="1.5" fill="none"/>
+         <path d="M35 0V11M35 11L31 7M35 11L39 7M30 14H40" stroke="white" stroke-width="1.5" fill="none"/>
+         <circle cx="65" cy="8" r="6" stroke="white" stroke-width="1.8"/>
+         <line x1="70" y1="13" x2="74" y2="17" stroke="white" stroke-width="1.8"/>
+      </g>
+    </g>
+
+    <!-- Category Pills -->
+    <g transform="translate(20, 105)">
+       <g>
+          <rect width="80" height="28" rx="14" fill="none" stroke="rgba(255,255,255,0.2)"/>
+          <text x="40" y="18" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="11" text-anchor="middle">TV Shows</text>
+       </g>
+       <g transform="translate(90, 0)">
+          <rect width="65" height="28" rx="14" fill="none" stroke="rgba(255,255,255,0.2)"/>
+          <text x="32.5" y="18" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="11" text-anchor="middle">Movies</text>
+       </g>
+       <g transform="translate(165, 0)">
+          <rect width="90" height="28" rx="14" fill="none" stroke="rgba(255,255,255,0.2)"/>
+          <text x="40" y="18" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="11" text-anchor="middle">Categories</text>
+          <path d="M72 15L76 19L80 15" stroke="white" stroke-width="1" fill="none"/>
+       </g>
+    </g>
+
+    <!-- Hero Poster -->
+    <g transform="translate(20, 155)">
+       <g clip-path="url(#hero-clip)">
+          <image xlink:href="https://image.tmdb.org/t/p/w500/vGfL3h790rA87XF395bLzN2M8S9.jpg" width="335" height="400" preserveAspectRatio="xMidYMid slice"/>
+          <linearGradient id="hero-mask-v2" x1="0" y1="0" x2="0" y2="1">
+             <stop offset="60%" stop-color="black" stop-opacity="0"/>
+             <stop offset="100%" stop-color="black" stop-opacity="0.9"/>
+          </linearGradient>
+          <rect width="335" height="400" fill="url(#hero-mask-v2)"/>
+          
+          <g transform="translate(167.5, 300)" text-anchor="middle" filter="url(#text-shadow)">
+             <text x="0" y="0" fill="white" font-family="serif" font-weight="900" font-size="24" letter-spacing="1">ANWESHIPPIN</text>
+             <text x="0" y="28" fill="white" font-family="serif" font-weight="900" font-size="24" letter-spacing="1">KANDETHUM</text>
+             <text x="0" y="55" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="10" opacity="0.8">Understated • Dark • Drama • Detectives</text>
+          </g>
+
+          <g transform="translate(12, 355)">
+             <rect width="150" height="34" rx="4" fill="white"/>
+             <path d="M60 11L68 17L60 23V11Z" fill="black"/>
+             <text x="75" y="21" fill="black" font-family="Inter, sans-serif" font-weight="800" font-size="13">Play</text>
+             
+             <rect x="162" width="150" height="34" rx="4" fill="rgba(255,255,255,0.2)"/>
+             <path d="M205 12V22M200 17H210" stroke="white" stroke-width="2"/>
+             <text x="215" y="21" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="13">My List</text>
+          </g>
+       </g>
+    </g>
+
+    <!-- Continue Watching -->
+    <g transform="translate(20, 580)">
+       <text x="0" y="0" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="13">Continue Watching for Saurabh Saini</text>
+       <g transform="translate(0, 15)">
+          <g>
+             <g clip-path="url(#row-clip)">
+                <image xlink:href="https://image.tmdb.org/t/p/w500/8bBih8spZ8h7S0S2S76qAn9mXpG.jpg" width="105" height="135" preserveAspectRatio="xMidYMid slice"/>
+             </g>
+             <circle cx="52.5" cy="120" r="10" fill="rgba(0,0,0,0.6)" stroke="white" stroke-width="1.2"/>
+             <path d="M50 117L56 120L50 123V117Z" fill="white"/>
+          </g>
+          <g transform="translate(115, 0)">
+             <g clip-path="url(#row-clip)">
+                <image xlink:href="https://image.tmdb.org/t/p/w500/8Gxv2mYnrps9S3uyUMYpSbuZfbN.jpg" width="105" height="135" preserveAspectRatio="xMidYMid slice"/>
+             </g>
+             <circle cx="52.5" cy="120" r="10" fill="rgba(0,0,0,0.6)" stroke="white" stroke-width="1.2"/>
+             <path d="M50 117L56 120L50 123V117Z" fill="white"/>
+          </g>
+          <g transform="translate(230, 0)">
+             <g clip-path="url(#row-clip)">
+                <image xlink:href="https://image.tmdb.org/t/p/w500/8Vtpi9p9vC4sH56vrlX6bPZ4v6L.jpg" width="105" height="135" preserveAspectRatio="xMidYMid slice"/>
+             </g>
+             <circle cx="52.5" cy="120" r="10" fill="rgba(0,0,0,0.6)" stroke="white" stroke-width="1.2"/>
+             <path d="M50 117L56 120L50 123V117Z" fill="white"/>
+          </g>
+       </g>
+    </g>
+
+    <!-- Bottom Nav -->
+    <g transform="translate(0, 735)">
+       <rect width="375" height="77" fill="rgba(0,0,0,0.85)" style="backdrop-filter: blur(20px);"/>
+       <g transform="translate(45, 12)">
+          <g transform="translate(0, 0)">
+             <path d="M0 8L9 0L18 8V16H0V8Z" fill="white"/>
+             <text x="9" y="28" fill="white" font-family="Inter, sans-serif" font-weight="700" font-size="9" text-anchor="middle">Home</text>
+          </g>
+          <g transform="translate(120, 0)" opacity="0.6">
+             <rect x="2" y="2" width="14" height="14" rx="2" stroke="white" stroke-width="1.5"/>
+             <path d="M6 9H12M9 6V12" stroke="white" stroke-width="1.5"/>
+             <text x="9" y="28" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="9" text-anchor="middle">New &amp; Hot</text>
+          </g>
+          <g transform="translate(240, 0)" opacity="0.6">
+             <circle cx="9" cy="9" r="9" fill="#333"/>
+             <image xlink:href="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" x="1.5" y="1.5" width="15" height="15" rx="7.5"/>
+             <text x="9" y="28" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="9" text-anchor="middle">My Netflix</text>
+          </g>
+       </g>
+       <rect x="127" y="62" width="120" height="4" rx="2" fill="white" opacity="0.8"/>
+    </g>
+  </g>
+
+  <!-- Phone Notch -->
+  <path d="M110 2C110 2 110 30 140 30H235C265 30 265 2 265 2" stroke="#0A0A0A" stroke-width="4" fill="#0A0A0A"/>
+</svg>

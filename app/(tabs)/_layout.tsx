@@ -24,9 +24,13 @@ export default function TabLayout() {
 
   return (
     <Tabs
+      backBehavior="history"
       screenOptions={{
         tabBarActiveTintColor: '#FFFFFF',
         tabBarInactiveTintColor: '#808080',
+        sceneStyle: {
+          backgroundColor: '#000000',
+        },
         tabBarStyle: {
           position: 'absolute',
           backgroundColor: 'transparent',
@@ -35,6 +39,7 @@ export default function TabLayout() {
           height: 60,
           paddingBottom: 8,
         },
+        tabBarHideOnKeyboard: true,
         tabBarBackground: () => (
           <View style={StyleSheet.absoluteFill}>
             <LinearGradient
@@ -89,7 +94,7 @@ export default function TabLayout() {
         options={{
           title: 'Clips',
           tabBarIcon: ({ color, focused }) => (
-            <MaterialCommunityIcons name={focused ? "creation" : "creation"} size={24} color={color} />
+            <MaterialCommunityIcons name={focused ? "creation" : "creation-outline"} size={24} color={color} />
           ),
         }}
         listeners={{

@@ -9,7 +9,8 @@ import {
   ActivityIndicator,
   Dimensions,
   Alert,
-  Modal
+  Modal,
+  useWindowDimensions
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -22,18 +23,21 @@ import { ModernVideoPlayer } from '../../components/ModernVideoPlayer';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import ColorExtractor from '../../components/ColorExtractor';
 import { COLORS } from '../../constants/theme';
-import { VidLinkResolver } from '../../components/VidLinkResolver';
+import { usePageColor } from '../../context/PageColorContext';
 import { downloadVideo, DownloadItem, loadMetadata } from '../../services/downloads';
 import { fetchImdbTrailer, TrailerSource } from '../../services/trailers';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 import { VidLinkStream } from '../../services/vidlink';
+import { resolveStreamFromCloud, invalidateCacheEntry } from '../../services/cloudResolver';
+import LoadingSpinner from '../../components/LoadingSpinner';
 
 const AnimatedImage = Animated.createAnimatedComponent(Image);
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function MovieDetailScreen() {
-  const { id, type: typeParam } = useLocalSearchParams();
+  const { width: windowWidth } = useWindowDimensions();
+  const { id, type: typeParam, season, episode } = useLocalSearchParams();
   // Auto-detect content type if not provided or incorrect
   const rawType = typeParam as string;
   const [contentType, setContentType] = useState<string>(rawType || 'movie');
@@ -43,6 +47,7 @@ export default function MovieDetailScreen() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [heroColors, setHeroColors] = useState<readonly [string, string, string]>(['#000', '#000', '#000']);
+  const { setPageColor } = usePageColor();
   
   // Episode State
   const [showEpisodesView, setShowEpisodesView] = useState(false);
@@ -137,6 +142,42 @@ export default function MovieDetailScreen() {
     loadData();
   }, [id]); // contentType removed from deps to prevent double fetch on auto-correction
 
+  const [isFreePlan, setIsFreePlan] = useState(false);
+
+  useEffect(() => {
+    const { SubscriptionService } = require('../../services/SubscriptionService');
+    const unsub = SubscriptionService.listenToSubscription((sub: any) => {
+      setIsFreePlan(sub.status !== 'active');
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (id && isFreePlan) {
+      const hash = String(id).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
+      const isLocked = (hash % 3 === 0);
+      if (isLocked) {
+        Alert.alert(
+          'Upgrade Required',
+          'This content is locked on the Free Plan. Scan the QR code on the main screen to upgrade.',
+          [{ text: 'Go Back', onPress: () => router.back() }]
+        );
+      }
+    }
+  }, [id, isFreePlan]);
+
+  // Invalidate cached stream for this title on mount so the player
+  // gets a fresh URL instead of reusing one the preview ExoPlayer consumed
+  useEffect(() => {
+    if (id) {
+      invalidateCacheEntry(id as string, contentType, undefined, undefined);
+      // Also invalidate TV S1E1 which is the default preview episode
+      if (contentType === 'tv') {
+        invalidateCacheEntry(id as string, 'tv', 1, 1);
+      }
+    }
+  }, [id, contentType]);
+
   // Fetch episodes when season changes (TV shows only)
   useEffect(() => {
     if (contentType !== 'tv' || !movie) return;
@@ -153,7 +194,14 @@ export default function MovieDetailScreen() {
       }
     }
     loadEpisodes();
-  }, [id, typeParam, selectedSeason, contentType]);
+  }, [id, selectedSeason, contentType, movie?.id]);
+
+  useEffect(() => {
+    setEpisodes([]);
+    const s = season ? parseInt(season as string, 10) : 1;
+    setSelectedSeason(isNaN(s) ? 1 : s);
+    setPlayEpisode(null);
+  }, [id, season]);
 
   // Subscribe to Watch History for this title
   useEffect(() => {
@@ -193,7 +241,7 @@ export default function MovieDetailScreen() {
     checkDownloads();
   }, [movie?.id, contentType]);
 
-  const handleEpisodeDownload = async (episode: any, resolvedStream?: VidLinkStream) => {
+  const handleEpisodeDownload = async (episode: any) => {
     if (!movie) return;
 
     const epId = `${movie.id}_tv_s${selectedSeason}_e${episode.episode_number}`;
@@ -203,15 +251,29 @@ export default function MovieDetailScreen() {
       return;
     }
 
-    if (!resolvedStream) {
-      // Trigger VidLinkResolver for this specific episode
-      setEpisodeToDownload(episode);
-      setIsResolvingEpDownload(true);
-      return;
-    }
-
-    // Stream resolved — start the download
+    // Resolve stream via Cloud Function (same as player)
+    setEpisodeToDownload(episode);
+    setIsResolvingEpDownload(true);
     try {
+      const result = await resolveStreamFromCloud(
+        movie.id.toString(),
+        'tv',
+        selectedSeason,
+        episode.episode_number
+      );
+      if (!result?.url) {
+        Alert.alert('Error', 'Could not resolve a download link for this episode.');
+        return;
+      }
+
+      const resolvedStream: VidLinkStream = {
+        url: result.url,
+        headers: result.headers,
+        captions: result.captions || [],
+        markers: result.markers || [],
+        sourceId: result.sourceId,
+      };
+
       await downloadVideo(
         movie.id.toString(),
         movie.name || movie.title,
@@ -226,6 +288,7 @@ export default function MovieDetailScreen() {
       );
       Alert.alert('Download Started', `S${selectedSeason}E${episode.episode_number} is downloading.`);
     } catch (error) {
+      console.error('[Download] Episode failed:', error);
       Alert.alert('Error', 'Download failed for this episode.');
     } finally {
       setEpisodeToDownload(null);
@@ -233,12 +296,10 @@ export default function MovieDetailScreen() {
     }
   };
 
-  const handleDownload = async (resolvedStream?: VidLinkStream) => {
+  const handleDownload = async () => {
     if (!movie) return;
     
     if (contentType === 'tv') {
-      // For TV, the main button shows "Episodes & More" 
-      // Individual episode downloads are usually handled in the episode list or we download E1
       Alert.alert('Download TV Show', 'Please select an individual episode to download from the Episodes & More section.');
       return;
     }
@@ -248,13 +309,28 @@ export default function MovieDetailScreen() {
       return;
     }
 
-    if (!resolvedStream) {
-      setIsResolvingForDownload(true);
-      return; // VidLinkResolver will trigger onStreamResolved
-    }
-
+    // Resolve stream via Cloud Function (same as player)
+    setIsResolvingForDownload(true);
+    setDownloadStatus('downloading');
     try {
-      setDownloadStatus('downloading');
+      const result = await resolveStreamFromCloud(
+        movie.id.toString(),
+        contentType as 'movie' | 'tv'
+      );
+      if (!result?.url) {
+        setDownloadStatus('failed');
+        Alert.alert('Error', 'Could not resolve a download link for this title.');
+        return;
+      }
+
+      const resolvedStream: VidLinkStream = {
+        url: result.url,
+        headers: result.headers,
+        captions: result.captions || [],
+        markers: result.markers || [],
+        sourceId: result.sourceId,
+      };
+
       await downloadVideo(
         movie.id.toString(),
         movie.title || movie.name,
@@ -285,7 +361,8 @@ export default function MovieDetailScreen() {
 
   const handleColorExtracted = useCallback((color: string) => {
      setHeroColors([`${color}B3`, `${color}66`, '#000000']);
-  }, []);
+     setPageColor(color);
+  }, [setPageColor]);
 
   const handleRating = useCallback(async (rating: 0 | 1 | 2 | 3) => {
     setUserRating(prev => prev === rating ? 0 : rating);
@@ -323,7 +400,7 @@ export default function MovieDetailScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#E50914" />
+        <LoadingSpinner size={92} label="Loading title" />
       </View>
     );
   }
@@ -347,6 +424,15 @@ export default function MovieDetailScreen() {
   }
 
   if (isPlaying || playEpisode || playingTrailerUrl) {
+    // Invalidate cache before player opens so it resolves a fresh stream
+    if (!playingTrailerUrl && movie?.id) {
+      invalidateCacheEntry(
+        movie.id.toString(),
+        contentType,
+        playEpisode?.season,
+        playEpisode?.episode
+      );
+    }
     return (
       <View style={styles.fullScreenPlayer}>
         <ModernVideoPlayer
@@ -359,8 +445,37 @@ export default function MovieDetailScreen() {
           episodes={episodes}
           itemData={movie}
           onEpisodeSelect={(epNum) => setPlayEpisode({ season: selectedSeason, episode: epNum })}
+          onNextEpisode={() => {
+            if (contentType === 'tv' && playEpisode) {
+              const nextEpNum = playEpisode.episode + 1;
+              const hasNext = episodes.some(e => e.episode_number === nextEpNum);
+              if (hasNext) {
+                setPlayEpisode({ season: selectedSeason, episode: nextEpNum });
+              } else {
+                setIsPlaying(false);
+                setPlayEpisode(null);
+              }
+            }
+          }}
           onClose={() => { setIsPlaying(false); setPlayEpisode(null); setPlayingTrailerUrl(null); }}
-          initialTime={(!playingTrailerUrl && watchProgress && watchProgress.id.toString() === movie.id.toString()) ? watchProgress.currentTime : 0}
+          initialTime={(() => {
+            // Don't resume for trailers
+            if (playingTrailerUrl) return 0;
+            // No watch progress at all
+            if (!watchProgress || watchProgress.id.toString() !== movie.id.toString()) return 0;
+            // For TV: only resume if episode AND season match
+            if (contentType === 'tv' && playEpisode) {
+              const epMatch = watchProgress.episode === playEpisode.episode
+                && (watchProgress.season || 1) === playEpisode.season;
+              if (!epMatch) return 0;
+              // If episode was >95% watched, start from beginning (finished)
+              if (watchProgress.duration > 0 && (watchProgress.currentTime / watchProgress.duration) > 0.95) return 0;
+            }
+            // For movies: if >95% watched, start from beginning
+            if (contentType === 'movie' && watchProgress.duration > 0
+                && (watchProgress.currentTime / watchProgress.duration) > 0.95) return 0;
+            return watchProgress.currentTime;
+          })()}
         />
       </View>
     );
@@ -467,7 +582,9 @@ export default function MovieDetailScreen() {
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.episodesScrollContent}>
                {episodesLoading ? (
-                 <ActivityIndicator size="large" color="#E50914" style={{ marginTop: 100 }} />
+                 <View style={{ marginTop: 100, alignItems: 'center' }}>
+                   <LoadingSpinner size={82} label="Loading episodes" />
+                 </View>
                ) : (
                  episodes.map((ep: any) => (
                    <Pressable
@@ -521,7 +638,9 @@ export default function MovieDetailScreen() {
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.episodesScrollContent}>
                <Text style={styles.trailerTabHeader}>Trailers & Featurettes</Text>
                {trailersLoading ? (
-                 <ActivityIndicator size="large" color="#E50914" style={{ marginTop: 100 }} />
+                 <View style={{ marginTop: 100, alignItems: 'center' }}>
+                   <LoadingSpinner size={82} label="Loading trailers" />
+                 </View>
                ) : trailers.length === 0 ? (
                  <Text style={{color: 'rgba(255,255,255,0.5)', fontSize: 18, marginTop: 40}}>No trailers found.</Text>
                ) : (
@@ -576,7 +695,15 @@ export default function MovieDetailScreen() {
       />
 
       <View style={styles.backdropContainer}>
-        <Image source={{ uri: backdrop }} style={styles.backdrop} contentFit="cover" />
+        <Image 
+          source={{ uri: backdrop }} 
+          style={styles.backdrop} 
+          contentFit="cover" 
+          cachePolicy="memory-disk"
+          transition={400}
+          recyclingKey={`backdrop-${id}`}
+          priority="high"
+        />
         <LinearGradient
           colors={['rgba(0,0,0,0.1)', 'transparent', 'rgba(0,0,0,0.8)', '#000']}
           locations={[0, 0.2, 0.7, 1]}
@@ -585,10 +712,10 @@ export default function MovieDetailScreen() {
       </View>
 
       {/* Main Content Overlay */}
-      <ScrollView 
+      <ScrollView
+        style={[StyleSheet.absoluteFill, styles.mainContent]}
+        contentContainerStyle={styles.mainContentScroll}
         showsVerticalScrollIndicator={false}
-        style={StyleSheet.absoluteFill}
-        contentContainerStyle={styles.mainContent}
       >
         <View style={styles.leftColumn}>
            
@@ -746,7 +873,7 @@ export default function MovieDetailScreen() {
                 <Text style={styles.actionBtnTextSecondary}>{isInMyList ? 'In My List' : 'Add to My List'}</Text>
               </Pressable>
 
-              <Pressable
+               <Pressable
                 style={({ focused }) => [
                   styles.actionBtnSecondary,
                   focused && styles.actionBtnSecondaryFocused
@@ -770,19 +897,6 @@ export default function MovieDetailScreen() {
                 </Text>
               </Pressable>
 
-              {/* Hidden VidLink Resolver for Download */}
-              <VidLinkResolver
-                tmdbId={movie.id.toString()}
-                type={contentType as any}
-                enabled={isResolvingForDownload}
-                onStreamResolved={(stream) => handleDownload(stream)}
-                onError={() => {
-                  setIsResolvingForDownload(false);
-                  setDownloadStatus('failed');
-                  Alert.alert('Error', 'Could not resolve a download link for this title.');
-                }}
-              />
-
            </View>
 
         </View>
@@ -796,32 +910,26 @@ export default function MovieDetailScreen() {
          <Ionicons name="arrow-back" size={32} color="white" />
       </Pressable>
 
-      {/* Episode Download VidLink Resolver (hidden) */}
-      {episodeToDownload && (
-        <VidLinkResolver
-          tmdbId={movie.id.toString()}
-          type="tv"
-          season={selectedSeason}
-          episode={episodeToDownload.episode_number}
-          enabled={isResolvingEpDownload}
-          onStreamResolved={(stream) => handleEpisodeDownload(episodeToDownload, stream)}
-          onError={() => {
-            setEpisodeToDownload(null);
-            setIsResolvingEpDownload(false);
-            Alert.alert('Error', 'Could not resolve a download link for this episode.');
-          }}
-        />
-      )}
 
-      {/* More Like This Modal */}
+
+      {/* More Like This — Bottom Sheet */}
       <Modal
         visible={showMoreLikeThis}
         transparent
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowMoreLikeThis(false)}
       >
-        <View style={styles.moreLikeThisOverlay}>
-          <View style={styles.moreLikeThisPanel}>
+        <Pressable 
+          style={styles.moreLikeThisOverlay}
+          onPress={() => setShowMoreLikeThis(false)}
+        >
+          {/* Prevent taps inside sheet from closing */}
+          <Pressable style={styles.moreLikeThisSheet} onPress={() => {}}>
+            {/* Handle bar */}
+            <View style={styles.sheetHandle}>
+              <View style={styles.sheetHandleBar} />
+            </View>
+
             <View style={styles.moreLikeThisHeader}>
               <Text style={styles.moreLikeThisTitle}>More Like This</Text>
               <Pressable
@@ -834,7 +942,7 @@ export default function MovieDetailScreen() {
 
             {similarLoading ? (
               <View style={styles.moreLikeThisCenter}>
-                <ActivityIndicator size="large" color="#E50914" />
+                <LoadingSpinner size={82} label="Finding similar titles" />
                 <Text style={styles.moreLikeThisLoadingText}>Finding similar titles...</Text>
               </View>
             ) : similarTitles.length === 0 ? (
@@ -844,9 +952,11 @@ export default function MovieDetailScreen() {
             ) : (
               <FlatList
                 data={similarTitles}
+                key={`more-like-this-${Math.max(3, Math.floor((windowWidth - 80) / 160))}`}
                 keyExtractor={(item) => item.id.toString()}
-                numColumns={5}
+                numColumns={Math.max(3, Math.floor((windowWidth - 80) / 160))}
                 contentContainerStyle={styles.moreLikeThisGrid}
+                showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => (
                   <Pressable
                     style={({ focused }) => [styles.moreLikeThisCard, focused && styles.moreLikeThisCardFocused]}
@@ -862,6 +972,11 @@ export default function MovieDetailScreen() {
                       source={{ uri: getImageUrl(item.poster_path) }}
                       style={styles.moreLikeThisCardImage}
                       contentFit="cover"
+                      placeholder={{ uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/HwADBwIAMCbHYQAAAABJRU5ErkJggg==' }}
+                      placeholderContentFit="cover"
+                      transition={300}
+                      recyclingKey={`similar-${item.id}`}
+                      cachePolicy="memory-disk"
                     />
                     <Text style={styles.moreLikeThisCardTitle} numberOfLines={2}>
                       {item.title || item.name}
@@ -870,8 +985,8 @@ export default function MovieDetailScreen() {
                 )}
               />
             )}
-          </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
@@ -906,23 +1021,28 @@ const styles = StyleSheet.create({
   },
   backdropContainer: {
     ...StyleSheet.absoluteFillObject,
-    height: SCREEN_HEIGHT,
+    height: '100%',
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT * 0.9,
+    height: '100%',
   },
   
   // MAIN DETAILS UI
   mainContent: {
+    zIndex: 1,
+  },
+  mainContentScroll: {
     paddingTop: SCREEN_HEIGHT * 0.15,
     paddingHorizontal: 80,
-    paddingBottom: 100,
-    zIndex: 1,
+    paddingBottom: 140,
+    minHeight: SCREEN_HEIGHT,
   },
   leftColumn: {
     width: '45%',
+    minWidth: 420,
+    maxWidth: 720,
   },
   nSeriesContainer: {
     flexDirection: 'row',
@@ -1325,31 +1445,49 @@ const styles = StyleSheet.create({
     borderLeftWidth: 0,
   },
 
-  // More Like This Modal
+  // More Like This Bottom Sheet
   moreLikeThisOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
   },
-  moreLikeThisPanel: {
-    width: '90%',
-    maxHeight: '85%',
-    backgroundColor: '#141414',
-    borderRadius: 16,
-    padding: 40,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+  moreLikeThisSheet: {
+    width: '100%',
+    maxHeight: '75%',
+    backgroundColor: '#181818',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 40,
+    paddingBottom: 40,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    elevation: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+  },
+  sheetHandle: {
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  sheetHandleBar: {
+    width: 50,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.3)',
   },
   moreLikeThisHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 30,
+    marginBottom: 24,
   },
   moreLikeThisTitle: {
     color: 'white',
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: 'bold',
   },
   closePanelBtn: {
@@ -1372,29 +1510,35 @@ const styles = StyleSheet.create({
   },
   moreLikeThisGrid: {
     paddingBottom: 20,
-    gap: 16,
+    gap: 14,
   },
   moreLikeThisCard: {
-    width: 160,
-    marginRight: 16,
-    marginBottom: 20,
-    borderRadius: 8,
+    width: 140,
+    marginRight: 14,
+    marginBottom: 16,
+    borderRadius: 10,
     overflow: 'hidden',
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#222',
     borderWidth: 2,
     borderColor: 'transparent',
   },
   moreLikeThisCardFocused: {
     borderColor: 'white',
-    transform: [{ scale: 1.05 }],
+    transform: [{ scale: 1.08 }],
+    elevation: 10,
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
   },
   moreLikeThisCardImage: {
     width: '100%',
-    height: 220,
+    height: 200,
+    backgroundColor: '#333',
   },
   moreLikeThisCardTitle: {
     color: 'white',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     padding: 8,
   },

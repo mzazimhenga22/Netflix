@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { fetchTrending, getImageUrl } from '../services/tmdb';
 import { useProfile } from '../context/ProfileContext';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 // On a real Netflix-like service, these would come from Firestore
 // (new episodes available, movies added to My List are now available, etc.)
@@ -83,7 +83,7 @@ export default function NotificationsScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#E50914" />
+        <LoadingSpinner size={92} label="Loading notifications" />
       </View>
     );
   }

@@ -1,4 +1,32 @@
 {
+  "$version": 3,
+  "general": {
+    "authType": "openai",
+    "maxSessionTurns": 500,
+    "approvalMode": "auto-edit"
+  },
+  "security": {
+    "auth": {
+      "selectedType": "openai",
+      "apiKey": "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"
+    }
+  },
+  "model": {
+    "name": "z-ai/glm-5.1",
+    "generationConfig": {
+      "max_tokens": 128000
+    }
+  },
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "z-ai/glm-5.1",
+        "name": "NVIDIA",
+        "baseUrl": "https://integrate.api.nvidia.com/v1",
+        "envKey": "NVIDIA_API_KEY"
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "Bash(npm run *)",
@@ -7,6 +35,5 @@
       "Bash(/home.tsx)",
       "Bash(eas *)"
     ]
-  },
-  "$version": 3
+  }
 }

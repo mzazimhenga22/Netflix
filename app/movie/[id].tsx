@@ -57,6 +57,7 @@ import { MyListService } from '../../services/MyListService';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 import { useNativeDetails } from '../../hooks/useNativeDetails';
 import { CastCarousel } from '../../components/CastCarousel';
+import { isContentLockedForFreePlan } from '../../services/AccessControl';
 
 // Removed static SCREEN_WIDTH/HEIGHT constants to prevent orientation-change distortion;
 // using useWindowDimensions() inside MovieDetailsScreen instead.
@@ -136,13 +137,14 @@ const AnimatedActionButton = ({ icon, activeIcon, text, activeText, initiallyAct
 
 export default function MovieDetailsScreen() {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
-  const { id, type } = useLocalSearchParams();
+  const { id, type, autoPlay, startTime } = useLocalSearchParams();
   const router = useRouter();
+  const normalizedRouteType = type === 'tv' || type === 'movie' ? type : null;
   const [movie, setMovie] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [episodes, setEpisodes] = useState<any[]>([]);
-  const [isTV, setIsTV] = useState(type === 'tv');
+  const [isTV, setIsTV] = useState(normalizedRouteType === 'tv');
   const [selectedSeason, setSelectedSeason] = useState(1);
   const [activeTab, setActiveTab] = useState<'episodes' | 'more'>(isTV ? 'episodes' : 'more');
   const [showSeasonModal, setShowSeasonModal] = useState(false);
@@ -154,6 +156,32 @@ export default function MovieDetailsScreen() {
 
   // Native Optimization Hook (Data mapping & Palette extraction)
   const { details, palette } = useNativeDetails(movie);
+
+  const [isFreePlan, setIsFreePlan] = useState(false);
+
+  useEffect(() => {
+    const { SubscriptionService } = require('../../services/SubscriptionService');
+    const unsub = SubscriptionService.listenToSubscription((sub: any) => {
+      setIsFreePlan(sub.status !== 'active');
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (id && isFreePlan) {
+      const isLocked = isContentLockedForFreePlan(String(id), true);
+      if (isLocked) {
+        Alert.alert(
+          'Upgrade Required',
+          'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+          [
+            { text: 'Go Back', style: 'cancel', onPress: () => router.back() },
+            { text: 'Upgrade', onPress: () => { router.back(); router.push('/subscription'); } }
+          ]
+        );
+      }
+    }
+  }, [id, isFreePlan, router]);
 
   // Subscribe to Watch History for this specific item
   useEffect(() => {
@@ -251,12 +279,24 @@ export default function MovieDetailsScreen() {
     }
   }, [isPlaying]);
 
+  // Auto-start player if navigated from Continue Watching
+  useEffect(() => {
+    if (autoPlay === 'true') {
+      // Small delay to let the screen render before launching full-screen player
+      const timer = setTimeout(() => setIsPlaying(true), 600);
+      return () => clearTimeout(timer);
+    }
+  }, [autoPlay]);
+
   const renderSimilarItem = ({ item }: { item: any }) => (
     <Pressable 
       style={styles.similarItem}
       onPress={() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        router.push({ pathname: "/movie/[id]", params: { id: item.id.toString(), type: item.media_type || 'movie' } });
+        router.push({
+          pathname: "/movie/[id]",
+          params: { id: item.id.toString(), type: item.media_type || (isTV ? 'tv' : 'movie') }
+        });
       }}
     >
       <ExpoImage 
@@ -305,10 +345,31 @@ export default function MovieDetailsScreen() {
 
   useEffect(() => {
     const loadContent = async () => {
+      if (!id) return;
+
       try {
         setLoading(true);
-        const contentType = (type as 'movie' | 'tv') || 'movie';
-        const data = await fetchMovieDetails(id as string, contentType);
+
+        if (normalizedRouteType) {
+          const data = await fetchMovieDetails(id as string, normalizedRouteType);
+          setMovie(data);
+          setIsTV(normalizedRouteType === 'tv');
+
+          if (normalizedRouteType === 'tv') {
+            const firstSeason = data.seasons?.find((s: any) => s.season_number > 0)?.season_number || 1;
+            setSelectedSeason(firstSeason);
+            const seasonData = await fetchSeasonDetails(id as string, firstSeason);
+            setEpisodes(seasonData.episodes || []);
+          } else {
+            setEpisodes([]);
+          }
+
+          return;
+        }
+
+        // Only probe both endpoints when the route did not provide a valid content type.
+        let contentType = 'movie' as string;
+        const data = await fetchMovieDetails(id as string, contentType as 'movie' | 'tv');
         setMovie(data);
         setIsTV(contentType === 'tv');
 
@@ -322,7 +383,7 @@ export default function MovieDetailsScreen() {
       } catch (error) {
         console.error("Error fetching details:", error);
         try {
-          const fallbackType = type === 'tv' ? 'movie' : 'tv';
+          const fallbackType: 'movie' | 'tv' = 'tv';
           const data = await fetchMovieDetails(id as string, fallbackType);
           setMovie(data);
           setIsTV(fallbackType === 'tv');
@@ -340,7 +401,7 @@ export default function MovieDetailsScreen() {
       }
     };
     loadContent();
-  }, [id, type]);
+  }, [id, normalizedRouteType]);
 
   const handleSeasonChange = async (seasonNum: number) => {
     Haptics.selectionAsync();
@@ -814,6 +875,7 @@ export default function MovieDetailsScreen() {
             <Text style={styles.downloadLargeText}>Download</Text>
           </Pressable>
         </Animated.View>
+
 
         <Animated.Text entering={FadeInUp.delay(1000).duration(800)} style={styles.synopsis}>
           {movie.overview}

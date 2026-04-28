@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, FlatList, Dimensions, Text, Pressable, Image, useWindowDimensions, Platform } from 'react-native';
+import { View, StyleSheet, FlatList, Dimensions, Text, Pressable, useWindowDimensions, Platform } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { COLORS, SPACING } from '../constants/theme';
@@ -20,6 +20,8 @@ import Animated, {
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 
+const resolvedTrailerCache = new Map<string, string>();
+
 // Static styles moved to top, but dimension-dependent ones are handled dynamically
 const styles = StyleSheet.create({
   feedList: {
@@ -28,12 +30,13 @@ const styles = StyleSheet.create({
   itemContainer: {
     flex: 1,
     backgroundColor: 'black',
+    overflow: 'hidden',
   },
   videoPressable: {
     flex: 1,
   },
   video: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   playIconOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -46,6 +49,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#111',
+    overflow: 'hidden',
   },
   rightRail: {
     position: 'absolute',
@@ -87,7 +91,7 @@ const styles = StyleSheet.create({
   },
   infoContainer: {
     position: 'absolute',
-    bottom: 40,
+    bottom: 100, // Lifted above Bottom Tab Bar
     left: 16,
     right: 80,
     zIndex: 10,
@@ -185,19 +189,27 @@ const ClipPlayer = React.memo(({ url, isActive, isPreloading, isMuted }: { url: 
   );
 });
 
-const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: { item: any, isActive: boolean, isNext: boolean, isPrev: boolean, isPreShowing: boolean }) => {
+const VideoItem = React.memo(({ item, isActive, isNext, isNextNext, isPrev, isPreShowing }: { item: any, isActive: boolean, isNext: boolean, isNextNext?: boolean, isPrev: boolean, isPreShowing: boolean }) => {
   const router = useRouter();
   const [isMuted, setIsMuted] = useState(false);
-  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const cacheKey = `${item.type || 'movie'}:${item.showId || item.id}`;
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(() => resolvedTrailerCache.get(cacheKey) || null);
   const [isResolving, setIsResolving] = useState(false);
   
   const shouldHavePlayer = isActive || isNext || isPrev;
   
   useEffect(() => {
-    if ((isActive || isNext) && !resolvedUrl && (!item.videoUrl || item.videoUrl.includes('sample'))) {
+    const cachedUrl = resolvedTrailerCache.get(cacheKey);
+    if (cachedUrl && cachedUrl !== resolvedUrl) {
+      setResolvedUrl(cachedUrl);
+      return;
+    }
+
+    // Pre-resolve the current, previous, and next clips so swipes feel immediate.
+    if ((isActive || isNext || isNextNext || isPrev) && !resolvedUrl && (!item.videoUrl || item.videoUrl.includes('sample'))) {
       setIsResolving(true);
     }
-  }, [isActive, isNext, item.videoUrl, resolvedUrl]);
+  }, [cacheKey, isActive, isNext, isNextNext, isPrev, item.videoUrl, resolvedUrl]);
 
   const handleLike = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -214,12 +226,13 @@ const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: 
 
   return (
     <View style={styles.itemContainer}>
-      {(isActive || isNext) && isResolving && (
+      {(isActive || isNext || isNextNext || isPrev) && isResolving && (
         <TrailerResolver
           tmdbId={item.showId || ''}
           mediaType={(item.type as any) || 'movie'}
           enabled={isResolving}
           onResolved={(stream) => {
+            resolvedTrailerCache.set(cacheKey, stream.url);
             setResolvedUrl(stream.url);
             setIsResolving(false);
           }}
@@ -238,10 +251,11 @@ const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: 
         ) : (
           <View style={styles.loadingPlaceholder}>
             {(isActive || isNext || isPrev) && (
-              <Image 
+              <ExpoImage
                 source={{ uri: `https://image.tmdb.org/t/p/original${item.backdrop_path || ''}` }} 
                 style={styles.video} 
-                blurRadius={isActive ? 15 : 0}
+                contentFit="cover"
+                transition={150}
               />
             )}
             {isActive && !resolvedUrl && <NetflixLoader size={40} />}
@@ -284,7 +298,9 @@ const VideoItem = React.memo(({ item, isActive, isNext, isPrev, isPreShowing }: 
             style={styles.nBadgeImage} 
             contentFit="contain" 
           />
-          <Text style={styles.seriesText}>SERIES</Text>
+          <Text style={styles.seriesText}>
+            {item.type === 'movie' ? 'MOVIE' : 'SERIES'}
+          </Text>
         </View>
         <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
         <Text style={styles.description} numberOfLines={2}>{item.overview || item.description}</Text>
@@ -331,8 +347,9 @@ export function VerticalVideoFeed({ data }: { data: any[] }) {
               item={item} 
               isActive={index === activeIndex && isScreenFocused} 
               isNext={index === activeIndex + 1 && isScreenFocused}
+              isNextNext={index === activeIndex + 2 && isScreenFocused}
               isPrev={index === activeIndex - 1 && isScreenFocused}
-              isPreShowing={Math.abs(index - activeIndex) <= 1}
+              isPreShowing={Math.abs(index - activeIndex) <= 2}
             />
           </View>
         )}
@@ -345,7 +362,7 @@ export function VerticalVideoFeed({ data }: { data: any[] }) {
         decelerationRate="fast"
         style={styles.feedList}
         windowSize={5}
-        maxToRenderPerBatch={2}
+        maxToRenderPerBatch={3}
         initialNumToRender={2}
         removeClippedSubviews={true}
         getItemLayout={(data, index) => ({

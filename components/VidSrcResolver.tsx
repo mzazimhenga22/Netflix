@@ -93,11 +93,10 @@ export const VidSrcResolver = React.memo(({
     return true;
   }, []);
 
-  if (!enabled || !tmdbId) return null;
 
   // Safety timeout — if WebView hangs
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !tmdbId) return;
     const safetyTimeout = setTimeout(() => {
       if (!hasResolved) {
         console.warn('[VidSrc] ⏰ Safety timeout (35s)');
@@ -105,7 +104,9 @@ export const VidSrcResolver = React.memo(({
       }
     }, 35000);
     return () => clearTimeout(safetyTimeout);
-  }, [enabled, tmdbId, type, season, episode]);
+  }, [enabled, tmdbId, type, season, episode, hasResolved, onError]);
+
+  if (!enabled || !tmdbId) return null;
 
   console.log(`[VidSrc] 🌐 Loading embed: ${embedUrl}`);
 

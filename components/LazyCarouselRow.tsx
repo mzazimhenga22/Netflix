@@ -9,13 +9,14 @@ import { getImageUrl, getBackdropUrl } from '../services/tmdb';
 interface LazyCarouselRowProps {
   title: string;
   fetchFn: () => Promise<any[]>;
+  fetchKey?: string;
   tiltX?: any;
   tiltY?: any;
   variant?: 'poster' | 'landscape';
   onCardLongPress?: (item: { id: string; title: string; imageUrl: string; type?: string }) => void;
 }
 
-const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'poster', onCardLongPress }: LazyCarouselRowProps) => {
+const LazyCarouselRowComponent = ({ title, fetchFn, fetchKey, tiltX, tiltY, variant = 'poster', onCardLongPress }: LazyCarouselRowProps) => {
   const { width } = useWindowDimensions();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +29,7 @@ const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'pos
 
   useEffect(() => {
     let isMounted = true;
+    setLoading(true);
     const load = async () => {
       try {
         const results = await fetchFnRef.current();
@@ -50,7 +52,7 @@ const LazyCarouselRowComponent = ({ title, fetchFn, tiltX, tiltY, variant = 'pos
     };
     load();
     return () => { isMounted = false; };
-  }, []); // Empty deps so it only runs once per component mount
+  }, [fetchKey, title, variant]);
 
   if (loading) {
     const W = variant === 'landscape' ? width * 0.35 : width * 0.28;

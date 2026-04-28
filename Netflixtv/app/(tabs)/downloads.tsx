@@ -5,8 +5,8 @@ import {
   StyleSheet,
   FlatList,
   Pressable,
-  ActivityIndicator,
   Alert,
+  findNodeHandle,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -19,6 +19,8 @@ import {
   deleteAllDownloads,
 } from '../../services/downloads';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import { useTvFocusBridge } from '../../context/TvFocusBridgeContext';
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes === 0) return '';
@@ -32,6 +34,9 @@ export default function DownloadsScreen() {
   const [loading, setLoading] = useState(true);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const router = useRouter();
+  const { setHeroFocusTag } = useTvFocusBridge();
+  const deleteAllRef = React.useRef<any>(null);
+  const firstCardRef = React.useRef<any>(null);
 
   const loadDownloads = useCallback(async () => {
     setLoading(true);
@@ -48,7 +53,22 @@ export default function DownloadsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadDownloads();
+      return undefined;
     }, [loadDownloads])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      const timeout = setTimeout(() => {
+        const target = deleteAllRef.current ?? firstCardRef.current;
+        const tag = findNodeHandle(target);
+        setHeroFocusTag(typeof tag === 'number' ? tag : null);
+      }, 0);
+      return () => {
+        clearTimeout(timeout);
+        setHeroFocusTag(null);
+      };
+    }, [items.length, loading, setHeroFocusTag])
   );
 
   const handleDelete = async (item: DownloadItem) => {
@@ -97,7 +117,7 @@ export default function DownloadsScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#E50914" />
+        <LoadingSpinner size={92} label="Loading downloads" />
       </View>
     );
   }
@@ -118,6 +138,7 @@ export default function DownloadsScreen() {
         </View>
         {items.length > 0 && (
           <Pressable
+            ref={deleteAllRef}
             style={({ focused }) => [styles.deleteAllBtn, focused && styles.deleteAllBtnFocused]}
             onPress={handleDeleteAll}
           >
@@ -150,6 +171,7 @@ export default function DownloadsScreen() {
             return (
               <Animated.View entering={FadeInDown.delay(index * 50).duration(400)}>
                 <Pressable
+                  ref={index === 0 ? firstCardRef : undefined}
                   style={({ focused }) => [styles.card, focused && styles.cardFocused]}
                   onFocus={() => setFocusedId(item.id)}
                   onBlur={() => setFocusedId(null)}
@@ -166,7 +188,7 @@ export default function DownloadsScreen() {
                     {/* Status Overlay */}
                     {!isCompleted && (
                       <View style={styles.progressOverlay}>
-                        <ActivityIndicator size="small" color="#E50914" />
+                        <LoadingSpinner size={34} />
                         <Text style={styles.progressText}>
                           {item.status === 'downloading'
                             ? `${Math.floor(progress * 100)}%`

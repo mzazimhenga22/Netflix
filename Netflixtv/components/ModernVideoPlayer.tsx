@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, Dimensions, ActivityIndicator, ScrollView, Modal, Image, useTVEventHandler } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Dimensions, ScrollView, Modal, Image, useTVEventHandler } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -21,19 +21,18 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { COLORS } from '../constants/theme';
 import { parseVtt, Subtitle } from '../utils/vttParser';
 import { getImageUrl, fetchMovieImages } from '../services/tmdb';
-import { NetflixLoader } from './NetflixLoader';
+import LoadingSpinner from './LoadingSpinner';
 import Svg, { Path, Defs, LinearGradient, Stop } from 'react-native-svg';
-// Native Kotlin module — both VidLink and VidSrc now use native Android WebView (not RN WebView)
-import { resolveVidLinkStream, NativeVidLinkStream } from '../utils/useTvNative';
-import { VidLinkResolver } from './VidLinkResolver';
+// Cloud resolver — replaces broken WebView/NativeModule resolution on TV
+import { resolveStreamFromCloud, invalidateCacheEntry } from '../services/cloudResolver';
 import { TrailerResolver, TrailerStream } from './TrailerResolver';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { VidLinkStream, VidLinkSkipMarker } from '../services/vidlink';
 import { useProfile } from '../context/ProfileContext';
 import { NativeModules } from 'react-native';
 
-const { TvNativeModule } = NativeModules;
-const RESOLVE_TIMEOUT_MS = 22000;
+const { TvNativeModule } = NativeModules; // Still used for trailers
+const RESOLVE_TIMEOUT_MS = 45000; // Cloud Function needs more time
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -129,7 +128,7 @@ const NetflixNLogo = ({ width = 24, height = 44 }) => (
 );
 
 // Optimization: Sub-components wrapped in React.memo to prevent unnecessary re-renders
-const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchError, backdropUrl, animatedLoadingStyle, resolvingStatus }: any) => {
+const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchError, backdropUrl, animatedLoadingStyle, resolvingStatus, loadingPercent }: any) => {
   return (
     <Animated.View 
       style={[styles.centeredOverlay, animatedLoadingStyle]}
@@ -148,7 +147,7 @@ const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchErro
       
       {(!fetchError) && (
         <>
-          <NetflixLoader size={60} />
+          <LoadingSpinner size={76} progress={loadingPercent} tone="light" />
           {!internalVideoUrl ? (
             <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>{resolvingStatus || 'Resolving Stream...'}</Text>
           ) : (
@@ -160,7 +159,8 @@ const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchErro
   );
 });
 
-const AnimatedErrorOverlay = React.memo(({ status, fetchError, isRateLimited, onClose }: any) => {
+const AnimatedErrorOverlay = React.memo(({ status, fetchError, isRateLimited, isRecovering, onClose }: any) => {
+  if (isRecovering) return null; // Don't show error while auto-recovery is in progress
   if (status !== 'error' && !fetchError) return null;
   
   return (
@@ -226,10 +226,22 @@ export function ModernVideoPlayer({
   const [showSubtitlePicker, setShowSubtitlePicker] = useState(false);
   const [showUpNext, setShowUpNext] = useState(false);
   const showUpNextRef = useRef(false);
+  const autoNextFiredRef = useRef(false);
   const hasSeekedRef = useRef(false);
+  const pendingResumeTimeRef = useRef<number | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [jsVidLinkEnabled, setJsVidLinkEnabled] = useState(false);
-  const [isTryingVidSrc, setIsTryingVidSrc] = useState(false);
+  const [loadingPercent, setLoadingPercent] = useState(7);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastProgressTimeRef = useRef(0);
+  // jsVidLinkEnabled and isTryingVidSrc removed — cloud resolver handles all fallback logic
+
+  // Auto-recovery: when HLS proxy tokens expire mid-playback, re-resolve and resume
+  const autoRetryCountRef = useRef(0);
+  const isAutoRecoveringRef = useRef(false);
+  const [isAutoRecovering, setIsAutoRecovering] = useState(false);
+  const recoveryPositionRef = useRef(0);
+  const MAX_AUTO_RETRIES = 5; // More retries for low-network resilience
 
   const { selectedProfile } = useProfile();
   
@@ -238,7 +250,8 @@ export function ModernVideoPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const currentPlaybackTimeRef = useRef(0);
   const [duration, setDuration] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [hasPlaybackStarted, setHasPlaybackStarted] = useState(false);
 
   // Interaction State
   const [progressBarWidth, setProgressBarWidth] = useState(0);
@@ -263,23 +276,37 @@ export function ModernVideoPlayer({
   const fullControlsTimeout = useRef<NodeJS.Timeout | null>(null);
   const currentUrlRef = useRef(videoUrl || '');
 
-  // Initialize player with a valid source only if available
-  const player = useVideoPlayer((internalVideoUrl && internalVideoUrl !== 'ERROR') ? { 
-    uri: internalVideoUrl, 
-    headers: internalHeaders || undefined,
-    contentType: 'hls' as any,  // VidLink proxy URLs have no .m3u8 extension
-  } : null, (player) => {
+  // Auto-detect stream type — don't force HLS on MP4 streams
+  const detectContentType = useCallback((url: string): string | undefined => {
+    if (!url) return undefined;
+    const lower = url.toLowerCase();
+    if (lower.includes('.m3u8') || lower.includes('/hls/') || lower.includes('m3u8')) return 'hls';
+    if (lower.includes('.mpd')) return 'dash';
+    // For proxy URLs with no extension, default to HLS (most common for streaming providers)
+    if (!lower.match(/\.(mp4|mkv|avi|webm|mov)/)) return 'hls';
+    return undefined; // Let the player auto-detect
+  }, []);
+
+  // Initialize player ONCE with null source — source is set exclusively via
+  // replace() in the source-update effect. This prevents the double-load race
+  // condition where useVideoPlayer recreates the player (destroying event
+  // listeners) AND the effect calls replace() simultaneously, which consumes
+  // one-time-use HLS proxy tokens twice and causes ExoPlayer to error.
+  const player = useVideoPlayer(null, (player) => {
     player.loop = false;
     player.staysActiveInBackground = true;
     player.timeUpdateEventInterval = 0.25; // 250ms for performance
-    
-    // Aggressive preloading (if supported)
-    if ('preferredForwardBufferDuration' in player) {
-      (player as any).preferredForwardBufferDuration = 120; // Preload 120 seconds ahead
-    }
-    
-    if (internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') {
-      player.play();
+
+    // Low-network resilience: configure larger buffers so ExoPlayer doesn't
+    // error out on brief connectivity drops.
+    try {
+      player.bufferOptions = {
+        preferredForwardBufferDuration: 60,  // Buffer 60s ahead
+        minBufferForPlayback: 3,             // Need 3s buffered to start/resume
+        prioritizeTimeOverSizeThreshold: true,
+      };
+    } catch (e) {
+      // bufferOptions may not be supported on all platforms
     }
   });
 
@@ -309,55 +336,12 @@ export function ModernVideoPlayer({
     }
 
     setFetchError(false);
-    setStatus('readyToPlay');
-    setJsVidLinkEnabled(false);
-    setIsTryingVidSrc(false);
+    // Don't set status='readyToPlay' here — let the native player report it
+    // via statusChange once it has actually loaded the stream. Premature status
+    // caused the loading overlay to fade before playback started.
   }, [preferredTrackLabel]);
 
-  const tryVidSrcFallback = useCallback(async () => {
-    if (isTryingVidSrc) return;
-    setIsTryingVidSrc(true);
-    setResolvingStatus('Trying alternate source...');
-    try {
-      console.log(`[Player] 🔗 Trying VidSrc native...`);
-      const result: any = await withTimeout<any>(
-        TvNativeModule.resolveVidSrcStream(
-          tmdbId,
-          contentType || 'movie',
-          seasonNum ?? 0,
-          episodeNum ?? 0
-        ),
-        RESOLVE_TIMEOUT_MS,
-        'VidSrc'
-      );
-
-      if (result?.url) {
-        console.log(`[Player] ✅ VidSrc resolved: ${result.url.substring(0, 80)}...`);
-        handleStreamResult(result);
-        return;
-      }
-    } catch (e: any) {
-      console.warn(`[Player] ⚠️ VidSrc failed: ${e.message}`);
-    }
-
-    console.error(`[Player] ❌ All sources failed for: ${title}`);
-    setFetchError(true);
-    setStatus('error');
-    setIsTryingVidSrc(false);
-  }, [tmdbId, contentType, seasonNum, episodeNum, title, isTryingVidSrc, handleStreamResult]);
-
-  const handleJsVidLinkResolved = useCallback((stream: VidLinkStream) => {
-    console.log(`[Player] ✅ JS VidLink fallback resolved: ${stream.url.substring(0, 80)}...`);
-    handleStreamResult(stream);
-  }, [handleStreamResult]);
-
-  const handleJsVidLinkError = useCallback((error: string) => {
-    console.warn(`[Player] ⚠️ JS VidLink fallback failed: ${error}`);
-    setJsVidLinkEnabled(false);
-    tryVidSrcFallback();
-  }, [tryVidSrcFallback]);
-
-  // Internal Fetching Logic — uses Kotlin native module instead of WebView
+  // Internal Fetching Logic — uses Cloud Function instead of WebView/NativeModule
   useEffect(() => {
     // If we already have a URL from props, prioritize it
     if (videoUrl) {
@@ -377,58 +361,74 @@ export function ModernVideoPlayer({
        }
 
        setFetchError(false);
-       setStatus('readyToPlay');
+       // Status will be set by the native player's statusChange event
+       // once it actually loads the source via replace().
        return;
     }
 
     if (!tmdbId || !title) return;
 
     // ====================================================================
-    // STREAM RESOLUTION STRATEGY (Native Kotlin WebView — reliable on TV):
-    // 1. Try VidLink via TvNativeModule.resolveVidLinkStream (native WebView)
-    // 2. If VidLink fails, try VidSrc via TvNativeModule.resolveVidSrcStream
-    // Both use Android's native android.webkit.WebView, NOT React Native's
-    // react-native-webview which doesn't work on TV chipsets.
+    // STREAM RESOLUTION STRATEGY — Cloud Function (Puppeteer)
+    // Single HTTP POST to GCF. The function tries VidLink first, then
+    // VidSrc as fallback, all server-side with a full Chrome browser.
+    // No WebViews needed on the TV device.
     // ====================================================================
     let cancelled = false;
     const fetchId = ++fetchIdRef.current;
 
     async function resolveStream() {
-      console.log(`[Player] 🚀 Resolving stream for: ${title} (TMDB: ${tmdbId})`);
+      console.log(`[Player] 🚀 Resolving stream via Cloud Function for: ${title} (TMDB: ${tmdbId})`);
+      // Reset playback state for new episode/content
+      hasSeekedRef.current = false;
+      pendingResumeTimeRef.current = null;
+      currentPlaybackTimeRef.current = 0;
+      lastSaveTimeRef.current = 0;
+      setCurrentTime(0);
+      setDuration(0);
+      setHasPlaybackStarted(false);
+      progressPercentage.value = 0;
+      setIsBuffering(false);
+      autoRetryCountRef.current = 0;
+      autoNextFiredRef.current = false;
+      showUpNextRef.current = false;
+      showSkipIntroRef.current = false;
+      setShowUpNext(false);
+      setShowSkipIntro(false);
+
       setStatus('loading');
       setFetchError(false);
-      setJsVidLinkEnabled(false);
-      setIsTryingVidSrc(false);
+      setResolvingStatus('Resolving stream...');
 
-      // === ATTEMPT 1: VidLink (native Kotlin WebView) ===
-      setResolvingStatus('Resolving via VidLink...');
       try {
-        console.log(`[Player] 🔗 Trying VidLink native...`);
-        const result: any = await withTimeout<any>(
-          TvNativeModule.resolveVidLinkStream(
-            tmdbId,
-            contentType || 'movie',
-            seasonNum ?? 0,
-            episodeNum ?? 0
-          ),
-          RESOLVE_TIMEOUT_MS,
-          'VidLink'
+        // Invalidate any cached URL first — preview ExoPlayer may have consumed it
+        invalidateCacheEntry(tmdbId!, contentType || 'movie', seasonNum, episodeNum);
+
+        const result = await resolveStreamFromCloud(
+          tmdbId!,
+          contentType || 'movie',
+          seasonNum,
+          episodeNum
         );
         
         if (cancelled || fetchId !== fetchIdRef.current) return;
         
         if (result?.url) {
-          console.log(`[Player] ✅ VidLink resolved: ${result.url.substring(0, 80)}...`);
+          console.log(`[Player] ✅ Cloud resolved via ${result.sourceId}: ${result.url.substring(0, 80)}...`);
           handleStreamResult(result);
           return;
         }
+
+        // Cloud function returned no stream
+        console.error(`[Player] ❌ Cloud resolver returned no stream for: ${title}`);
+        setFetchError(true);
+        setStatus('error');
       } catch (e: any) {
-        console.warn(`[Player] ⚠️ VidLink failed: ${e.message}`);
         if (cancelled || fetchId !== fetchIdRef.current) return;
+        console.error(`[Player] ❌ Cloud resolver error: ${e.message}`);
+        setFetchError(true);
+        setStatus('error');
       }
-      // === ATTEMPT 2: JS WebView fallback (same logic used on phone app) ===
-      setResolvingStatus('Trying JS fallback resolver...');
-      setJsVidLinkEnabled(true);
     }
 
     resolveStream();
@@ -452,39 +452,62 @@ export function ModernVideoPlayer({
   }, [tmdbId, contentType]);
 
 
-  // Handle Player Source Updates (when state changes)
+  // Handle Player Source Updates — this is the ONLY place that sets the
+  // native player source. useVideoPlayer is created with null to avoid the
+  // double-load race condition.
   useEffect(() => {
-    async function updatePlayer() {
-      if (internalVideoUrl && internalVideoUrl !== '' && internalVideoUrl !== 'ERROR') {
-         if (internalVideoUrl !== currentUrlRef.current) {
-            console.log(`[Player] 🔄 Updating native player source to: ${internalVideoUrl.substring(0, 50)}...`);
-            currentUrlRef.current = internalVideoUrl;
-            try {
-              // Ensure player is not released before calling
-              if (player) {
-                const resolvedHeaders = (internalHeaders && Object.keys(internalHeaders).length > 0) 
-                  ? internalHeaders 
-                  : undefined;
-                  
-                await (player as any).replaceAsync({
-                  uri: internalVideoUrl,
-                  headers: resolvedHeaders,
-                  contentType: 'hls',
-                });
-                
-                // 150ms delay to allow TV player/decoder to stabilize before play()
-                setTimeout(() => {
-                  try { player.play(); } catch (e) {}
-                }, 150);
-              }
-            } catch (e) {
-              console.error("[Player] ❌ replaceAsync failed:", e);
-            }
-         }
+    if (internalVideoUrl && internalVideoUrl !== '' && internalVideoUrl !== 'ERROR') {
+      if (internalVideoUrl !== currentUrlRef.current) {
+        console.log(`[Player] 🔄 Updating native player source to: ${internalVideoUrl.substring(0, 80)}...`);
+        currentUrlRef.current = internalVideoUrl;
+        setHasPlaybackStarted(false);
+        try {
+          if (player) {
+            const resolvedHeaders = (internalHeaders && Object.keys(internalHeaders).length > 0) 
+              ? internalHeaders 
+              : undefined;
+
+            const detectedType = detectContentType(internalVideoUrl);
+            const source = {
+              uri: internalVideoUrl,
+              headers: resolvedHeaders,
+              ...(detectedType ? { contentType: detectedType as any } : {}),
+            };
+
+            // Use replace with disableWarning=true to suppress iOS deprecation
+            // warning. On Android this is identical to replaceAsync.
+            player.replace(source, true);
+
+            // Small delay to let the decoder/TV stabilize before triggering play
+            setTimeout(() => {
+              try { player.play(); } catch (e) {}
+            }, 250);
+          }
+        } catch (e) {
+          console.error("[Player] ❌ replace failed:", e);
+        }
       }
     }
-    updatePlayer();
-  }, [internalVideoUrl, internalHeaders, player]);
+  }, [internalVideoUrl, internalHeaders, player, detectContentType]);
+
+  useEffect(() => {
+    if (status !== 'loading' && status !== 'idle') {
+      setLoadingPercent(100);
+      return;
+    }
+
+    setLoadingPercent(7);
+    const interval = setInterval(() => {
+      setLoadingPercent((current) => {
+        const cap = internalVideoUrl ? 96 : 88;
+        if (current >= cap) return current;
+        const step = current < 30 ? 7 : current < 60 ? 5 : current < 80 ? 3 : 2;
+        return Math.min(cap, current + step);
+      });
+    }, 450);
+
+    return () => clearInterval(interval);
+  }, [internalVideoUrl, status]);
 
   // Init Brightness
   useEffect(() => {
@@ -557,9 +580,10 @@ export function ModernVideoPlayer({
       if (!tmdbId || hasSeekedRef.current) return;
       
       // Fast path: use initialTime passed from Details screen
+      // (Details screen already validates episode match + >95% completion)
       if (initialTime && initialTime > 5 && player) {
-        console.log(`[WatchHistory] Resuming from prop initialTime: ${initialTime}s`);
-        try { player.currentTime = initialTime; } catch (e) {}
+        console.log(`[WatchHistory] Queueing resume from prop initialTime: ${initialTime}s`);
+        pendingResumeTimeRef.current = initialTime;
         hasSeekedRef.current = true;
         return;
       }
@@ -567,17 +591,31 @@ export function ModernVideoPlayer({
       // Slow path: fetch from AsyncStorage
       const historyItem = await WatchHistoryService.getProgress(selectedProfile?.id || '', tmdbId.toString());
       if (historyItem && historyItem.currentTime > 5 && player) {
-        console.log(`[WatchHistory] Resuming from AsyncStorage: ${historyItem.currentTime}s`);
-        try {
-          player.currentTime = historyItem.currentTime;
-        } catch (e) {}
+        // For TV: only resume if the saved episode matches what we're playing
+        if (contentType === 'tv' && episodeNum !== undefined) {
+          const epMatch = historyItem.episode === episodeNum
+            && (historyItem.season || 1) === (seasonNum || 1);
+          if (!epMatch) {
+            console.log(`[WatchHistory] Skipping resume — saved S${historyItem.season}E${historyItem.episode}, playing S${seasonNum}E${episodeNum}`);
+            hasSeekedRef.current = true;
+            return;
+          }
+        }
+        // Skip resume if content was >95% watched (it's finished)
+        if (historyItem.duration > 0 && (historyItem.currentTime / historyItem.duration) > 0.95) {
+          console.log(`[WatchHistory] Skipping resume — content was ${Math.round((historyItem.currentTime / historyItem.duration) * 100)}% watched (finished)`);
+          hasSeekedRef.current = true;
+          return;
+        }
+        console.log(`[WatchHistory] Queueing resume from AsyncStorage: ${historyItem.currentTime}s`);
+        pendingResumeTimeRef.current = historyItem.currentTime;
       }
       hasSeekedRef.current = true;
     }
     if (status === 'readyToPlay' && !hasSeekedRef.current) {
        checkHistory();
     }
-  }, [status, tmdbId, player, initialTime]);
+  }, [status, tmdbId, player, initialTime, contentType, episodeNum, seasonNum]);
 
   // Progress tracking, UI updates, and Watch History saving
   // Uses a ref for lastSaveTime to persist across re-renders without causing them
@@ -592,7 +630,8 @@ export function ModernVideoPlayer({
     const activeDur = playerDur > 0 ? playerDur : (duration > 0 ? duration : 1);
 
     if (!isScrubbing.current) {
-      progressPercentage.value = (current / activeDur) * 100;
+      const progress = Math.min(100, Math.max(0, (current / activeDur) * 100));
+      progressPercentage.value = progress;
       setCurrentTime(current);
       currentPlaybackTimeRef.current = current;
     }
@@ -644,32 +683,41 @@ export function ModernVideoPlayer({
         }
       }
 
-      // Up Next logic
-      if (contentType === 'tv') {
-        let shouldShowUpNext = false;
-        if (outroMarker && current >= outroMarker.start) {
-          shouldShowUpNext = true;
-        } else if (!outroMarker) {
-          // Fallback to time-based if no API marker
-          const timeLeft = activeDur - current;
-          if (timeLeft <= 15 && timeLeft > 0) {
+        // Up Next logic
+        if (contentType === 'tv') {
+          let shouldShowUpNext = false;
+          if (outroMarker && current >= outroMarker.start) {
             shouldShowUpNext = true;
+          } else if (!outroMarker) {
+            // Fallback to time-based if no API marker
+            const timeLeft = activeDur - current;
+            if (timeLeft <= 15 && timeLeft > 0) {
+              shouldShowUpNext = true;
+            }
           }
-        }
 
-        if (shouldShowUpNext) {
-          if (!showUpNextRef.current) {
-            showUpNextRef.current = true;
-            setShowUpNext(true);
+          if (shouldShowUpNext) {
+            if (!showUpNextRef.current) {
+              showUpNextRef.current = true;
+              setShowUpNext(true);
+            }
+          } else {
+            if (showUpNextRef.current) {
+              showUpNextRef.current = false;
+              setShowUpNext(false);
+            }
           }
-        } else {
-          if (showUpNextRef.current) {
-            showUpNextRef.current = false;
-            setShowUpNext(false);
+
+          // Auto-play trigger: when video actually reaches the end (within 1s)
+          // Guard with ref to prevent firing repeatedly every 250ms
+          const timeLeft = activeDur - current;
+          if (timeLeft <= 1 && timeLeft >= 0 && onNextEpisode && !isScrubbing.current && !autoNextFiredRef.current) {
+             autoNextFiredRef.current = true;
+             console.log('[Player] Video finished, auto-playing next episode...');
+             onNextEpisode();
           }
         }
       }
-    }
   }, [duration, contentType, itemData, title, tmdbId, backdropUrl, selectedProfile?.id, seasonNum, episodeNum, skipMarkers]);
 
   // NOTE: Duplicate source-update effect removed — the effect at lines 294-316
@@ -691,28 +739,178 @@ export function ModernVideoPlayer({
     };
   }, []);
 
+  // Auto-recovery: re-resolve stream when HLS token expires mid-playback
+  const attemptAutoRecovery = useCallback(async () => {
+    if (isAutoRecoveringRef.current) return;
+    if (autoRetryCountRef.current >= MAX_AUTO_RETRIES) {
+      console.log(`[Player] ❌ Max auto-retries (${MAX_AUTO_RETRIES}) reached, giving up`);
+      setFetchError(true);
+      return;
+    }
+    if (!tmdbId || !title) return;
+
+    isAutoRecoveringRef.current = true;
+    setIsAutoRecovering(true);
+    autoRetryCountRef.current += 1;
+    recoveryPositionRef.current = currentPlaybackTimeRef.current;
+
+    console.log(`[Player] 🔄 Auto-recovery attempt ${autoRetryCountRef.current}/${MAX_AUTO_RETRIES} — resuming from ${Math.floor(recoveryPositionRef.current)}s`);
+    setResolvingStatus(`Reconnecting... (attempt ${autoRetryCountRef.current})`);
+    setStatus('loading');
+    setFetchError(false);
+
+    try {
+      // Force fresh resolution — the old URL's token likely expired
+      invalidateCacheEntry(tmdbId, contentType || 'movie', seasonNum, episodeNum);
+
+      const result = await resolveStreamFromCloud(
+        tmdbId,
+        contentType || 'movie',
+        seasonNum,
+        episodeNum
+      );
+
+      if (result?.url) {
+        console.log(`[Player] ✅ Recovery resolved via ${result.sourceId}: ${result.url.substring(0, 80)}...`);
+        // Update URL which triggers the player source-update effect
+        currentUrlRef.current = ''; // Force re-replace
+        handleStreamResult(result);
+
+        // Seek back to where the user was — delay must be longer than the
+        // source-update effect's 250ms play() to avoid a race condition
+        setTimeout(() => {
+          try {
+            if (player && recoveryPositionRef.current > 5) {
+              player.currentTime = recoveryPositionRef.current;
+              console.log(`[Player] ⏩ Seeked to ${Math.floor(recoveryPositionRef.current)}s after recovery`);
+            }
+            player?.play();
+          } catch (e) {
+            console.warn('[Player] Recovery seek failed:', e);
+          }
+          isAutoRecoveringRef.current = false;
+          setIsAutoRecovering(false);
+        }, 2500);
+      } else {
+        console.error('[Player] ❌ Recovery resolver returned no stream');
+        setFetchError(true);
+        setStatus('error');
+        isAutoRecoveringRef.current = false;
+        setIsAutoRecovering(false);
+      }
+    } catch (e: any) {
+      console.error(`[Player] ❌ Recovery error: ${e.message}`);
+      setFetchError(true);
+      setStatus('error');
+      isAutoRecoveringRef.current = false;
+      setIsAutoRecovering(false);
+    }
+  }, [tmdbId, contentType, seasonNum, episodeNum, title, player, handleStreamResult]);
+
   // Event Listeners — consolidated progress tracking into timeUpdate
   useEffect(() => {
     if (!player) return;
+
+    // Stall detection: if timeUpdate stops firing while playing, we're buffering
+    const startStallDetection = () => {
+      if (stallTimerRef.current) clearInterval(stallTimerRef.current);
+      stallTimerRef.current = setInterval(() => {
+        const now = Date.now();
+        const elapsed = now - lastProgressTimeRef.current;
+        // If we haven't received a timeUpdate in 3s while supposedly playing → buffering
+        if (elapsed > 3000 && player.playing && currentPlaybackTimeRef.current > 0) {
+          setIsBuffering(true);
+        }
+      }, 2000);
+    };
+    startStallDetection();
+
     const subscriptions = [
       player.addListener('statusChange', (payload: any) => {
-        setStatus(payload.status);
+        const newStatus = payload.status;
+        setStatus(newStatus);
+
+        if (newStatus === 'readyToPlay') {
+          setIsBuffering(false);
+        }
+
+        // Auto-recovery: re-resolve on ANY playback error.
+        // If 0s played → stream URL may be stale/incompatible, try fresh resolve.
+        // If >0s played → HLS token likely expired mid-playback.
+        if (newStatus === 'error' && !isAutoRecoveringRef.current) {
+          const playedSec = Math.floor(currentPlaybackTimeRef.current);
+          console.log(`[Player] ⚠️ Stream error at ${playedSec}s — attempting auto-recovery (attempt ${autoRetryCountRef.current + 1}/${MAX_AUTO_RETRIES})`);
+          // Longer delay on low-network errors to allow connectivity to recover
+          const retryDelay = playedSec < 5 ? 3000 : 2000;
+          setTimeout(() => attemptAutoRecovery(), retryDelay);
+        }
       }),
       player.addListener('timeUpdate', (payload: any) => {
         // Consolidated: drive all progress-dependent logic from this single event
         const current = payload.currentTime || 0;
         const playerDur = player.duration || 0;
+        lastProgressTimeRef.current = Date.now();
+
+        // Resume only after the player has actually started and duration is known.
+        // Seeking too early on weak networks can stall HLS startup and trip playback errors.
+        const pendingResumeTime = pendingResumeTimeRef.current;
+        if (
+          pendingResumeTime !== null &&
+          playerDur > 0 &&
+          current <= 2
+        ) {
+          const safeResumeTime = Math.max(0, Math.min(pendingResumeTime, Math.max(0, playerDur - 5)));
+          pendingResumeTimeRef.current = null;
+          setTimeout(() => {
+            try {
+              player.currentTime = safeResumeTime;
+              console.log(`[WatchHistory] Applied deferred resume at ${Math.floor(safeResumeTime)}s`);
+            } catch (e) {
+              console.warn('[WatchHistory] Deferred resume seek failed:', e);
+            }
+          }, 300);
+        }
+
+        // Clear buffering state when progress resumes
+        if (current > 0) {
+          if (!hasPlaybackStarted) {
+            setHasPlaybackStarted(true);
+          }
+          setIsBuffering(false);
+        }
+
         handleProgressUpdate(current, playerDur);
+
+        // Reset retry counter on successful playback progress (stream is healthy)
+        if (current > 0 && autoRetryCountRef.current > 0) {
+          autoRetryCountRef.current = 0;
+        }
       }),
       (player as any).addListener('durationChange', (payload: any) => {
         setDuration(payload.duration);
       }),
       player.addListener('playingChange', (payload: any) => {
         setIsPlaying(payload.isPlaying);
+        // If player stops playing unexpectedly (not user-initiated), might be buffering
+        if (!payload.isPlaying && player.status === 'readyToPlay' && currentPlaybackTimeRef.current > 0) {
+          // Give it a moment — could just be a brief stall
+          setTimeout(() => {
+            if (!player.playing && player.status === 'readyToPlay') {
+              setIsBuffering(true);
+            }
+          }, 1500);
+        } else if (payload.isPlaying) {
+          setIsBuffering(false);
+        }
       })
     ];
 
     return () => {
+      // Clean up stall detection
+      if (stallTimerRef.current) {
+        clearInterval(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
       // Final Save on exit/episode switch
       const current = currentPlaybackTimeRef.current || 0;
       const playerDur = duration || 0;
@@ -731,65 +929,72 @@ export function ModernVideoPlayer({
       }
       subscriptions.forEach(sub => sub.remove());
     };
-  }, [player, handleProgressUpdate]);
+  }, [player, handleProgressUpdate, attemptAutoRecovery]);
 
   // Loading Screen Crossfade Animation
   useEffect(() => {
     const isLoading = status === 'loading' || status === 'idle' || !internalVideoUrl || internalVideoUrl === '';
     if (isLoading) {
       loadingOpacity.value = 1;
-    } else if (status === 'readyToPlay' && isPlaying && !fetchError) {
+    } else if (status === 'readyToPlay' && hasPlaybackStarted && !fetchError) {
+      // Keep the loading overlay until playback has actually started advancing.
+      // On slow networks/TV decoders, readyToPlay can arrive before the first frame.
       loadingOpacity.value = withTiming(0, { duration: 800 });
     }
-  }, [status, isPlaying, internalVideoUrl, fetchError]);
+  }, [status, internalVideoUrl, hasPlaybackStarted, fetchError]);
 
+  // Show/hide controls like a modern Netflix player:
+  // - During playback: show progress bar + bottom row on interaction, auto-hide after 5s
+  // - On pause: show everything (progress bar + full details) and keep visible
+  // - Full details (top metadata, center logo/ratings) ONLY show when paused
   const resetHideTimer = useCallback((forceFullControls = false) => {
     if (hideTimeout.current) clearTimeout(hideTimeout.current);
     if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
     
+    // Always show the bottom bar (progress + controls)
     setIsControlsVisible(true);
     controlsOpacity.value = withTiming(1, { duration: 200 });
 
     if (forceFullControls) {
+      // Pause state: show full details immediately, stay visible
       setIsFullControlsVisible(true);
-      fullControlsOpacity.value = withTiming(1, { duration: 200 });
+      fullControlsOpacity.value = withTiming(1, { duration: 300 });
+      // No auto-hide when paused — controls stay until user resumes
     } else {
+      // Playing state: hide full details, only show progress bar
       fullControlsOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
         if (finished) runOnJS(setIsFullControlsVisible)(false);
       });
-    }
 
-    if (!isLocked) {
-      if (!forceFullControls) {
-        // Automatically show top controls 5 seconds after interaction
-        fullControlsTimeout.current = setTimeout(() => {
-          setIsFullControlsVisible(true);
-          fullControlsOpacity.value = withTiming(1, { duration: 500 });
+      // Auto-hide progress bar after 5s during playback
+      if (!isLocked) {
+        hideTimeout.current = setTimeout(() => {
+          controlsOpacity.value = withTiming(0, { duration: 500 }, (finished) => {
+            if (finished) runOnJS(setIsControlsVisible)(false);
+          });
         }, 5000);
       }
-
-      // Hide everything after 10s (if waking) or 5s (if forcefully showing full menu)
-      hideTimeout.current = setTimeout(() => {
-        controlsOpacity.value = withTiming(0, { duration: 500 }, (finished) => {
-          if (finished) runOnJS(setIsControlsVisible)(false);
-        });
-        fullControlsOpacity.value = withTiming(0, { duration: 500 }, (finished) => {
-          if (finished) runOnJS(setIsFullControlsVisible)(false);
-        });
-      }, forceFullControls ? 5000 : 10000);
     }
   }, [isLocked]);
 
+  // When paused, show full controls. When playing, start auto-hide timer.
   useEffect(() => {
-    resetHideTimer(false);
+    if (isPlaying) {
+      // Resumed playback — start auto-hide timer (progress bar only)
+      resetHideTimer(false);
+    } else {
+      // Paused — show everything and keep visible
+      resetHideTimer(true);
+    }
     return () => {
       if (hideTimeout.current) clearTimeout(hideTimeout.current);
       if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
     };
-  }, [isLocked, resetHideTimer]);
+  }, [isPlaying, isLocked, resetHideTimer]);
 
   const toggleControls = useCallback(() => {
     if (controlsOpacity.value > 0) {
+      // Hide all controls immediately
       if (hideTimeout.current) clearTimeout(hideTimeout.current);
       if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
       
@@ -800,50 +1005,45 @@ export function ModernVideoPlayer({
         if (finished) runOnJS(setIsFullControlsVisible)(false);
       });
     } else {
-      resetHideTimer(false);
+      // Show controls — full details only if paused
+      resetHideTimer(!isPlaying);
     }
-  }, [resetHideTimer]);
+  }, [resetHideTimer, isPlaying]);
 
   // TV Remote Event Handler for direct D-Pad interactions when controls are hidden
+  // TV Remote D-Pad handler — modern player behavior
   useTVEventHandler((evt) => {
     if (!evt) return;
     
-    // If a modal is open, or player string, don't hijack the D-Pad
+    // If a modal is open, don't hijack the D-Pad
     if (showSubtitlePicker || showEpisodePicker || status === 'error' || fetchError) {
       return;
     }
 
     if (evt.eventType === 'select' || evt.eventType === 'playPause') {
       if (!isControlsVisible) {
-        resetHideTimer(false);
+        // First press: show controls (full details only if paused)
+        resetHideTimer(!isPlaying);
       } else {
+        // Controls visible: toggle play/pause
         handlePlayPause();
-        resetHideTimer(isFullControlsVisible);
+        // playingChange listener will handle showing/hiding via useEffect
       }
     } else if (evt.eventType === 'left') {
-      if (!isControlsVisible || isControlsVisible) {
-        skip(-10);
-        resetHideTimer(isFullControlsVisible);
-      }
+      skip(-10);
+      resetHideTimer(!isPlaying);
     } else if (evt.eventType === 'right') {
-      if (!isControlsVisible || isControlsVisible) {
-        skip(10);
-        resetHideTimer(isFullControlsVisible);
-      }
+      skip(10);
+      resetHideTimer(!isPlaying);
     } else if (evt.eventType === 'up') {
-      if (!isControlsVisible) {
-         resetHideTimer(false);
-      } else if (!isFullControlsVisible) {
-         resetHideTimer(true); // Show Full Controls
-      } else {
-         resetHideTimer(true); // Keep showing
-      }
+      // Show or refresh controls
+      resetHideTimer(!isPlaying);
     } else if (evt.eventType === 'down') {
-      if (isFullControlsVisible) {
-         setIsFullControlsVisible(false);
-         resetHideTimer(false);
+      if (isControlsVisible && isPlaying) {
+        // Dismiss controls immediately during playback
+        toggleControls();
       } else {
-         resetHideTimer(false);
+        resetHideTimer(!isPlaying);
       }
     }
   });
@@ -874,18 +1074,7 @@ export function ModernVideoPlayer({
   return (
     <GestureHandlerRootView style={styles.container}>
       <View style={styles.container}>
-        {/* Stream resolution is now handled entirely by Kotlin native module */}
-        {jsVidLinkEnabled && tmdbId && (
-          <VidLinkResolver
-            tmdbId={tmdbId}
-            type={contentType || 'movie'}
-            season={seasonNum}
-            episode={episodeNum}
-            enabled={jsVidLinkEnabled}
-            onStreamResolved={handleJsVidLinkResolved}
-            onError={handleJsVidLinkError}
-          />
-        )}
+        {/* Stream resolution is handled by Cloud Function — no WebViews needed */}
 
         <VideoView
           ref={videoViewRef}
@@ -907,9 +1096,8 @@ export function ModernVideoPlayer({
         <Pressable 
           style={StyleSheet.absoluteFill} 
           onPress={toggleControls}
-          onFocus={() => resetHideTimer(false)}
         >
-           {/* No-op background to capture focus/taps */}
+           {/* Controls only appear from remote button presses (useTVEventHandler) */}
         </Pressable>
 
         {/* Buffering/Loading Overlay */}
@@ -920,13 +1108,23 @@ export function ModernVideoPlayer({
           backdropUrl={backdropUrl} 
           animatedLoadingStyle={animatedLoadingStyle} 
           resolvingStatus={resolvingStatus}
+          loadingPercent={loadingPercent}
         />
+
+        {/* Mid-playback buffering spinner (network stall) */}
+        {isBuffering && status === 'readyToPlay' && !fetchError && (
+          <View style={styles.bufferingOverlay} pointerEvents="none">
+            <LoadingSpinner size={52} tone="light" />
+            <Text style={styles.bufferingText}>Buffering...</Text>
+          </View>
+        )}
 
         {/* Error Overlay */}
         <AnimatedErrorOverlay 
           status={status} 
           fetchError={fetchError} 
-          isRateLimited={false} 
+          isRateLimited={false}
+          isRecovering={isAutoRecovering}
           onClose={onClose} 
         />
 
@@ -1615,5 +1813,19 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 20,
     fontWeight: 'bold',
-  }
+  },
+  bufferingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    zIndex: 50,
+  },
+  bufferingText: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 14,
+    letterSpacing: 0.5,
+  },
 });

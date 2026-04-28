@@ -1,0 +1,173 @@
+<svg width="800" height="450" viewBox="0 0 800 450" fill="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <!-- Background Vignette -->
+    <radialGradient id="bg-grad" cx="50%" cy="40%" r="70%" fx="50%" fy="40%">
+      <stop offset="0%" stop-color="#1c0d0d"/>
+      <stop offset="100%" stop-color="#050505"/>
+    </radialGradient>
+
+    <!-- Noise Texture -->
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.03"/>
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" operator="over"/>
+    </filter>
+
+    <!-- Hero Masking -->
+    <linearGradient id="hero-mask-bottom" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="50%" stop-color="black" stop-opacity="0"/>
+      <stop offset="100%" stop-color="black" stop-opacity="1"/>
+    </linearGradient>
+    
+    <linearGradient id="hero-mask-left" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="black" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="black" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Glass Effect -->
+    <filter id="glass-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <filter id="text-shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.8"/>
+    </filter>
+
+    <clipPath id="hero-clip">
+      <rect x="20" y="55" width="760" height="330" rx="20"/>
+    </clipPath>
+    
+    <clipPath id="thumb-clip">
+      <rect x="0" y="0" width="165" height="92" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <!-- Base Layer -->
+  <rect width="800" height="450" fill="url(#bg-grad)"/>
+  <rect width="800" height="450" fill="white" fill-opacity="0.03" filter="url(#noise)"/>
+
+  <!-- Top Navigation -->
+  <g transform="translate(35, 20)">
+    <!-- Profile -->
+    <g>
+      <rect x="0" y="0" width="24" height="24" rx="4" fill="#333"/>
+      <image xlink:href="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" x="1" y="1" width="22" height="22" rx="3"/>
+      <path d="M30 10L33 13L36 10" stroke="white" stroke-width="1.5" opacity="0.6"/>
+    </g>
+    
+    <!-- Nav Items -->
+    <g transform="translate(230, -8)">
+       <!-- Search Icon -->
+       <g opacity="0.8">
+         <circle cx="15" cy="20" r="6" stroke="white" stroke-width="1.8"/>
+         <line x1="20" y1="25" x2="24" y2="29" stroke="white" stroke-width="1.8"/>
+       </g>
+       
+       <g transform="translate(50, 0)">
+          <!-- Home Pill -->
+          <rect x="0" y="0" width="72" height="38" rx="19" fill="white"/>
+          <text x="36" y="24" fill="black" font-family="Inter, sans-serif" font-weight="800" font-size="14" text-anchor="middle">Home</text>
+          
+          <text x="115" y="24" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="14" opacity="0.75">Shows</text>
+          <text x="185" y="24" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="14" opacity="0.75">Movies</text>
+          <text x="265" y="24" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="14" opacity="0.75">My Netflix</text>
+       </g>
+    </g>
+
+    <!-- N Logo -->
+    <path d="M725 0H731V24H725V0ZM725 0L738 24V0H744V24H738V0L725 24V0Z" fill="#E50914" filter="url(#text-shadow)"/>
+  </g>
+
+  <!-- Hero Container -->
+  <g clip-path="url(#hero-clip)">
+    <!-- Backdrop Image -->
+    <image xlink:href="https://image.tmdb.org/t/p/original/2rmmY9fS99ZpU9DMMQjHk68T9Vv.jpg" x="20" y="55" width="760" height="330" preserveAspectRatio="xMidYMid slice"/>
+    
+    <!-- Multi-layer Overlays -->
+    <rect x="20" y="55" width="760" height="330" fill="url(#hero-mask-bottom)"/>
+    <rect x="20" y="55" width="400" height="330" fill="url(#hero-mask-left)"/>
+
+    <!-- Hero Content -->
+    <g transform="translate(50, 275)">
+      <!-- N SERIES Badge -->
+      <g transform="translate(0, -85)">
+        <path d="M0 0H4V12H0V0ZM0 0L8 12V0H12V12H8V0L0 12V0Z" fill="#E50914"/>
+        <text x="16" y="9" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="10" letter-spacing="2.5" opacity="0.9">SERIES</text>
+      </g>
+      
+      <!-- Logo Typography -->
+      <g transform="translate(0, -60)" filter="url(#text-shadow)">
+         <text x="0" y="0" fill="white" font-family="Outfit, sans-serif" font-weight="700" font-size="16" letter-spacing="2">AVATAR</text>
+         <text x="0" y="30" fill="white" font-family="Outfit, sans-serif" font-weight="900" font-size="36" letter-spacing="-1">THE LAST</text>
+         <text x="0" y="70" fill="white" font-family="Outfit, sans-serif" font-weight="900" font-size="52" letter-spacing="-1">AIRBENDER</text>
+      </g>
+
+      <!-- Metadata -->
+      <text x="0" y="88" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="13" opacity="0.85">
+        Family Time TV • 2024 • 8 Episodes • TV-PG
+      </text>
+    </g>
+
+    <!-- Bottom Right Floating Badges -->
+    <g transform="translate(420, 335)">
+       <!-- TOP 10 Badge -->
+       <g>
+          <rect width="115" height="28" rx="14" fill="rgba(0,0,0,0.5)" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <rect x="8" y="6" width="16" height="16" rx="3" fill="#E50914"/>
+          <text x="10" y="18" fill="white" font-family="Outfit, sans-serif" font-weight="900" font-size="9">10</text>
+          <text x="30" y="18" fill="white" font-family="Inter, sans-serif" font-weight="700" font-size="11">#2 in TV Shows</text>
+       </g>
+       
+       <!-- Starring Badge -->
+       <g transform="translate(125, 0)">
+          <rect width="220" height="28" rx="14" fill="rgba(0,0,0,0.5)" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <path d="M12 7L13.5 11L18 11.5L14.5 14.5L15.5 19L12 17L8.5 19L9.5 14.5L6 11.5L10.5 11L12 7Z" fill="white" opacity="0.9"/>
+          <text x="24" y="18" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="10">Starring Gordon Cormier, Kiawentiio...</text>
+       </g>
+    </g>
+  </g>
+
+  <!-- Row: Today's Top Picks -->
+  <g transform="translate(35, 405)">
+    <text x="0" y="-12" fill="white" fill-opacity="0.75" font-family="Inter, sans-serif" font-weight="700" font-size="16">Today's Top Picks for You</text>
+    
+    <g transform="translate(0, 10)">
+      <!-- Item 1 (Focused/Hovered state feel) -->
+      <g>
+         <rect x="-2" y="-2" width="169" height="96" rx="14" fill="none" stroke="white" stroke-width="2" stroke-opacity="0.3"/>
+         <g clip-path="url(#thumb-clip)">
+            <image xlink:href="https://image.tmdb.org/t/p/w500/r7DuyYJ0szZ1bRbrS3544Yv1XT0.jpg" width="165" height="92" preserveAspectRatio="xMidYMid slice"/>
+         </g>
+      </g>
+      
+      <!-- Item 2 -->
+      <g transform="translate(180, 0)">
+         <g clip-path="url(#thumb-clip)">
+            <image xlink:href="https://image.tmdb.org/t/p/w500/iiXliCeykkCcKy4bsKFCHvSStiS.jpg" width="165" height="92" preserveAspectRatio="xMidYMid slice" opacity="0.65"/>
+         </g>
+      </g>
+
+      <!-- Item 3 -->
+      <g transform="translate(360, 0)">
+         <g clip-path="url(#thumb-clip)">
+            <image xlink:href="https://image.tmdb.org/t/p/w500/5P8I0uAyvGiVize0STihpS9C9vB.jpg" width="165" height="92" preserveAspectRatio="xMidYMid slice" opacity="0.65"/>
+         </g>
+      </g>
+      
+      <!-- Item 4 -->
+      <g transform="translate(540, 0)">
+         <g clip-path="url(#thumb-clip)">
+            <image xlink:href="https://image.tmdb.org/t/p/w500/fh7YVY3Yv9vgh6YjKy676F4YmcO.jpg" width="165" height="92" preserveAspectRatio="xMidYMid slice" opacity="0.65"/>
+         </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Sub-pixel TV Frame Bezel -->
+  <rect x="2" y="2" width="796" height="446" rx="22" stroke="white" stroke-opacity="0.05" stroke-width="1.5" fill="none"/>
+  <rect x="5" y="5" width="790" height="440" rx="18" stroke="black" stroke-opacity="0.8" stroke-width="2" fill="none"/>
+</svg>

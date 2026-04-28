@@ -115,6 +115,9 @@ class PhoneRowViewManager : SimpleViewManager<FrameLayout>() {
                 item["title"] = getSafeString(map, "title").ifEmpty { getSafeString(map, "name") }
                 item["imageUrl"] = getSafeString(map, "imageUrl")
                 item["type"] = getSafeString(map, "type")
+                if (map.hasKey("isLocked")) {
+                    item["isLocked"] = map.getBoolean("isLocked")
+                }
                 itemsList.add(item)
             }
         }
@@ -152,6 +155,16 @@ class PhoneRowViewManager : SimpleViewManager<FrameLayout>() {
                         "topSelect",
                         event
                     )
+                },
+                onItemLongPress = { id, type ->
+                    val event = Arguments.createMap()
+                    event.putString("id", id)
+                    event.putString("mediaType", type)
+                    context.getJSModule(RCTEventEmitter::class.java).receiveEvent(
+                        view.id,
+                        "topLongPress",
+                        event
+                    )
                 }
             )
         }
@@ -159,7 +172,8 @@ class PhoneRowViewManager : SimpleViewManager<FrameLayout>() {
 
     override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
         return mutableMapOf(
-            "topSelect" to mutableMapOf("registrationName" to "onSelect")
+            "topSelect" to mutableMapOf("registrationName" to "onSelect"),
+            "topLongPress" to mutableMapOf("registrationName" to "onLongPress")
         )
     }
 

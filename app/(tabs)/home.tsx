@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, StyleSheet, Text, Pressable, useWindowDimensions, Modal, FlatList, ScrollView, NativeModules, Image } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { View, StyleSheet, Text, Pressable, useWindowDimensions, Modal, FlatList, ScrollView, NativeModules, Image, Alert } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { NativeHeroCard } from '../../components/NativeHeroCard';
 import { MyListService } from '../../services/MyListService';
@@ -12,12 +12,13 @@ import { COLORS, SPACING } from '../../constants/theme';
 import { fetchTrending, fetchPopular, fetchTopRated, fetchDiscoverByGenre, getBackdropUrl, getImageUrl, fetchTitleLogo } from '../../services/tmdb';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from 'expo-blur';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useTheme, useTransition } from '../_layout';
 import { useProfile } from '../../context/ProfileContext';
 import { WatchHistoryService } from '../../services/WatchHistoryService';
+import { SubscriptionService } from '../../services/SubscriptionService';
+import { isContentLockedForFreePlan } from '../../services/AccessControl';
 import Animated, {
   useSharedValue,
   useAnimatedScrollHandler,
@@ -69,14 +70,7 @@ const GENRE_MAP: Record<string, number> = {
 
 const { MoviesModule } = NativeModules;
 
-const MOCK_GAMES = [
-  { id: 'g1', title: 'GTA: San Andreas', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co5z8n.jpg', type: 'game' },
-  { id: 'g2', title: 'Hades', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1tms.jpg', type: 'game' },
-  { id: 'g3', title: 'TMNT: Shredder\'s Revenge', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co2wxy.jpg', type: 'game' },
-  { id: 'g4', title: 'Oxenfree', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1qnv.jpg', type: 'game' },
-  { id: 'g5', title: 'Into the Breach', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1iie.jpg', type: 'game' },
-  { id: 'g6', title: 'Valiant Hearts', isGame: true, imageUrl: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1w50.jpg', type: 'game' },
-];
+const HERO_LOGO_FETCH_LIMIT = 3;
 
 // Removed static Dimensions measurement to prevent orientation-change distortion;
 // using useWindowDimensions() inside components instead.
@@ -100,6 +94,7 @@ export default function HomeScreen() {
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
   const [clips, setClips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isFreePlan, setIsFreePlan] = useState(false);
 
   // Bottom Sheet logic
   const bottomSheetRef = React.useRef<BottomSheet>(null);
@@ -109,6 +104,14 @@ export default function HomeScreen() {
   const [heroIsInList, setHeroIsInList] = useState(false);
   const [previewItem, setPreviewItem] = useState<QuickPreviewItem | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const loadRequestRef = useRef(0);
+
+  useEffect(() => {
+    const unsub = SubscriptionService.listenToSubscription((sub) => {
+      setIsFreePlan(sub.status !== 'active');
+    });
+    return () => unsub();
+  }, []);
 
   const handleCardLongPress = useCallback((item: QuickPreviewItem) => {
     setPreviewItem(item);
@@ -125,12 +128,34 @@ export default function HomeScreen() {
     if (trending && trending.length > 0) {
       const randomIdx = Math.floor(Math.random() * trending.length);
       const randomItem = trending[randomIdx];
+      if (isContentLockedForFreePlan(randomItem.id, isFreePlan)) {
+        Alert.alert(
+          'Upgrade Required',
+          'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Upgrade', onPress: () => router.push('/subscription') }
+          ]
+        );
+        return;
+      }
       router.push({ 
         pathname: "/movie/[id]", 
         params: { id: randomItem.id, type: randomItem.type } 
       });
     }
-  }, [trending, router]);
+  }, [trending, router, isFreePlan]);
+
+  const showUpgradePrompt = useCallback(() => {
+    Alert.alert(
+      'Upgrade Required',
+      'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Upgrade', onPress: () => router.push('/subscription') }
+      ]
+    );
+  }, [router]);
 
   const renderBackdrop = useCallback(
     (props: any) => (
@@ -147,6 +172,7 @@ export default function HomeScreen() {
   const scrollY = useSharedValue(0);
   const isPastHero = useSharedValue(false);
   const isKids = selectedProfile?.isKids || false;
+  const spatialEnabled = selectedProfile?.settings?.spatialMode !== false;
   const themeColor = isKids ? '#004b87' : (activeFilter === 'tv' ? '#0a142b' : (activeFilter === 'movies' ? '#0a2b14' : '#2b0a14'));
   
   const updateNavColor = useCallback((pastHero: boolean) => {
@@ -176,37 +202,33 @@ export default function HomeScreen() {
   const animatedBackgroundStyle = useAnimatedStyle(() => {
     const backgroundColor = interpolateColor(
       scrollY.value,
-      [0, height * 0.4, height * 0.8],
-      [themeColor, themeColor, COLORS.background]
+      [0, height * 0.6, height * 1.2],
+      [themeColor, 'rgba(0,0,0,0.98)', COLORS.background]
     );
     return { backgroundColor };
   });
 
   const auraOpacityStyle = useAnimatedStyle(() => {
-    // Fades out the aura smoothly as the user scrolls down
-    const opacity = interpolate(scrollY.value, [0, height * 0.6], [0.45, 0], 'clamp');
+    // Fades out the aura smoothly as the user scrolls down — much longer fade
+    const opacity = interpolate(scrollY.value, [0, height * 0.9], [0.55, 0], 'clamp');
     return { opacity };
   });
 
-  const headerBackgroundOpacity = useAnimatedStyle(() => {
-    const opacity = interpolate(scrollY.value, [0, 50, 100], [0, 0.4, 1], 'clamp');
-    return { opacity: activeFilter !== 'home' ? 1 : opacity };
-  });
-
   const tabsStyle = useAnimatedStyle(() => {
-    const translateY = interpolate(scrollY.value, [0, 80], [0, -60], 'clamp');
-    const opacity = interpolate(scrollY.value, [0, 60], [1, 0], 'clamp');
+    const translateY = interpolate(scrollY.value, [0, 90], [0, -55], 'clamp');
+    const opacity = interpolate(scrollY.value, [0, 70], [1, 0], 'clamp');
     return { transform: [{ translateY }], opacity };
   });
 
   const heroParallaxStyle = useAnimatedStyle(() => {
-    const translateY = interpolate(scrollY.value, [0, 400], [0, -100], 'clamp');
-    const opacity = interpolate(scrollY.value, [0, 300], [1, 0.5], 'clamp');
+    const translateY = interpolate(scrollY.value, [0, 400], [0, -80], 'clamp');
+    const opacity = interpolate(scrollY.value, [0, 350], [1, 0.4], 'clamp');
     return { transform: [{ translateY }], opacity };
   });
 
   // Load only the initial viewport data to prevent blocking
   const loadInitialData = useCallback(async (filter: string) => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     try {
       const type = filter === 'home' ? 'all' : (filter === 'tv' ? 'tv' : 'movie');
@@ -214,7 +236,22 @@ export default function HomeScreen() {
       
       let trendingData;
       if (selectedCategory && GENRE_MAP[selectedCategory]) {
-        trendingData = await fetchDiscoverByGenre(safeType as any, GENRE_MAP[selectedCategory], isKids);
+        if (filter === 'home') {
+          const [movieResults, tvResults] = await Promise.all([
+            fetchDiscoverByGenre('movie', GENRE_MAP[selectedCategory], isKids),
+            fetchDiscoverByGenre('tv', GENRE_MAP[selectedCategory], isKids),
+          ]);
+
+          const mixed: any[] = [];
+          const maxLen = Math.max(movieResults.length, tvResults.length);
+          for (let i = 0; i < maxLen; i++) {
+            if (movieResults[i]) mixed.push({ ...movieResults[i], media_type: 'movie' });
+            if (tvResults[i]) mixed.push({ ...tvResults[i], media_type: 'tv' });
+          }
+          trendingData = mixed;
+        } else {
+          trendingData = await fetchDiscoverByGenre(safeType as any, GENRE_MAP[selectedCategory], isKids);
+        }
       } else {
         trendingData = isKids 
           ? await fetchDiscoverByGenre(safeType as any, 10751, isKids) 
@@ -234,17 +271,18 @@ export default function HomeScreen() {
 
       const trendingFormatted = formatData(trendingData);
 
-      // Concurrently fetch Official TMDB Title Logos for the Hero Carousel (Top 5 items)
-      const top5 = trendingFormatted.slice(0, 5);
-      const top5WithLogos = await Promise.all(top5.map(async (item: any) => {
+      // Fetch title logos only for the visible hero set to keep home startup light.
+      const topHeroItems = trendingFormatted.slice(0, HERO_LOGO_FETCH_LIMIT);
+      const topHeroItemsWithLogos = await Promise.all(topHeroItems.map(async (item: any) => {
         const titleLogoUrl = await fetchTitleLogo(item.id, item.type as any) || '';
         return { ...item, titleLogoUrl };
       }));
 
-      // Merge the enhanced top 5 back into the full list
-      const finalTrending = [...top5WithLogos, ...trendingFormatted.slice(5)];
-      setTrending(finalTrending);
+      // Merge the enhanced hero set back into the full feed.
+      const finalTrending = [...topHeroItemsWithLogos, ...trendingFormatted.slice(HERO_LOGO_FETCH_LIMIT)];
+      if (loadRequestRef.current !== requestId) return;
 
+      setTrending(finalTrending);
       setClips(trendingData.slice(10, 16).map((item: any) => ({
         id: item.id.toString(),
         title: item.title || item.name,
@@ -257,7 +295,9 @@ export default function HomeScreen() {
     } catch (error) {
       console.error("Error fetching initial data:", error);
     } finally {
-      setTimeout(() => setLoading(false), 300);
+      if (loadRequestRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }, [selectedCategory, isKids]);
 
@@ -340,7 +380,6 @@ export default function HomeScreen() {
         rows.push({ id: 'cw', type: 'cw', data: continueWatching });
       }
       if (!isKids) {
-        rows.push({ id: 'games', type: 'games', data: MOCK_GAMES });
         if (clips.length > 0) rows.push({ id: 'clips', type: 'clips', data: clips });
       }
     }
@@ -349,20 +388,30 @@ export default function HomeScreen() {
     rows.push({ id: 'trending', type: 'static_carousel', title: isKids ? 'Kids Trending Now' : (selectedCategory ? `${selectedCategory} Trending` : 'Trending Now'), data: trending });
 
     if (selectedCategory && categorySubRows.length > 0) {
-      // Show dynamic genre-specific rows generated by MoviesModule
-      categorySubRows.forEach(row => {
+      // In the "home" filter, alternate movie and TV rows so category mode
+      // doesn't collapse into a uniform all-movie feed.
+      categorySubRows.forEach((row, index) => {
+        const resolvedType =
+          activeFilter === 'home'
+            ? (index % 2 === 0 ? 'movie' : 'tv')
+            : (activeFilter === 'tv' ? 'tv' : 'movie');
+        const resolvedTitle =
+          activeFilter === 'home'
+            ? `${row.title} ${resolvedType === 'tv' ? 'TV Shows' : 'Movies'}`
+            : row.title;
+
         rows.push({
-          id: row.id,
-          title: row.title,
+          id: `${selectedCategory}-${activeFilter}-${resolvedType}-${row.id}`,
+          title: resolvedTitle,
           type: 'lazy_carousel',
-          typeInput: activeFilter === 'tv' ? 'tv' : 'movie',
+          typeInput: resolvedType,
           genreId: row.genreId
         });
       });
       return rows;
     }
 
-    // The Endless Lazy Rows (20+ robust rows using strict TMDB genre mapping)
+    // Curated lazy rows: broad enough to feel premium, light enough to avoid feed bloat.
     const baseType = activeFilter === 'tv' ? 'tv' : 'movie';
     const genericType = activeFilter === 'home' ? 'movie' : baseType;
 
@@ -372,21 +421,15 @@ export default function HomeScreen() {
       { id: 'lazy_top', title: 'Critically Acclaimed', typeInput: baseType, genreId: 'top_rated' },
       { id: 'g_act', title: 'Action Packed', typeInput: genericType, genreId: 28 },
       { id: 'g_com', title: 'Laugh-Out-Loud Comedies', typeInput: genericType, genreId: 35 },
-      { id: 'g_hor', title: 'Chilling Horrors', typeInput: genericType, genreId: 27 },
-      { id: 'g_rom', title: 'Romantic Favorites', typeInput: genericType, genreId: 10749 },
+      { id: 'g_dra', title: 'Award-Winning Dramas', typeInput: genericType, genreId: 18 },
       { id: 'g_sci', title: 'Sci-Fi Adventures', typeInput: genericType, genreId: 878 },
+      { id: 'g_thr', title: 'Nail-Biting Thrillers', typeInput: genericType, genreId: 53 },
+      { id: 'g_rom', title: 'Romantic Favorites', typeInput: genericType, genreId: 10749 },
+      { id: 'g_hor', title: 'Chilling Horrors', typeInput: genericType, genreId: 27 },
       { id: 'g_doc', title: 'Real Life Documentaries', typeInput: genericType, genreId: 99 },
       { id: 'g_fam', title: 'Kids & Family', typeInput: genericType, genreId: 10751 },
-      { id: 'g_ani', title: 'Imaginative Animation', typeInput: genericType, genreId: 16 },
       { id: 'g_cri', title: 'Crime Detectives', typeInput: genericType, genreId: 80 },
-      { id: 'g_mys', title: 'Mystery & Suspense', typeInput: genericType, genreId: 9648 },
-      { id: 'g_dra', title: 'Award-Winning Dramas', typeInput: genericType, genreId: 18 },
-      { id: 'g_fan', title: 'Fantasy Epics', typeInput: genericType, genreId: 14 },
-      { id: 'g_his', title: 'Historical Events', typeInput: genericType, genreId: 36 },
-      { id: 'g_mus', title: 'Music & Concerts', typeInput: genericType, genreId: 10402 },
-      { id: 'g_thr', title: 'Nail-Biting Thrillers', typeInput: genericType, genreId: 53 },
-      { id: 'g_war', title: 'War Action', typeInput: genericType, genreId: 10752 },
-      { id: 'g_wes', title: 'Gritty Westerns', typeInput: genericType, genreId: 37 },
+      { id: 'g_ani', title: 'Imaginative Animation', typeInput: genericType, genreId: 16 },
     ];
 
     if (isKids) {
@@ -401,9 +444,7 @@ export default function HomeScreen() {
   const renderItem = useCallback(({ item }: { item: any }) => {
     switch (item.type) {
       case 'cw':
-        return <LandscapeContinueWatchingRow title="Continue Watching" data={item.data} tiltX={tiltX} tiltY={tiltY} />;
-      case 'games':
-        return <HorizontalCarousel title="Mobile Games" data={item.data} tiltX={tiltX} tiltY={tiltY} isGamesRow={true} />;
+        return <LandscapeContinueWatchingRow title="Continue Watching" data={item.data} tiltX={tiltX} tiltY={tiltY} onCardLongPress={handleCardLongPress} />;
       case 'clips':
         return <ClipsRow title="Fresh Clips for You" data={item.data} />;
       case 'static_carousel':
@@ -416,7 +457,16 @@ export default function HomeScreen() {
           if (item.genreId === 'top_rated') return fetchTopRated(item.typeInput, isKids);
           return fetchDiscoverByGenre(item.typeInput, item.genreId as number, isKids);
         };
-        return <LazyCarouselRow title={item.title} fetchFn={rowFetchFn} tiltX={tiltX} tiltY={tiltY} onCardLongPress={handleCardLongPress} />;
+        return (
+          <LazyCarouselRow
+            title={item.title}
+            fetchKey={`${item.id}:${item.typeInput}:${String(item.genreId)}:${selectedCategory || 'all'}`}
+            fetchFn={rowFetchFn}
+            tiltX={tiltX}
+            tiltY={tiltY}
+            onCardLongPress={handleCardLongPress}
+          />
+        );
       default:
         return null;
     }
@@ -425,16 +475,21 @@ export default function HomeScreen() {
   // The very top hero that used to be inside the ScrollView is now the ListHeaderComponent
   const renderHeader = () => (
     heroItems.length > 0 ? (
-      <View style={{ zIndex: 1 }}>
+      <View style={styles.heroHeader}>
         <NativeHeroCard
           items={heroItems.map((item, index) => ({
             ...item,
-            isInMyList: index === 0 ? heroIsInList : false // For simplicity
+            isInMyList: index === 0 ? heroIsInList : false 
           }))}
+          spatialEnabled={spatialEnabled}
           onPlayPress={(e) => {
             if (e?.nativeEvent?.id) {
               const matched = heroItems.find(i => i.id.toString() === e.nativeEvent.id.toString());
               if (matched) {
+                if (isContentLockedForFreePlan(matched.id, isFreePlan)) {
+                  showUpgradePrompt();
+                  return;
+                }
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 router.push({ pathname: "/movie/[id]", params: { id: matched.id, type: matched.type } });
               }
@@ -456,10 +511,31 @@ export default function HomeScreen() {
               }
             }
           }}
+          onLongPress={(e) => {
+            if (e?.nativeEvent?.id) {
+              const matched = heroItems.find(i => i.id.toString() === e.nativeEvent.id.toString());
+              if (matched) {
+                if (isContentLockedForFreePlan(matched.id, isFreePlan)) {
+                  showUpgradePrompt();
+                  return;
+                }
+                handleCardLongPress({
+                  id: matched.id,
+                  title: matched.title,
+                  imageUrl: matched.imageUrl,
+                  type: matched.type,
+                });
+              }
+            }
+          }}
           style={heroParallaxStyle}
         />
-        {/* We use a negative margin on the first row to tuck slightly under hero bottom, just like before */}
-        <View style={{ marginTop: -10 }} /> 
+        {/* Cinematic bottom blending gradient — fuses the Hero with the rows below */}
+        <LinearGradient
+          colors={['transparent', 'rgba(0,0,0,0.1)', 'rgba(0,0,0,0.4)', 'black']}
+          style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 120, zIndex: 2 }}
+        />
+        <View style={styles.heroRowSpacer} />
       </View>
     ) : null
   );
@@ -472,14 +548,14 @@ export default function HomeScreen() {
         <Animated.View style={[StyleSheet.absoluteFill, auraOpacityStyle, { zIndex: -1 }]}>
           <ExpoImage 
             source={{ uri: heroItems[0].imageUrl }} 
-            style={[StyleSheet.absoluteFill, { width: undefined, height: height * 0.8 }]} 
+            style={[StyleSheet.absoluteFill, { width: undefined, height: height * 0.95 }]} 
             contentFit="cover"
-            blurRadius={90}
+            blurRadius={80}
           />
-          {/* Smooth blend wash so the aura fades perfectly into the lower dark container */}
+          {/* Deeper gradient wash for a seamless hero→carousel blend */}
           <LinearGradient 
-            colors={['rgba(20,20,20,0.1)', 'rgba(20,20,20,0.8)', COLORS.background]} 
-            locations={[0, 0.5, 0.8]}
+            colors={['rgba(10,10,10,0.05)', 'rgba(10,10,10,0.6)', 'rgba(10,10,10,0.95)', COLORS.background]} 
+            locations={[0, 0.4, 0.7, 1.0]}
             style={StyleSheet.absoluteFill}
           />
         </Animated.View>
@@ -487,18 +563,12 @@ export default function HomeScreen() {
 
       {/* Absolute Translucent Header */}
       <View style={[styles.absoluteHeaderContainer, { paddingTop: insets.top }]}>
-        {/* Permanent subtle gradient to ensure white icons are visible over bright hero images */}
+        {/* Subtle top shade for icon legibility */}
         <LinearGradient 
           colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0)']} 
           style={StyleSheet.absoluteFill} 
           pointerEvents="none" 
         />
-        
-        {/* Scroll-dependent solid/blur background for text legibility during scroll */}
-        <Animated.View style={[StyleSheet.absoluteFill, headerBackgroundOpacity]}>
-          <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
-        </Animated.View>
         
         <View style={styles.header}>
           <Pressable style={styles.headerLeft} onPress={() => { 
@@ -524,7 +594,7 @@ export default function HomeScreen() {
             }}>
               <Ionicons name="search" size={24} color="white" />
             </Pressable>
-            <Pressable style={styles.avatarButton} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/(tabs)/my-netflix'); }}>
+            <Pressable style={styles.avatarButton} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.navigate('/(tabs)/my-netflix'); }}>
               <Animated.Image 
                 source={selectedProfile?.avatar} 
                 style={[styles.headerAvatar, isTransitioning && { opacity: 0 }]} 
@@ -559,20 +629,21 @@ export default function HomeScreen() {
           !isTransitioning && <HomeSkeleton />
         ) : (
           <Animated.View entering={FadeIn.duration(400)} style={{ flex: 1 }}>
-            <AnimatedFlatList
+          <AnimatedFlatList
               data={rowsConfig}
               keyExtractor={(item: any) => item.id}
               renderItem={renderItem}
               ListHeaderComponent={renderHeader}
-              ListFooterComponent={<View style={{ height: 100 }} />}
+              ListFooterComponent={<View style={{ height: 120 }} />}
               onScroll={scrollHandler}
               scrollEventThrottle={16}
-              contentContainerStyle={{ paddingTop: insets.top + 120 }}
+              contentContainerStyle={{ paddingTop: insets.top + 110 }}
               showsVerticalScrollIndicator={false}
               removeClippedSubviews={false} 
               initialNumToRender={4}
-              maxToRenderPerBatch={5}
-              windowSize={7}
+              maxToRenderPerBatch={4}
+              windowSize={9}
+              decelerationRate="normal"
             />
           </Animated.View>
         )}
@@ -596,7 +667,6 @@ export default function HomeScreen() {
                   Haptics.selectionAsync();
                   setSelectedCategory(item); 
                   setShowCategories(false); 
-                  loadInitialData(activeFilter); 
                 }}>
                   <Text style={[styles.categoryText, selectedCategory === item && styles.categoryTextActive]}>{item}</Text>
                 </Pressable>
@@ -690,6 +760,8 @@ function HomeSkeleton() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
+  heroHeader: { zIndex: 1, marginBottom: SPACING.lg },
+  heroRowSpacer: { height: 12 },
   absoluteHeaderContainer: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 100, paddingBottom: 10 },
   header: { 
     flexDirection: 'row', 

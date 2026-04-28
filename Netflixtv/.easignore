@@ -1,17 +1,29 @@
 # Dependencies
-node_modules/
+node_modules
+**/node_modules
 
 # Expo
-.expo/
-dist/
-web-build/
+.expo
+dist
+web-build
 expo-env.d.ts
 
+# Non-app project folders
+/serverless
+/scratch
+/.idea
+/.qwen
+serverless/
+scratch/
+**/.cache
+**/.gradle
+**/build
+
 # Native
-# ios/
-# android/
-android/build/
-android/.gradle/
+# ios
+# android
+android/build
+android/.gradle
 *.jks
 *.p8
 *.p12
@@ -19,9 +31,17 @@ android/.gradle/
 *.mobileprovision
 *.orig.*
 
-
 # Debug
 npm-debug.*
+test-trailer-debug.js
+test-trailer-fast.js
+test-trailer.ts
+imdb_debug.html
+cred.md
+scratch
+
+# Git
+.git
 
 # macOS
 .DS_Store

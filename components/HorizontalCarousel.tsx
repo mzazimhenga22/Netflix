@@ -97,7 +97,21 @@ const HorizontalCarouselComponent = ({ title, data, variant = 'poster', tiltX, t
           onSelect={(id, type) => {
             Haptics.selectionAsync();
             router.push({ pathname: "/movie/[id]", params: { id, type } });
-          }} 
+          }}
+          onLongPress={(id, type) => {
+            if (onCardLongPress) {
+              const matched = data.find(d => d.id.toString() === id.toString());
+              if (matched) {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                onCardLongPress({
+                  id: matched.id,
+                  title: matched.title,
+                  imageUrl: matched.imageUrl,
+                  type: matched.type || type,
+                });
+              }
+            }
+          }}
           style={{ width: '100%', height: actualHeight, marginTop: 4 }} 
         />
       </View>

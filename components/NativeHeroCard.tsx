@@ -12,8 +12,10 @@ interface NativeHeroCardProps extends ViewProps {
     isInMyList?: boolean;
     type?: string;
   }>;
+  spatialEnabled?: boolean;
   onPlayPress?: (event: { nativeEvent: { id: string } }) => void;
   onListPress?: (event: { nativeEvent: { id: string } }) => void;
+  onLongPress?: (event: { nativeEvent: { id: string } }) => void;
 }
 
 const PhoneHeroView = requireNativeComponent<NativeHeroCardProps>('PhoneHeroView');

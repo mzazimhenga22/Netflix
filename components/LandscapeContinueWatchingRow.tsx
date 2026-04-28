@@ -106,9 +106,10 @@ interface LandscapeCardProps {
   item: any;
   tiltX?: SharedValue<number>;
   tiltY?: SharedValue<number>;
+  onLongPress?: (item: any) => void;
 }
 
-const LandscapeCard = React.memo(({ item, tiltX, tiltY }: LandscapeCardProps) => {
+const LandscapeCard = React.memo(({ item, tiltX, tiltY, onLongPress }: LandscapeCardProps) => {
   const { width } = useWindowDimensions();
   // Cinema ratio 16:9
   const cardWidth = width * 0.65;
@@ -142,9 +143,15 @@ const LandscapeCard = React.memo(({ item, tiltX, tiltY }: LandscapeCardProps) =>
   }, []);
 
   const handlePress = React.useCallback(() => {
+    // Go directly to the video player for Continue Watching
     router.push({
       pathname: "/movie/[id]",
-      params: { id: item.id || item.item?.id, type: item.type || item.item?.type || 'movie' }
+      params: { 
+        id: item.id || item.item?.id, 
+        type: item.type || item.item?.type || 'movie',
+        autoPlay: 'true',  // signal to the player to start immediately
+        startTime: item.progress ? Math.floor(item.progress * (item.duration || 5400)).toString() : '0'
+      }
     });
   }, [item, router]);
 
@@ -160,6 +167,11 @@ const LandscapeCard = React.memo(({ item, tiltX, tiltY }: LandscapeCardProps) =>
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         onPress={handlePress}
+        onLongPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          if (onLongPress) onLongPress(item);
+        }}
+        delayLongPress={300}
       >
         <AnimatedImage 
           source={{ uri: imageSource }}
@@ -201,9 +213,10 @@ interface LandscapeCarouselRowProps {
   data: any[];
   tiltX?: SharedValue<number>;
   tiltY?: SharedValue<number>;
+  onCardLongPress?: (item: any) => void;
 }
 
-export const LandscapeContinueWatchingRow = React.memo(({ title, data, tiltX, tiltY }: LandscapeCarouselRowProps) => {
+export const LandscapeContinueWatchingRow = React.memo(({ title, data, tiltX, tiltY, onCardLongPress }: LandscapeCarouselRowProps) => {
   if (!data || data.length === 0) return null;
 
   return (
@@ -216,7 +229,7 @@ export const LandscapeContinueWatchingRow = React.memo(({ title, data, tiltX, ti
         data={data}
         keyExtractor={(item, index) => `${item.id || index}`}
         renderItem={({ item }) => (
-          <LandscapeCard item={item} tiltX={tiltX} tiltY={tiltY} />
+          <LandscapeCard item={item} tiltX={tiltX} tiltY={tiltY} onLongPress={onCardLongPress} />
         )}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: SPACING.lg }}

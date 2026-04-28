@@ -49,6 +49,10 @@ android/.gradle/
 
 # agent files
 puter/
+serverless/
+scratch/
+Netflixtv/serverless/
+Netflixtv/scratch/
 
 # Ignore the TV app module when building the Phone app on EAS
 # Netflixtv/

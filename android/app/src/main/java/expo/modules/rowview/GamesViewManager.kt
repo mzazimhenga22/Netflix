@@ -11,14 +11,18 @@ import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
+import com.facebook.react.uimanager.annotations.ReactProp
 import com.facebook.react.uimanager.events.RCTEventEmitter
 
 class GamesViewManager : SimpleViewManager<FrameLayout>() {
 
     companion object {
         private val TAG_COMPOSE_VIEW = "games_compose_view".hashCode()
+        private val TAG_SECTIONS = "games_sections".hashCode()
     }
 
     override fun getName() = "GamesNativeView"
@@ -52,16 +56,8 @@ class GamesViewManager : SimpleViewManager<FrameLayout>() {
                     }
                 }
 
-                composeView.setContent {
-                    GamesComposable(
-                        onSearchClick = {
-                            sendEvent(root, reactContext, "onSearchClick", "")
-                        },
-                        onGamePress = { id ->
-                            sendEvent(root, reactContext, "onGamePress", id)
-                        }
-                    )
-                }
+                val sections = root.getTag(TAG_SECTIONS) as? List<GameSection>
+                applyContent(root, composeView, reactContext, sections)
 
                 frameCallback = object : Choreographer.FrameCallback {
                     override fun doFrame(frameTimeNanos: Long) {
@@ -82,6 +78,73 @@ class GamesViewManager : SimpleViewManager<FrameLayout>() {
         })
 
         return root
+    }
+
+    @ReactProp(name = "sections")
+    fun setSections(view: FrameLayout, sectionsArray: ReadableArray?) {
+        val sections = sectionsArray?.let { parseSections(it) } ?: emptyList()
+        view.setTag(TAG_SECTIONS, sections)
+
+        if (view.isAttachedToWindow) {
+            val composeView = view.getTag(TAG_COMPOSE_VIEW) as? ComposeView ?: return
+            applyContent(view, composeView, view.context as ThemedReactContext, sections)
+        }
+    }
+
+    private fun applyContent(
+        root: FrameLayout,
+        composeView: ComposeView,
+        reactContext: ThemedReactContext,
+        sections: List<GameSection>?
+    ) {
+        composeView.setContent {
+            GamesComposable(
+                sections = sections ?: emptyList(),
+                onSearchClick = {
+                    sendEvent(root, reactContext, "onSearchClick", "")
+                },
+                onGamePress = { id ->
+                    sendEvent(root, reactContext, "onGamePress", id)
+                }
+            )
+        }
+    }
+
+    private fun parseSections(array: ReadableArray): List<GameSection> {
+        val sections = mutableListOf<GameSection>()
+        for (i in 0 until array.size()) {
+            val sectionMap = array.getMap(i) ?: continue
+            val title = sectionMap.getString("title") ?: continue
+            val itemsArray = sectionMap.getArray("items") ?: continue
+            val items = mutableListOf<GameItem>()
+            for (j in 0 until itemsArray.size()) {
+                val itemMap = itemsArray.getMap(j) ?: continue
+                items.add(parseGameItem(itemMap))
+            }
+            if (items.isNotEmpty()) {
+                sections.add(GameSection(title, items))
+            }
+        }
+        return sections
+    }
+
+    private fun parseGameItem(itemMap: ReadableMap): GameItem {
+        return GameItem(
+            id = readString(itemMap, "id"),
+            title = readString(itemMap, "title"),
+            subtitle = readString(itemMap, "subtitle"),
+            posterUrl = readString(itemMap, "posterUrl"),
+            badge1 = readOptionalString(itemMap, "badge1"),
+            badge2 = readOptionalString(itemMap, "badge2")
+        )
+    }
+
+    private fun readString(map: ReadableMap, key: String): String {
+        return if (map.hasKey(key) && !map.isNull(key)) map.getString(key) ?: "" else ""
+    }
+
+    private fun readOptionalString(map: ReadableMap, key: String): String? {
+        return if (map.hasKey(key) && !map.isNull(key)) map.getString(key) else null
     }
 
     private fun sendEvent(view: View, context: ThemedReactContext, eventName: String, id: String) {

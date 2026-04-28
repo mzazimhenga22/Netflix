@@ -27,10 +27,11 @@ import coil.compose.AsyncImage
 
 @Composable
 fun GamesComposable(
+    sections: List<GameSection> = emptyList(),
     onSearchClick: () -> Unit,
     onGamePress: (id: String) -> Unit
 ) {
-    val sections = listOf(
+    val fallbackSections = listOf(
         GameSection(
             "Trending Now",
             listOf(
@@ -80,6 +81,7 @@ fun GamesComposable(
             )
         )
     )
+    val resolvedSections = if (sections.isNotEmpty()) sections else fallbackSections
 
     LazyColumn(
         modifier = Modifier
@@ -88,7 +90,7 @@ fun GamesComposable(
     ) {
         item { HeaderSection(onSearchClick) }
         item { HeroSection() }
-        items(sections) { section -> GameRail(section, onGamePress) }
+        items(resolvedSections) { section -> GameRail(section, onGamePress) }
         item { Spacer(modifier = Modifier.height(100.dp)) }
     }
 }

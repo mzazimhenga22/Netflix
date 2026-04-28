@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { 
   View, 
   Text, 
@@ -9,7 +10,6 @@ import {
   ImageBackground,
   TVFocusGuideView,
   Platform,
-  ActivityIndicator,
   Pressable
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -20,6 +20,7 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../constants/theme';
 import Animated, { FadeIn, FadeInLeft, ZoomIn } from 'react-native-reanimated';
 import { fetchTrending, getBackdropUrl } from '../services/tmdb';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const { width, height } = Dimensions.get('window');
 
@@ -28,11 +29,14 @@ const FOCUSED_SCALE = 1.15;
 
 export { Profile };
 
+const FEATURED_CACHE_KEY = 'profiles_featured_cache';
+
 export default function ProfilesScreen() {
   const router = useRouter();
-  const { profiles, selectProfile, isLoading } = useProfile();
+  const { profiles, selectProfile, isLoading, canAddProfile } = useProfile();
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [featured, setFeatured] = useState<any>(null);
+  const [featuredStatus, setFeaturedStatus] = useState<'loading' | 'live' | 'cached' | 'fallback'>('loading');
   const [isManaging, setIsManaging] = useState(false);
   
   // PIN Modal State
@@ -40,17 +44,32 @@ export default function ProfilesScreen() {
   const [lockedProfile, setLockedProfile] = useState<Profile | null>(null);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
+  const [pendingMovie, setPendingMovie] = useState<any>(null);
   
   React.useEffect(() => {
     async function loadFeatured() {
       try {
+        const cachedFeatured = await AsyncStorage.getItem(FEATURED_CACHE_KEY);
+        if (cachedFeatured) {
+          setFeatured(JSON.parse(cachedFeatured));
+          setFeaturedStatus('cached');
+        }
+      } catch (error) {}
+
+      try {
         const trending = await fetchTrending('all');
         if (trending && trending.length > 0) {
           // Select a random movie from the top 10
-          setFeatured(trending[Math.floor(Math.random() * 10)]);
+          const nextFeatured = trending[Math.floor(Math.random() * Math.min(trending.length, 10))];
+          setFeatured(nextFeatured);
+          setFeaturedStatus('live');
+          await AsyncStorage.setItem(FEATURED_CACHE_KEY, JSON.stringify(nextFeatured));
+          return;
         }
+        setFeaturedStatus((current) => current === 'cached' ? 'cached' : 'fallback');
       } catch (error) {
         console.error("Failed to load featured recommendation:", error);
+        setFeaturedStatus((current) => current === 'cached' ? 'cached' : 'fallback');
       }
     }
     loadFeatured();
@@ -66,7 +85,7 @@ export default function ProfilesScreen() {
   if (isLoading) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#E50914" />
+        <LoadingSpinner size={92} label="Loading profiles" />
       </View>
     );
   }
@@ -89,7 +108,16 @@ export default function ProfilesScreen() {
     }
 
     selectProfile(profile);
-    router.replace('/(tabs)');
+    
+    if (pendingMovie) {
+      router.replace({
+        pathname: `/movie/${pendingMovie.id}`,
+        params: { type: pendingMovie.media_type || (pendingMovie.first_air_date ? 'tv' : 'movie') }
+      });
+      setPendingMovie(null);
+    } else {
+      router.replace('/(tabs)');
+    }
   };
 
   const handlePinPress = (digit: string) => {
@@ -103,7 +131,16 @@ export default function ProfilesScreen() {
       if (newVal === lockedProfile?.pin) {
         setShowPinModal(false);
         selectProfile(lockedProfile);
-        router.replace('/(tabs)');
+        
+        if (pendingMovie) {
+          router.replace({
+            pathname: `/movie/${pendingMovie.id}`,
+            params: { type: pendingMovie.media_type || (pendingMovie.first_air_date ? 'tv' : 'movie') }
+          });
+          setPendingMovie(null);
+        } else {
+          router.replace('/(tabs)');
+        }
       } else {
         setPinError(true);
         setTimeout(() => setPinInput(''), 400);
@@ -230,7 +267,7 @@ export default function ProfilesScreen() {
   const listData = [
     ...profiles,
     { id: 'manage-profiles', type: 'manage' },
-    { id: 'add-profile', type: 'add' }
+    ...(canAddProfile ? [{ id: 'add-profile', type: 'add' as const }] : [])
   ];
 
   return (
@@ -252,7 +289,7 @@ export default function ProfilesScreen() {
             <View style={styles.header}>
               <Text style={styles.netflixLogoText}>NETFLIX</Text>
               <Text style={styles.subHeaderText}>
-                {isManaging ? 'Manage Profiles' : "Who's Watching?"}
+                {isManaging ? 'Manage Profiles' : (pendingMovie ? `Watch ${pendingMovie.title || pendingMovie.name} as:` : "Who's Watching?")}
               </Text>
             </View>
 
@@ -293,10 +330,7 @@ export default function ProfilesScreen() {
                   ]}
                   onPress={() => {
                     if (featured) {
-                      router.push({
-                        pathname: `/movie/${featured.id}`,
-                        params: { type: featured.media_type || (featured.first_air_date ? 'tv' : 'movie') }
-                      });
+                      setPendingMovie(featured);
                     }
                   }}
                 >
@@ -307,7 +341,18 @@ export default function ProfilesScreen() {
                     </>
                   )}
                 </Pressable>
+                {featuredStatus !== 'live' && (
+                  <Text style={styles.networkNotice}>
+                    {featuredStatus === 'cached' ? 'Weak network. Showing saved artwork.' : 'Weak network. Using local background.'}
+                  </Text>
+                )}
               </Animated.View>
+            )}
+            {!featured && featuredStatus === 'fallback' && (
+              <View style={styles.fallbackMessage}>
+                <Text style={styles.fallbackTitle}>Profiles are ready.</Text>
+                <Text style={styles.networkNotice}>Weak network. Featured recommendations are unavailable right now.</Text>
+              </View>
             )}
           </View>
         </View>
@@ -551,6 +596,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 22,
     fontWeight: 'bold',
+  },
+  networkNotice: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 16,
+    marginTop: 18,
+    maxWidth: 420,
+    textAlign: 'right',
+  },
+  fallbackMessage: {
+    alignItems: 'flex-end',
+    maxWidth: 520,
+  },
+  fallbackTitle: {
+    color: '#fff',
+    fontSize: 42,
+    fontWeight: '800',
+    textAlign: 'right',
   },
   pinModalOverlay: {
     ...StyleSheet.absoluteFillObject,

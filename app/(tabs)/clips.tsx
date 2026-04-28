@@ -32,8 +32,36 @@ export default function ClipsScreen() {
         const combined = [];
         const maxLen = 10; // Get top 10 each
         for (let i = 0; i < maxLen; i++) {
-          if (movies[i]) combined.push({ ...movies[i], media_type: 'movie', type: 'movie', showId: movies[i].id.toString(), videoUrl: '' });
-          if (tv[i]) combined.push({ ...tv[i], media_type: 'tv', type: 'tv', showId: tv[i].id.toString(), videoUrl: '' });
+          if (movies[i]) {
+            combined.push({
+              ...movies[i],
+              id: `movie-${movies[i].id}`,
+              title: movies[i].title || movies[i].name || 'Untitled',
+              description: movies[i].overview || '',
+              media_type: 'movie',
+              type: 'movie',
+              showId: movies[i].id.toString(),
+              videoUrl: '',
+            });
+          }
+          if (tv[i]) {
+            combined.push({
+              ...tv[i],
+              id: `tv-${tv[i].id}`,
+              title: tv[i].title || tv[i].name || 'Untitled',
+              description: tv[i].overview || '',
+              media_type: 'tv',
+              type: 'tv',
+              showId: tv[i].id.toString(),
+              videoUrl: '',
+            });
+          }
+        }
+        
+        // Shuffle the combined array (Fisher-Yates) to simulate 'Algorithmic FYP' unpredictability
+        for (let i = combined.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [combined[i], combined[j]] = [combined[j], combined[i]];
         }
         
         setDiscoveryData(combined);

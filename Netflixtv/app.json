@@ -1,12 +1,17 @@
 {
   "expo": {
+    "scheme": "netflixtv",
     "plugins": [
       [
         "expo-splash-screen",
         {
           "backgroundColor": "#000000",
+          "image": "./assets/images/netflix-n-logo.png",
+          "imageResizeMode": "contain",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#000000",
+            "image": "./assets/images/netflix-n-logo.png",
+            "imageResizeMode": "contain"
           }
         }
       ],
@@ -28,7 +33,7 @@
     ],
     "icon": "./assets/logo.png",
     "android": {
-      "package": "com.com1",
+      "package": "com.movieflix.tv",
       "edgeToEdgeEnabled": true
     },
     "ios": {
@@ -41,8 +46,9 @@
     "userInterfaceStyle": "automatic",
     "extra": {
       "eas": {
-        "projectId": "e36af8cd-71ba-4856-958d-8d87c59f5d51"
+        "projectId": "654c284d-c4df-4398-acbd-f7e59d692e0d"
       }
-    }
+    },
+    "owner": "derrogpt"
   }
 }

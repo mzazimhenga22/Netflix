@@ -23,6 +23,7 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
     companion object {
         private val TAG_COMPOSE_VIEW = "phone_hero_compose_view".hashCode()
         private val TAG_HERO_ITEM = "phone_hero_item".hashCode()
+        private val TAG_SPATIAL_ENABLED = "phone_hero_spatial_enabled".hashCode()
     }
 
     override fun getName() = "PhoneHeroView"
@@ -57,8 +58,9 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
                 }
 
                 val items = root.getTag(TAG_HERO_ITEM) as? List<Map<String, Any>>
+                val spatialEnabled = root.getTag(TAG_SPATIAL_ENABLED) as? Boolean ?: true
                 if (items != null) {
-                    applyContent(root, composeView, items, reactContext)
+                    applyContent(root, composeView, items, spatialEnabled, reactContext)
                 }
 
                 frameCallback = object : Choreographer.FrameCallback {
@@ -116,7 +118,19 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
         
         if (view.isAttachedToWindow) {
             val composeView = view.getTag(TAG_COMPOSE_VIEW) as? ComposeView ?: return
-            applyContent(view, composeView, itemsList, view.context as ThemedReactContext)
+            val spatialEnabled = view.getTag(TAG_SPATIAL_ENABLED) as? Boolean ?: true
+            applyContent(view, composeView, itemsList, spatialEnabled, view.context as ThemedReactContext)
+        }
+    }
+
+    @ReactProp(name = "spatialEnabled", defaultBoolean = true)
+    fun setSpatialEnabled(view: FrameLayout, spatialEnabled: Boolean) {
+        view.setTag(TAG_SPATIAL_ENABLED, spatialEnabled)
+
+        if (view.isAttachedToWindow) {
+            val composeView = view.getTag(TAG_COMPOSE_VIEW) as? ComposeView ?: return
+            val items = view.getTag(TAG_HERO_ITEM) as? List<Map<String, Any>> ?: emptyList()
+            applyContent(view, composeView, items, spatialEnabled, view.context as ThemedReactContext)
         }
     }
 
@@ -124,16 +138,21 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
         view: FrameLayout,
         composeView: ComposeView,
         items: List<Map<String, Any>>,
+        spatialEnabled: Boolean,
         context: ThemedReactContext
     ) {
         composeView.setContent {
             PhoneHeroComposable(
                 items = items,
+                spatialEnabled = spatialEnabled,
                 onPlayPress = { id ->
                     sendEvent(view, context, "onPlayPress", id)
                 },
                 onListPress = { id ->
                     sendEvent(view, context, "onListPress", id)
+                },
+                onLongPress = { id ->
+                    sendEvent(view, context, "onLongPress", id)
                 }
             )
         }
@@ -152,7 +171,8 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
     override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
         return mutableMapOf(
             "onPlayPress" to mutableMapOf("registrationName" to "onPlayPress"),
-            "onListPress" to mutableMapOf("registrationName" to "onListPress")
+            "onListPress" to mutableMapOf("registrationName" to "onListPress"),
+            "onLongPress" to mutableMapOf("registrationName" to "onLongPress")
         )
     }
 

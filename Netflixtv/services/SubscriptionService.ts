@@ -10,10 +10,10 @@ export interface SubscriptionStatus {
 }
 
 export const PLAN_PROFILE_LIMITS: Record<string, number> = {
-  'basic': 5,
-  'standard': 5,
+  'basic': 2,
+  'standard': 4,
   'premium': 5,
-  'none': 5,
+  'none': 1,
 };
 
 export const SubscriptionService = {
@@ -112,40 +112,24 @@ export const SubscriptionService = {
     }
   },
 
-  async initializePaystackTransaction(uid: string, email: string, amountKesh: number, planCode?: string) {
+  async initializePayHeroTransaction(uid: string, amount: number) {
     try {
-      const response = await fetch('https://api.paystack.co/transaction/initialize', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer sk_test_9b3a9f3183cae06895ff27c71f83968a9bccd14c`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email,
-          amount: amountKesh * 100,
-          // plan: planCode, // Requires plans to be created in your Paystack Dashboard to work
-          callback_url: 'https://standard.paystack.co/close',
-          metadata: {
-            custom_fields: [
-              {
-                display_name: "User ID",
-                variable_name: "user_id",
-                value: uid
-              },
-              {
-                display_name: "Action",
-                variable_name: "action",
-                value: "subscription_activation"
-              }
-            ]
-          }
-        }),
-      });
-
-      const data = await response.json();
-      return data.status ? data.data.authorization_url : null;
+      const baseUrl =
+        process.env.EXPO_PUBLIC_PAYHERO_URL ||
+        process.env.EXPO_PUBLIC_PAYMENT_URL ||
+        process.env.EXPO_PUBLIC_LIPWA_LINK ||
+        'https://lipwa.link/7976';
+      
+      // Construct the checkout URL with parameters for tracking
+      // reference: used to track the payment back to the user UID in our webhook
+      // success_url: allows the app to detect when the payment is completed
+      const successUrl = encodeURIComponent('https://lipwa.link/success?status=success');
+      const separator = baseUrl.includes('?') ? '&' : '?';
+      const checkoutUrl = `${baseUrl}${separator}amount=${amount}&reference=${encodeURIComponent(uid)}&success_url=${successUrl}`;
+      
+      return checkoutUrl;
     } catch (error) {
-      console.error('Paystack initialization failed:', error);
+      console.error('Pay Hero initialization failed:', error);
       return null;
     }
   }

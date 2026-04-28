@@ -55,9 +55,10 @@ export const fetchUpcoming = async (isKids?: boolean) => {
 };
 
 export const fetchNewAndHot = async (isKids?: boolean) => {
-  // Use current system date: April 2, 2026
-  const today = '2026-04-02';
-  const sixMonthsLater = '2026-10-02';
+  const d = new Date();
+  const today = d.toISOString().split('T')[0];
+  d.setMonth(d.getMonth() + 6);
+  const sixMonthsLater = d.toISOString().split('T')[0];
   
   const { data } = await tmdb.get('/discover/movie', {
     params: {

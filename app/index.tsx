@@ -152,14 +152,8 @@ export default function SplashScreen() {
   const checkAuth = () => {
     onAuthStateChanged(auth, (user) => {
       if (user) {
-        // User is signed in, check subscription
-        SubscriptionService.getSubscription().then(sub => {
-          if (sub.status === 'active') {
-            router.replace('/profiles');
-          } else {
-            router.replace('/subscription');
-          }
-        });
+        // Allow all signed-in users into the app (Free Plan logic handles content locking)
+        router.replace('/profiles');
       } else {
         // No user is signed in, go to login
         router.replace('/login');

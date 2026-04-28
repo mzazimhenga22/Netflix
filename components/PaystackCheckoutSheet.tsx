@@ -33,8 +33,12 @@ export const PaystackCheckoutSheet = forwardRef<BottomSheetModal, PaystackChecko
     }, [onClose]);
 
     const handleNavigationStateChange = (navState: any) => {
-      // Paystack success detection
-      if (navState.url && (navState.url.includes('status=success') || navState.url.includes('trxref='))) {
+      // Success detection for Paystack and Pay Hero
+      if (navState.url && (
+        navState.url.includes('status=success') || 
+        navState.url.includes('trxref=') ||
+        navState.url.includes('lipwa.link/success')
+      )) {
         onSuccess();
       }
     };

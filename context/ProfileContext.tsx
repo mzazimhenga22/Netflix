@@ -13,11 +13,13 @@ import {
   query 
 } from 'firebase/firestore';
 import { SubscriptionService, PLAN_PROFILE_LIMITS } from '../services/SubscriptionService';
+import { resolvePlanProfileLimit } from '../services/AccessControl';
 
 export interface ProfileSettings {
   wifiOnlyDownloads: boolean;
   autoplayNext: boolean;
   autoplayPreviews: boolean;
+  spatialMode?: boolean;
   videoQuality?: 'standard' | 'higher';
 }
 
@@ -46,7 +48,20 @@ const AVATAR_MAP: Record<string, any> = {
 };
 
 const DEFAULT_PROFILES: Profile[] = [
-  { id: '1', name: 'My Profile', avatar: AVATAR_MAP.avatar1, avatarId: 'avatar1', isLocked: false },
+  {
+    id: '1',
+    name: 'My Profile',
+    avatar: AVATAR_MAP.avatar1,
+    avatarId: 'avatar1',
+    isLocked: false,
+    settings: {
+      wifiOnlyDownloads: false,
+      autoplayNext: true,
+      autoplayPreviews: true,
+      spatialMode: true,
+      videoQuality: 'standard'
+    }
+  },
 ];
 
 interface ProfileContextType {
@@ -80,16 +95,49 @@ export function useProfile() {
 }
 
 const SELECTED_PROFILE_KEY = 'netflix_selected_profile_id';
+const getProfilesCacheKey = (uid: string) => `netflix_profiles_cache_${uid}`;
+
+type StoredProfile = Omit<Profile, 'avatar'>;
+
+const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
+  wifiOnlyDownloads: false,
+  autoplayNext: true,
+  autoplayPreviews: true,
+  spatialMode: true,
+  videoQuality: 'standard',
+};
+
+function normalizeProfile(profile: Partial<StoredProfile> & { id: string; name: string; avatarId?: string }): Profile {
+  const avatarId = profile.avatarId || 'avatar1';
+  return {
+    id: profile.id,
+    name: profile.name,
+    avatarId,
+    avatar: AVATAR_MAP[avatarId] || AVATAR_MAP.avatar1,
+    isLocked: profile.isLocked,
+    pin: profile.pin,
+    isKids: profile.isKids === true || profile.isKids === ('true' as any),
+    settings: {
+      ...DEFAULT_PROFILE_SETTINGS,
+      ...profile.settings,
+    },
+  };
+}
+
+function serializeProfiles(profiles: Profile[]): StoredProfile[] {
+  return profiles.map(({ avatar, ...profile }) => profile);
+}
 
 export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(5);
+  const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(PLAN_PROFILE_LIMITS.none);
+  const [activeProfileCacheUid, setActiveProfileCacheUid] = useState('dev-guest');
 
   useEffect(() => {
     const unsub = SubscriptionService.listenToSubscription((sub) => {
-      const limit = PLAN_PROFILE_LIMITS[sub?.planId || 'none'] || 2;
+      const limit = resolvePlanProfileLimit(sub?.planId);
       setMaxProfilesAllowed(limit);
     });
     return () => unsub();
@@ -101,11 +149,36 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       const activeUid = user ? user.uid : 'dev-guest';
+      const profilesCacheKey = getProfilesCacheKey(activeUid);
+      setActiveProfileCacheUid(activeUid);
       
       setIsLoading(true);
       
       // Clean up previous listener
       if (unsubProfiles) unsubProfiles();
+
+      AsyncStorage.getItem(profilesCacheKey).then((cached) => {
+        if (!cached) return;
+        try {
+          const parsed = JSON.parse(cached) as StoredProfile[];
+          if (!Array.isArray(parsed) || parsed.length === 0) return;
+          const cachedProfiles = parsed.map((profile) => normalizeProfile(profile));
+          setProfiles(cachedProfiles);
+          AsyncStorage.getItem(SELECTED_PROFILE_KEY).then((savedId) => {
+            setSelectedProfile((current) => {
+              if (current) {
+                return cachedProfiles.find((profile) => profile.id === current.id) || current;
+              }
+              if (!savedId) return current;
+              return cachedProfiles.find((profile) => profile.id === savedId) || current;
+            });
+          });
+        } catch (e) {
+          console.warn('[ProfileContext] Failed to restore cached profiles:', e);
+        } finally {
+          setIsLoading(false);
+        }
+      });
 
       const profilesCol = collection(db, 'users', activeUid, 'profiles');
       
@@ -114,24 +187,25 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         let fetchedProfiles: Profile[] = [];
         snapshot.forEach((doc) => {
           const data = doc.data();
-          fetchedProfiles.push({
+          fetchedProfiles.push(normalizeProfile({
             id: doc.id,
             name: data.name,
             avatarId: data.avatarId,
-            avatar: AVATAR_MAP[data.avatarId] || AVATAR_MAP.avatar1,
             isLocked: data.isLocked,
             pin: data.pin,
-            isKids: data.isKids === true || data.isKids === 'true',
-            settings: data.settings || {
-              wifiOnlyDownloads: false,
-              autoplayNext: true,
-              autoplayPreviews: true,
-              videoQuality: 'standard'
-            }
-          });
+            isKids: data.isKids,
+            settings: data.settings,
+          }));
         });
 
         setProfiles(fetchedProfiles);
+        setSelectedProfile((current) => {
+          if (!current) return current;
+          return fetchedProfiles.find((profile) => profile.id === current.id) || current;
+        });
+        AsyncStorage.setItem(profilesCacheKey, JSON.stringify(serializeProfiles(fetchedProfiles))).catch((e) => {
+          console.warn('[ProfileContext] Failed to cache profiles:', e);
+        });
 
         // If no profiles exist, initialize with defaults
         if (fetchedProfiles.length === 0 && isLoading) {
@@ -142,12 +216,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
                   isLocked: p.isLocked,
                   pin: p.pin || null,
                   isKids: p.isKids === true,
-                  settings: {
-                    wifiOnlyDownloads: false,
-                    autoplayNext: true,
-                    autoplayPreviews: true,
-                    videoQuality: 'standard'
-                  }
+                  settings: DEFAULT_PROFILE_SETTINGS
                });
             });
         }
@@ -164,6 +233,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
         setIsLoading(false);
       }, (error) => {
+        console.warn('[ProfileContext] Profile snapshot failed, using cached profiles if available:', error);
         setIsLoading(false);
       });
     });
@@ -173,6 +243,15 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
       if (unsubProfiles) unsubProfiles();
     };
   }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem(
+      getProfilesCacheKey(activeProfileCacheUid),
+      JSON.stringify(serializeProfiles(profiles))
+    ).catch((e) => {
+      console.warn('[ProfileContext] Failed to persist profiles cache:', e);
+    });
+  }, [activeProfileCacheUid, profiles]);
 
   const selectProfile = async (profile: Profile) => {
     setSelectedProfile(profile);
@@ -224,6 +303,32 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
     try {
       console.log('[Profiles] Updating profile settings:', id);
+      setProfiles((currentProfiles) =>
+        currentProfiles.map((profile) =>
+          profile.id === id
+            ? {
+                ...profile,
+                settings: {
+                  ...DEFAULT_PROFILE_SETTINGS,
+                  ...profile.settings,
+                  ...settings,
+                }
+              }
+            : profile
+        )
+      );
+      setSelectedProfile((current) =>
+        current?.id === id
+          ? {
+              ...current,
+              settings: {
+                ...DEFAULT_PROFILE_SETTINGS,
+                ...current.settings,
+                ...settings,
+              }
+            }
+          : current
+      );
       await setDoc(doc(db, 'users', activeUid, 'profiles', id), {
         settings
       }, { merge: true });

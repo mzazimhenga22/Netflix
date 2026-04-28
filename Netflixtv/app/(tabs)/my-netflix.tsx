@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, findNodeHandle } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchPopular, getImageUrl, getBackdropUrl } from '../../services/tmdb';
@@ -12,6 +12,8 @@ import { useProfile } from '../../context/ProfileContext';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
 import { MyListService } from '../../services/MyListService';
 import { useCallback } from 'react';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import { useTvFocusBridge } from '../../context/TvFocusBridgeContext';
 
 export default function MyNetflixScreen() {
   const { selectedProfile } = useProfile();
@@ -19,7 +21,10 @@ export default function MyNetflixScreen() {
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
   const [heroColors, setHeroColors] = useState<readonly [string, string, string]>(['rgba(40, 0, 0, 0.8)', 'rgba(10, 0, 0, 0.9)', '#000']);
   const [loading, setLoading] = useState(true);
+  const [pendingTarget, setPendingTarget] = useState<{ id: string, type: string } | null>(null);
   const router = useRouter();
+  const { setHeroFocusTag } = useTvFocusBridge();
+  const downloadsActionRef = useRef<any>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -29,7 +34,7 @@ export default function MyNetflixScreen() {
       }
       
       // Real Watch History Load
-      const history = await WatchHistoryService.getAllHistory();
+      const history = await WatchHistoryService.getAllHistory(selectedProfile.id);
       setContinueWatching(history.map(h => ({
         ...h.item,
         media_type: h.type,
@@ -56,13 +61,38 @@ export default function MyNetflixScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
+      return undefined;
     }, [loadData])
   );
+
+  useFocusEffect(
+    useCallback(() => {
+      const timeout = setTimeout(() => {
+        const tag = findNodeHandle(downloadsActionRef.current);
+        setHeroFocusTag(typeof tag === 'number' ? tag : null);
+      }, 0);
+      return () => {
+        clearTimeout(timeout);
+        setHeroFocusTag(null);
+      };
+    }, [loading, setHeroFocusTag])
+  );
+
+  const handleSelect = useCallback((id: string, type: string = 'movie') => {
+    setPendingTarget({ id, type });
+  }, []);
+
+  const confirmNavigation = () => {
+    if (pendingTarget) {
+      router.push({ pathname: `/movie/${pendingTarget.id}`, params: { type: pendingTarget.type } });
+      setPendingTarget(null);
+    }
+  };
 
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#E50914" />
+        <LoadingSpinner size={92} label="Loading My Netflix" />
       </View>
     );
   }
@@ -100,7 +130,8 @@ export default function MyNetflixScreen() {
            
            {/* Account Quick Actions */}
            <View style={styles.actionRow}>
-              <Pressable 
+              <Pressable
+                ref={downloadsActionRef}
                 style={({ focused }) => [styles.actionBtn, focused && styles.actionBtnFocused]}
                 onPress={() => router.push('/(tabs)/downloads')}
               >
@@ -124,16 +155,48 @@ export default function MyNetflixScreen() {
         <View style={styles.hubContent}>
           <ExpandingRow 
              title="Continue Watching" 
-             data={continueWatching} 
-             onSelect={(id, type) => router.push({ pathname: `/movie/${id}`, params: { type: type || 'movie' } })} 
+             content={continueWatching} 
+             onItemPress={(movie) => handleSelect(movie.id.toString(), movie.media_type || 'movie')} 
           />
           <ExpandingRow 
              title="My List" 
-             data={myList} 
-             onSelect={(id) => router.push({ pathname: `/movie/${id}`, params: { type: 'movie' } })} 
+             content={myList} 
+             onItemPress={(movie) => handleSelect(movie.id.toString(), 'movie')} 
           />
         </View>
       </ScrollView>
+
+      {/* Profile Gate Overlay */}
+      {pendingTarget && (
+        <View style={styles.gateOverlay}>
+          <LinearGradient colors={['rgba(0,0,0,0.85)', '#000']} style={StyleSheet.absoluteFill} />
+          <View style={styles.gateContent}>
+            <Image 
+              source={selectedProfile?.avatar} 
+              style={styles.gateAvatar} 
+              contentFit="cover"
+            />
+            <Text style={styles.gateTitle}>Finish Watching as {selectedProfile?.name}?</Text>
+            <Text style={styles.gateSubtitle}>This will keep your progress synced to this profile.</Text>
+            
+            <View style={styles.gateActions}>
+              <Pressable 
+                style={({ focused }) => [styles.gateBtn, styles.gateBtnPrimary, focused && styles.gateBtnFocused]}
+                onPress={confirmNavigation}
+              >
+                <Text style={styles.gateBtnText}>Watch Now</Text>
+              </Pressable>
+              
+              <Pressable 
+                style={({ focused }) => [styles.gateBtn, focused && styles.gateBtnFocused]}
+                onPress={() => setPendingTarget(null)}
+              >
+                <Text style={styles.gateBtnTextSecondary}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -252,5 +315,68 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.4)',
     fontSize: 22,
     lineHeight: 32,
+  },
+  gateOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gateContent: {
+    alignItems: 'center',
+    width: '60%',
+    padding: 60,
+    backgroundColor: '#141414',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  gateAvatar: {
+    width: 120,
+    height: 120,
+    borderRadius: 8,
+    marginBottom: 30,
+  },
+  gateTitle: {
+    color: 'white',
+    fontSize: 32,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  gateSubtitle: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 20,
+    marginBottom: 45,
+    textAlign: 'center',
+  },
+  gateActions: {
+    flexDirection: 'row',
+    gap: 30,
+  },
+  gateBtn: {
+    paddingVertical: 18,
+    paddingHorizontal: 40,
+    borderRadius: 8,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  gateBtnPrimary: {
+    backgroundColor: 'white',
+  },
+  gateBtnFocused: {
+    transform: [{ scale: 1.05 }],
+    borderWidth: 3,
+    borderColor: '#E50914',
+  },
+  gateBtnText: {
+    color: 'black',
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  gateBtnTextSecondary: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: '600',
   }
 });

@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { fetchStreamingLinks } from './streaming';
+import { resolveStreamFromCloud } from './cloudResolver';
 import { NativeModules } from 'react-native';
 const DownloadService = NativeModules.DownloadService;
 
@@ -112,7 +112,7 @@ export const refreshMetadataCache = async (): Promise<DownloadItem[]> => {
 /** Invalidate cache so next load reads from disk. */
 export const invalidateCache = () => { _cache = null; };
 
-// ─── Download link resolution ───────────────────────────────────────
+// ─── Download link resolution (Cloud Function) ─────────────────────
 
 export const getDownloadLink = async (
   id: string,
@@ -124,12 +124,12 @@ export const getDownloadLink = async (
   year?: string
 ): Promise<{ url: string; headers: Record<string, string> } | null> => {
   try {
-    const data = await fetchStreamingLinks(id, type, season, episode);
-    if (data && data.sources.length > 0) {
-      return { url: data.sources[0].url, headers: {} };
+    const result = await resolveStreamFromCloud(id, type, season, episode);
+    if (result?.url) {
+      return { url: result.url, headers: result.headers || {} };
     }
   } catch (error) {
-    console.error('[DownloadService] Error fetching link:', error);
+    console.error('[DownloadService] Cloud resolver error:', error);
   }
   return null;
 };

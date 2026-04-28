@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, Text, ScrollView, Image, Pressable, FlatList, StatusBar } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, Image, Pressable, FlatList } from 'react-native';
 import { COLORS, SPACING } from '../../constants/theme';
 import { fetchNewAndHot, getBackdropUrl, fetchTrending } from '../../services/tmdb';
 import { NetflixLoader } from '../../components/NetflixLoader';
@@ -13,29 +13,34 @@ import { db, auth } from '../../services/firebase';
 import { doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { NotificationService } from '../../services/NotificationService';
 
+const HEADER_OFFSET = 120;
+
 export default function NewAndHotScreen() {
   const router = useRouter();
   const { setThemeColor } = useTheme();
-  const [upcoming, setUpcoming] = useState<any[]>([]);
+  const [comingSoon, setComingSoon] = useState<any[]>([]);
+  const [everyoneWatching, setEveryoneWatching] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'coming' | 'everyone'>('coming');
-
 
   useFocusEffect(
     useCallback(() => {
       setThemeColor('#000000');
       return () => {};
-    }, [])
+    }, [setThemeColor])
   );
-
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await fetchNewAndHot();
-        setUpcoming(data);
+        const [newHotData, trendingData] = await Promise.all([
+          fetchNewAndHot(),
+          fetchTrending('all'),
+        ]);
+        setComingSoon(newHotData);
+        setEveryoneWatching(trendingData);
       } catch (error) {
-        console.error("Error fetching upcoming movies:", error);
+        console.error('Error fetching new and hot titles:', error);
       } finally {
         setLoading(false);
       }
@@ -52,6 +57,8 @@ export default function NewAndHotScreen() {
     );
   }
 
+  const activeData = activeTab === 'coming' ? comingSoon : everyoneWatching;
+
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.safeHeader} edges={['top']}>
@@ -66,35 +73,54 @@ export default function NewAndHotScreen() {
             </Pressable>
           </View>
         </View>
+        <View style={styles.stickyFilters}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.filtersContainer}
+            contentContainerStyle={styles.filtersContent}
+          >
+            <Pressable
+              onPress={() => {
+                Haptics.selectionAsync();
+                setActiveTab('coming');
+              }}
+              style={[styles.filterPill, activeTab === 'coming' && styles.filterPillActive]}
+            >
+              <Text style={[styles.filterText, activeTab === 'coming' && styles.filterTextActive]}>Coming Soon</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                Haptics.selectionAsync();
+                setActiveTab('everyone');
+              }}
+              style={[styles.filterPill, activeTab === 'everyone' && styles.filterPillActive]}
+            >
+              <Text style={[styles.filterText, activeTab === 'everyone' && styles.filterTextActive]}>Everyone&apos;s Watching</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
       </SafeAreaView>
-
-      <View style={styles.stickyFilters}>
-        <ScrollView 
-          horizontal 
-          showsHorizontalScrollIndicator={false} 
-          style={styles.filtersContainer} 
-          contentContainerStyle={styles.filtersContent}
-        >
-          <Pressable 
-            onPress={() => setActiveTab('coming')}
-            style={[styles.filterPill, activeTab === 'coming' && styles.filterPillActive]}
-          >
-            <Text style={[styles.filterText, activeTab === 'coming' && styles.filterTextActive]}>🍿 Coming Soon</Text>
-          </Pressable>
-          <Pressable 
-            onPress={() => setActiveTab('everyone')}
-            style={[styles.filterPill, activeTab === 'everyone' && styles.filterPillActive]}
-          >
-            <Text style={[styles.filterText, activeTab === 'everyone' && styles.filterTextActive]}>🔥 Everyone's Watching</Text>
-          </Pressable>
-        </ScrollView>
-      </View>
 
       <View style={styles.content}>
         <FlatList
-          data={upcoming}
+          data={activeData}
           keyExtractor={(item) => item.id.toString()}
-          renderItem={({ item }) => <NewAndHotItem item={item} />}
+          renderItem={({ item }) => (
+            <NewAndHotItem
+              item={item}
+              mode={activeTab}
+              onInfoPress={() =>
+                router.push({
+                  pathname: '/movie/[id]',
+                  params: {
+                    id: item.id.toString(),
+                    type: item.media_type || (item.title ? 'movie' : 'tv'),
+                  }
+                })
+              }
+            />
+          )}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
         />
@@ -132,7 +158,7 @@ const AnimatedActionButton = ({ icon, activeIcon, text, activeText, isActive, on
   );
 };
 
-const NewAndHotItem = ({ item }: { item: any }) => {
+const NewAndHotItem = ({ item, mode, onInfoPress }: { item: any, mode: 'coming' | 'everyone', onInfoPress: () => void }) => {
   const [isReminded, setIsReminded] = useState(false);
   const releaseDate = item.release_date ? new Date(item.release_date) : new Date();
   const month = releaseDate.toLocaleString('default', { month: 'short' }).toUpperCase();
@@ -142,7 +168,7 @@ const NewAndHotItem = ({ item }: { item: any }) => {
     const checkReminder = async () => {
       const user = auth.currentUser;
       if (!user) return;
-      
+
       const reminderDoc = await getDoc(doc(db, 'users', user.uid, 'reminders', item.id.toString()));
       if (reminderDoc.exists()) {
         setIsReminded(true);
@@ -156,7 +182,7 @@ const NewAndHotItem = ({ item }: { item: any }) => {
     if (!user) return;
 
     const reminderRef = doc(db, 'users', user.uid, 'reminders', item.id.toString());
-    
+
     if (isReminded) {
       setIsReminded(false);
       await deleteDoc(reminderRef);
@@ -165,21 +191,35 @@ const NewAndHotItem = ({ item }: { item: any }) => {
       setIsReminded(true);
       await setDoc(reminderRef, {
         id: item.id,
-        title: item.title,
+        title: item.title || item.name,
         releaseDate: item.release_date,
         image: item.backdrop_path,
         timestamp: new Date().toISOString()
       });
-      await NotificationService.scheduleReleaseReminder(item.id.toString(), item.title, item.release_date);
+      await NotificationService.scheduleReleaseReminder(
+        item.id.toString(),
+        item.title || item.name,
+        item.release_date
+      );
     }
   };
 
-  const getComingSoonText = () => {
-    const today = new Date('2026-04-02');
-    const diffTime = releaseDate.getTime() - today.getTime();
+  const getLabelText = () => {
+    if (mode === 'everyone') {
+      return 'Trending Now';
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const normalizedRelease = new Date(releaseDate);
+    normalizedRelease.setHours(0, 0, 0, 0);
+
+    const diffTime = normalizedRelease.getTime() - today.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-    if (diffDays <= 0) return 'Coming Today';
+    if (diffDays === 0) return 'Coming Today';
+    if (diffDays === 1) return 'Coming Tomorrow';
     if (diffDays > 0 && diffDays <= 7) {
       return `Coming ${releaseDate.toLocaleDateString('default', { weekday: 'long' })}`;
     }
@@ -192,25 +232,25 @@ const NewAndHotItem = ({ item }: { item: any }) => {
         <Text style={styles.dateMonth}>{month}</Text>
         <Text style={styles.dateDay}>{day}</Text>
       </View>
-      
+
       <View style={styles.contentContainer}>
-        <View style={styles.mediaContainer}>
-          <Image 
-            source={{ uri: getBackdropUrl(item.backdrop_path) }} 
-            style={styles.backdropImage} 
+        <Pressable style={styles.mediaContainer} onPress={onInfoPress}>
+          <Image
+            source={{ uri: getBackdropUrl(item.backdrop_path) }}
+            style={styles.backdropImage}
             resizeMode="cover"
           />
-          {parseInt(item.id) % 2 === 0 && (
+          {parseInt(item.id, 10) % 2 === 0 && (
             <View style={styles.netflixBadge}>
               <Text style={styles.nLogo}>N</Text>
             </View>
           )}
-        </View>
+        </Pressable>
 
         <View style={styles.actionsRow}>
-          <Text style={styles.itemTitle} numberOfLines={2}>{item.title}</Text>
+          <Text style={styles.itemTitle} numberOfLines={2}>{item.title || item.name}</Text>
           <View style={styles.actionButtons}>
-            <AnimatedActionButton 
+            <AnimatedActionButton
               icon={<Feather name="bell" size={24} color="white" />}
               activeIcon={<MaterialCommunityIcons name="bell-ring" size={24} color="white" />}
               text="Remind Me"
@@ -218,14 +258,14 @@ const NewAndHotItem = ({ item }: { item: any }) => {
               isActive={isReminded}
               onPress={toggleReminder}
             />
-            <Pressable style={styles.actionBtn}>
+            <Pressable style={styles.actionBtn} onPress={onInfoPress}>
               <Feather name="info" size={24} color="white" />
               <Text style={styles.actionBtnText}>Info</Text>
             </Pressable>
           </View>
         </View>
 
-        <Text style={styles.comingSoonText}>{getComingSoonText()}</Text>
+        <Text style={styles.comingSoonText}>{getLabelText()}</Text>
         <Text style={styles.synopsis} numberOfLines={3}>{item.overview}</Text>
         <Text style={styles.tags}>Slick • Dark • Thriller</Text>
       </View>
@@ -244,7 +284,10 @@ const styles = StyleSheet.create({
   },
   safeHeader: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, zIndex: 100,
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
     backgroundColor: 'transparent',
   },
   header: {
@@ -268,7 +311,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   stickyFilters: {
-    backgroundColor: COLORS.background,
+    backgroundColor: 'transparent',
     zIndex: 20,
   },
   filtersContainer: {
@@ -285,27 +328,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(51, 51, 51, 0.8)',
+    backgroundColor: 'transparent',
     marginRight: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.24)',
   },
   filterPillActive: {
-    backgroundColor: 'white',
+    backgroundColor: 'transparent',
+    borderColor: 'rgba(255,255,255,0.9)',
   },
   filterText: {
-    color: 'white',
+    color: 'rgba(255,255,255,0.72)',
     fontSize: 13,
     fontWeight: '600',
   },
   filterTextActive: {
-    color: 'black',
+    color: 'white',
   },
   content: {
     flex: 1,
   },
   listContent: {
-    paddingTop: 120,
+    paddingTop: HEADER_OFFSET,
     paddingBottom: 40,
   },
   itemContainer: {

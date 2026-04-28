@@ -1,378 +1,571 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { 
-  View, 
-  StyleSheet, 
-  FlatList, 
-  ActivityIndicator,
-  Text,
-  Dimensions,
-  Platform
-} from 'react-native';
-import { 
-  fetchTrending, 
-  fetchPopular, 
-  fetchTopRated, 
-  fetchDiscoverByGenre,
-  fetchUpcoming,
-  getImageUrl, 
-  getBackdropUrl,
-  getLogoUrl,
-  fetchMovieImages
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { StyleSheet, View, ScrollView, Text, Alert, BackHandler, findNodeHandle } from 'react-native';
+import {
+  fetchTrending, fetchTopRated, fetchPopular, fetchUpcoming,
+  fetchSimilar, fetchDiscoverByGenre
 } from '../../services/tmdb';
-import NativeHeroBanner from '../../components/NativeHeroBanner';
-import ColorExtractor from '../../components/ColorExtractor';
-import ExpandingRow from '../../components/ExpandingRow';
-import HomeSkeleton from '../../components/HomeSkeleton';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { useFilter } from '../../context/FilterContext';
-import { useProfile } from '../../context/ProfileContext';
+import { resolveStreamFromCloud, invalidateCacheEntry } from '../../services/cloudResolver';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
-import { MyListService } from '../../services/MyListService';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import { useProfile } from '../../context/ProfileContext';
+import { usePageColor } from '../../context/PageColorContext';
+import NativeHeroBanner from '../../components/NativeHeroBanner';
+import ExpandingRow from '../../components/ExpandingRow';
+import HeroMeta from '../../components/HeroMeta';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import { TV_TOP_NAV_TOTAL_OFFSET } from './_layout';
+import HomeSkeleton from '../../components/HomeSkeleton';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import { useTvFocusBridge } from '../../context/TvFocusBridgeContext';
 
 export default function HomeScreen() {
-  const { filter } = useFilter();
-  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [history, setHistory] = useState<WatchHistoryItem[]>([]);
-  const [myList, setMyList] = useState<any[]>([]);
-  
   const router = useRouter();
-  // const { filter } = useFilter(); // Already declared above
   const { selectedProfile } = useProfile();
+  const { pageColor, setPageColor } = usePageColor();
+  const { setHeroFocusTag } = useTvFocusBridge();
+  const [loading, setLoading] = useState(true);
+  const [heroMovie, setHeroMovie] = useState<any>(null);
+  const heroBannerRef = useRef<any>(null);
 
-  const loadHistory = useCallback(async () => {
-    if (selectedProfile?.id) {
-       await WatchHistoryService.syncWithFirestore(selectedProfile.id);
-       const data = await WatchHistoryService.getAllHistory(selectedProfile.id);
-       setHistory(data);
-    } else {
-       setHistory([]);
+  // Stream state
+  const [heroStreamUrl, setHeroStreamUrl] = useState<string | undefined>(undefined);
+  const [heroStreamHeaders, setHeroStreamHeaders] = useState<string | undefined>(undefined);
+  // Scoped card stream — only the one focused card ever gets a stream URL.
+  // This prevents multiple ExoPlayer instances spawning across all rows.
+  const [focusedCardStream, setFocusedCardStream] = useState<{ id: string; url: string; headers?: string } | null>(null);
+  const [heroLogoUrl, setHeroLogoUrl] = useState<string | undefined>();
+
+  // Categories
+  const [trending, setTrending] = useState<any[]>([]);
+  const [topRated, setTopRated] = useState<any[]>([]);
+  const [popular, setPopular] = useState<any[]>([]);
+  const [upcoming, setUpcoming] = useState<any[]>([]);
+  const [historyItems, setHistoryItems] = useState<any[]>([]);
+  const [similarToLastWatched, setSimilarToLastWatched] = useState<any[]>([]);
+  const [lastWatchedTitle, setLastWatchedTitle] = useState<string>('');
+
+  // New genre-based rows
+  const [trendingTv, setTrendingTv] = useState<any[]>([]);
+  const [topRatedTv, setTopRatedTv] = useState<any[]>([]);
+  const [popularTv, setPopularTv] = useState<any[]>([]);
+  const [actionMovies, setActionMovies] = useState<any[]>([]);
+  const [comedyMovies, setComedyMovies] = useState<any[]>([]);
+  const [horrorMovies, setHorrorMovies] = useState<any[]>([]);
+  const [sciFiMovies, setSciFiMovies] = useState<any[]>([]);
+  const [documentaries, setDocumentaries] = useState<any[]>([]);
+  const [dramaMovies, setDramaMovies] = useState<any[]>([]);
+  const [romanceMovies, setRomanceMovies] = useState<any[]>([]);
+
+  const [preferredRowTitle, setPreferredRowTitle] = useState<string | null>(null);
+  const [preferredMovieId, setPreferredMovieId] = useState<string | null>(null);
+  const [focusRequestToken, setFocusRequestToken] = useState(0);
+
+  // Refs for debouncing
+  const heroUpdateTimeout = useRef<NodeJS.Timeout | null>(null);
+  const heroStreamTimeout = useRef<NodeJS.Timeout | null>(null);
+  const cardStreamTimeout = useRef<NodeJS.Timeout | null>(null);
+  const currentHeroId = useRef<string | null>(null);
+  // Tracks the movie ID that last requested a card stream — used to discard
+  // stale resolution results when the user moves focus quickly.
+  const currentCardId = useRef<string | null>(null);
+  const autoCycleInterval = useRef<NodeJS.Timeout | null>(null);
+  const isUserBrowsingRows = useRef<boolean>(false);
+  const currentHeroIndex = useRef<number>(0);
+  const scrollY = useRef<number>(0);
+
+  useEffect(() => { 
+    // Only load if trending is empty (first mount) or if selectedProfile actually changed
+    // Tabs keep state, so this useEffect only runs when the component mounts or dependencies change.
+    if (trending.length === 0) {
+      loadData(); 
     }
-  }, [selectedProfile?.id]);
+  }, [selectedProfile]);
 
   useFocusEffect(
     useCallback(() => {
-      loadHistory();
-    }, [loadHistory])
+      const timeout = setTimeout(() => {
+        const tag = findNodeHandle(heroBannerRef.current);
+        setHeroFocusTag(typeof tag === 'number' ? tag : null);
+      }, 0);
+      return () => {
+        clearTimeout(timeout);
+        setHeroFocusTag(null);
+      };
+    }, [loading, setHeroFocusTag])
   );
 
-  // My List Subscription
+  useFocusEffect(
+    useCallback(() => {
+      if (preferredRowTitle && preferredMovieId) {
+        isUserBrowsingRows.current = true;
+        stopAutoCycle();
+        setFocusRequestToken((token) => token + 1);
+      } else if (scrollY.current <= 24) {
+        isUserBrowsingRows.current = false;
+        startAutoCycle();
+      }
+
+      return undefined;
+    }, [preferredMovieId, preferredRowTitle, trending.length])
+  );
+
+  // Confirm Exit Handler for TV
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        Alert.alert(
+          "Exit Netflix",
+          "Are you sure you want to exit?",
+          [
+            { text: "Cancel", onPress: () => null, style: "cancel" },
+            { text: "Exit", onPress: () => BackHandler.exitApp() }
+          ],
+          { cancelable: true }
+        );
+        return true;
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }, [])
+  );
+
+  // Clean up auto cycle
   useEffect(() => {
-    if (selectedProfile?.id) {
-      const unsub = MyListService.subscribeToList(selectedProfile.id, (items) => {
-        setMyList(items);
-      });
-      return () => unsub();
-    }
-  }, [selectedProfile?.id]);
-
-  const [data, setData] = useState<{
-    trending: any[],
-    popular: any[],
-    topRated: any[],
-    action: any[],
-    comedy: any[],
-    upcoming: any[],
-    scifi: any[],
-  }>({
-    trending: [],
-    popular: [],
-    topRated: [],
-    action: [],
-    comedy: [],
-    upcoming: [],
-    scifi: [],
-  });
-  const [loading, setLoading] = useState(true);
-  const [heroMovie, setHeroMovie] = useState<any>(null);
-  const [heroLogo, setHeroLogo] = useState<string | null>(null);
-  const [heroColors, setHeroColors] = useState<readonly [string, string, string]>(['rgba(20, 20, 20, 0.8)', 'rgba(10, 10, 10, 0.9)', '#000']);
-  // const router = useRouter(); // Already declared above
-
-  const handleColorExtracted = useCallback((color: string) => {
-    // Making background color more vibrant and deep
-    setHeroColors([`${color}CC`, `${color}66`, '#000000']);
+    return () => stopAutoCycle();
   }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(async () => {
-      if (!heroMovie) {
-        setHeroLogo(null);
-        return;
+  const startAutoCycle = () => {
+    stopAutoCycle();
+    autoCycleInterval.current = setInterval(() => {
+      if (!isUserBrowsingRows.current && trending.length > 0) {
+        currentHeroIndex.current = (currentHeroIndex.current + 1) % Math.min(10, trending.length);
+        const nextHero = trending[currentHeroIndex.current];
+        setHeroMovie(nextHero);
+        fetchHeroBranding(nextHero);
+
+        // Resolve stream for auto-cycled hero
+        if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+        heroStreamTimeout.current = setTimeout(() => {
+          resolveStream(nextHero, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
+        }, 1500);
       }
-      try {
-        const type = heroMovie.media_type || (filter === 'all' ? 'movie' : filter);
-        const images = await fetchMovieImages(heroMovie.id, type as any);
-        if (images?.logos?.length > 0) {
-          const engLogo = images.logos.find((l: any) => l.iso_639_1 === 'en');
-          const logoToUse = engLogo || images.logos[0];
-          setHeroLogo(getLogoUrl(logoToUse.file_path) || null);
-        } else {
-          setHeroLogo(null);
-        }
-      } catch (error) {
-        setHeroLogo(null);
-      }
-    }, 1000); // 1s delay for logo loading
-    return () => clearTimeout(timer);
-  }, [heroMovie?.id, filter]);
+    }, 30000); // 30 seconds
+  };
 
-  const isKids = selectedProfile?.isKids;
-
-  useEffect(() => {
-    async function loadData() {
-      setLoading(true);
-      try {
-        const type = filter === 'all' ? 'movie' : filter;
-        const trendingType = filter === 'all' ? 'all' : filter;
-
-        const results = await Promise.allSettled([
-          fetchTrending(trendingType as any, isKids),
-          fetchPopular(type as any, isKids),
-          fetchTopRated(type as any, isKids),
-          fetchDiscoverByGenre(type as any, filter === 'tv' ? 10759 : 28, isKids),
-          fetchDiscoverByGenre(type as any, 35, isKids),
-          fetchUpcoming(isKids),
-          fetchDiscoverByGenre(type as any, filter === 'tv' ? 10765 : 878, isKids),
-        ]);
-
-        const toArray = (r: PromiseSettledResult<any[]>) =>
-          r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : [];
-
-        const [
-          trendingData,
-          popularData,
-          topRatedData,
-          actionData,
-          comedyData,
-          upcomingData,
-          scifiData
-        ] = results.map(toArray);
-
-        setData({
-          trending: trendingData,
-          popular: popularData,
-          topRated: topRatedData,
-          action: actionData,
-          comedy: comedyData,
-          upcoming: upcomingData,
-          scifi: scifiData,
-        });
-
-        // Robust hero fallback chain — prevents blank home screen if one endpoint fails.
-        const heroCandidate =
-          trendingData[0] ||
-          popularData[0] ||
-          topRatedData[0] ||
-          actionData[0] ||
-          comedyData[0] ||
-          upcomingData[0] ||
-          scifiData[0] ||
-          null;
-
-        setHeroMovie(heroCandidate);
-      } catch (error) {
-        console.error('Error fetching TV data:', error);
-        setHeroMovie(null);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadData();
-  }, [filter, isKids]);
-
-  const titleLabel = useMemo(() => filter === 'all' ? 'on Netflix' : filter === 'tv' ? 'TV Shows' : 'Movies', [filter]);
-
-  const rowData = useMemo(() => [
-    ...(history.length > 0 && filter === 'all' ? [{
-      id: 'continue-watching',
-      title: 'Continue Watching',
-      data: history.map(h => ({ 
-        ...h.item,
-        media_type: h.type, 
-        progressPercentage: (h.currentTime / h.duration) * 100 
-      })),
-      type: 'history'
-    }] : []),
-    ...(myList.length > 0 && filter === 'all' ? [{
-      id: 'my-list',
-      title: 'My List',
-      data: myList,
-      type: 'mylist'
-    }] : []),
-    {
-      id: 'trending',
-      title: 'Top 10 in your Country Today',
-      isTop10: true,
-      data: data.trending
-    },
-    {
-      id: 'popular',
-      title: `Popular ${titleLabel}`,
-      data: data.popular
-    },
-    {
-      id: 'upcoming',
-      title: `Upcoming ${titleLabel}`,
-      data: data.upcoming
-    },
-    {
-      id: 'top-rated',
-      title: `Top Rated ${titleLabel}`,
-      data: data.topRated
-    },
-    {
-      id: 'scifi',
-      title: filter === 'tv' ? "Sci-Fi & Fantasy" : "Sci-Fi Movies",
-      data: data.scifi
-    },
-    {
-      id: 'action',
-      title: filter === 'tv' ? "Action & Adventure" : "Adrenaline-Pumping Action",
-      data: data.action
-    },
-    {
-      id: 'comedy',
-      title: `Comedy ${titleLabel}`,
-      data: data.comedy
-    }
-  ].filter((row: any) => Array.isArray(row.data) && row.data.length > 0), [filter, titleLabel, history, myList, data]);
- 
-  const isInMyList = useMemo(() => {
-    if (!heroMovie || !myList) return false;
-    return myList.some(item => String(item.id) === String(heroMovie.id));
-  }, [heroMovie?.id, myList]);
-
-  const handleToggleMyList = useCallback(async () => {
-    if (!heroMovie || !selectedProfile?.id) return;
+  const fetchHeroBranding = async (movie: any) => {
+    if (!movie) return;
     try {
-      await MyListService.toggleItem(selectedProfile.id, heroMovie);
-    } catch (error) {
-      console.error('Error toggling my list:', error);
+      const type = movie.media_type || (movie.first_air_date ? 'tv' : 'movie');
+      const { fetchMovieImages, getLogoUrl } = require('../../services/tmdb');
+      const images = await fetchMovieImages(movie.id, type);
+      if (images?.logos?.length > 0) {
+        // Prefer English logos
+        const enLogo = images.logos.find((l: any) => l.iso_639_1 === 'en');
+        setHeroLogoUrl(getLogoUrl(enLogo?.file_path || images.logos[0].file_path));
+      } else {
+        setHeroLogoUrl(undefined);
+      }
+    } catch (e) {
+      setHeroLogoUrl(undefined);
     }
-  }, [heroMovie, selectedProfile?.id]);
+  };
 
-  const renderRow = useCallback(({ item: row }: { item: any }) => (
-    <ExpandingRow 
-      title={row.title}
-      isTop10={row.isTop10}
-      data={row.data} 
-      onSelect={(id, type) => router.push({ 
-        pathname: `/movie/${id}`, 
-        params: { type: type || (filter === 'all' ? 'movie' : filter) } 
-      })} 
-    />
-  ), [filter, router]);
+  const stopAutoCycle = () => {
+    if (autoCycleInterval.current) clearInterval(autoCycleInterval.current);
+  };
 
-  const ListHeader = useCallback(() => (
-    <Animated.View key={heroMovie?.id} entering={FadeIn.duration(1000)}>
-      {heroMovie && (
-        <NativeHeroBanner
-          title={heroMovie.title || heroMovie.name}
-          description={heroMovie.overview}
-          imageUrl={getBackdropUrl(heroMovie.backdrop_path) || ''}
-          logoUrl={heroLogo || ''}
-          item={heroMovie}
-          top10={data.trending.slice(0, 10).some(m => m.id === heroMovie.id)}
-          isInMyList={isInMyList}
-          onPlay={() => router.push({ pathname: `/movie/${heroMovie.id}`, params: { type: heroMovie.media_type || (filter === 'all' ? 'movie' : filter) } })}
-          onMyList={handleToggleMyList}
-          onInfo={() => router.push({ pathname: `/movie/${heroMovie.id}`, params: { type: heroMovie.media_type || (filter === 'all' ? 'movie' : filter) } })}
-        />
-      )}
-    </Animated.View>
-  ), [heroMovie, heroLogo, heroColors, data.trending, filter, router]);
+  const resumeHeroAutoplay = useCallback(() => {
+    isUserBrowsingRows.current = false;
+    startAutoCycle();
+  }, [trending.length]);
 
-  if (loading) {
-    return <HomeSkeleton />;
-  }
+  const pauseHeroAutoplay = useCallback(() => {
+    isUserBrowsingRows.current = true;
+    stopAutoCycle();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const maturityLevel = selectedProfile?.maturityLevel;
+    const isKids = selectedProfile?.isKids;
+      const profileId = selectedProfile?.id;
+      
+      // Primary batch — essential rows
+      const [tr, trt, pop, upc] = await Promise.all([
+        fetchTrending('all', maturityLevel as any),
+        fetchTopRated('movie', maturityLevel as any),
+        fetchPopular('movie', maturityLevel as any),
+        fetchUpcoming(maturityLevel as any),
+      ]);
+
+      let history: WatchHistoryItem[] = [];
+      let similar: any[] = [];
+      let lastTitle = '';
+
+      if (profileId) {
+        history = await WatchHistoryService.getAllHistory(profileId);
+        if (history.length > 0) {
+          const lastWatched = history[0];
+          lastTitle = lastWatched.item?.title || lastWatched.item?.name || 'this';
+          similar = await fetchSimilar(lastWatched.item?.id, lastWatched.type);
+        }
+      }
+
+      setTrending(tr);
+      setTopRated(trt);
+      setPopular(pop);
+      setUpcoming(upc);
+
+      // Inject progress back into items for the Continuing Watching row
+      const mappedHistory = history.map(h => ({
+        ...h.item,
+        media_type: h.type, // Ensure type is preserved correctly
+        _progress: h.duration > 0 ? h.currentTime / h.duration : 0,
+        _season: h.season,
+        _episode: h.episode
+      }));
+      setHistoryItems(mappedHistory);
+      setSimilarToLastWatched(similar);
+      setLastWatchedTitle(lastTitle);
+
+      if (tr.length > 0) {
+        setHeroMovie(tr[0]);
+        currentHeroIndex.current = 0;
+        fetchHeroBranding(tr[0]);
+
+        // Resolve initial hero stream
+        setTimeout(() => {
+          resolveStream(tr[0], setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
+        }, 1500);
+      }
+
+      // Secondary batch — genre rows (loaded after primary to not block initial render)
+      loadGenreRows(maturityLevel, isKids);
+    } catch (e) {
+      console.error('Failed to load home data:', e);
+    } finally {
+      setLoading(false);
+      startAutoCycle();
+    }
+  };
+
+  const loadGenreRows = async (maturityLevel: any, isKids: boolean | undefined) => {
+    try {
+      const [
+        tTv, trTv, popTv,
+        action, comedy, horror,
+        sciFi, docs, drama, romance,
+      ] = await Promise.all([
+        fetchTrending('tv', maturityLevel as any),
+        fetchTopRated('tv', maturityLevel as any),
+        fetchPopular('tv', maturityLevel as any),
+        fetchDiscoverByGenre('movie', 28, maturityLevel as any),   // Action
+        fetchDiscoverByGenre('movie', 35, maturityLevel as any),   // Comedy
+        (isKids || (maturityLevel !== 'MA' && maturityLevel !== 'TV-14')) ? Promise.resolve([]) : fetchDiscoverByGenre('movie', 27, maturityLevel as any),  // Horror (skip for kids/low maturity)
+        fetchDiscoverByGenre('movie', 878, maturityLevel as any),  // Sci-Fi
+        fetchDiscoverByGenre('movie', 99, maturityLevel as any),   // Documentary
+        fetchDiscoverByGenre('movie', 18, maturityLevel as any),   // Drama
+        fetchDiscoverByGenre('movie', 10749, maturityLevel as any), // Romance
+      ]);
+
+      setTrendingTv(tTv);
+      setTopRatedTv(trTv);
+      setPopularTv(popTv);
+      setActionMovies(action);
+      setComedyMovies(comedy);
+      setHorrorMovies(horror);
+      setSciFiMovies(sciFi);
+      setDocumentaries(docs);
+      setDramaMovies(drama);
+      setRomanceMovies(romance);
+    } catch (e) {
+      console.log('[Home] Genre rows failed:', e);
+    }
+  };
+
+  const resolveStream = useCallback(async (
+    movie: any,
+    setUrl: (v: string | undefined) => void,
+    setHeaders: (v: string | undefined) => void,
+    idRef: React.MutableRefObject<string | null>
+  ) => {
+    if (!movie) return;
+    const tmdbId = String(movie.id);
+    const mediaType = movie.media_type || 'movie';
+    // Do NOT clear the URL here — the existing video keeps playing in the
+    // banner while we wait for the new stream to resolve. Clearing immediately
+    // would destroy the ExoPlayer and leave a blank banner for several seconds.
+    idRef.current = tmdbId;
+
+    try {
+      const result = await resolveStreamFromCloud(
+        tmdbId,
+        mediaType as 'movie' | 'tv',
+        mediaType === 'tv' ? movie.season : undefined,
+        mediaType === 'tv' ? movie.episode : undefined
+      );
+
+      if (idRef.current === tmdbId && result?.url) {
+        setUrl(result.url);
+        setHeaders(
+          result.headers && Object.keys(result.headers).length > 0
+            ? JSON.stringify(result.headers)
+            : undefined
+        );
+      }
+    } catch (e) {
+      console.log('[Home] Stream resolve failed:', e);
+    }
+  }, []);
+
+  const handleItemFocus = useCallback((movie: any, rowTitle?: string) => {
+    pauseHeroAutoplay();
+    const movieId = String(movie.id);
+
+    // Update hero metadata with a 300ms debounce so rapid d-pad movement
+    // doesn't trigger a cascade of re-renders.
+    if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
+    heroUpdateTimeout.current = setTimeout(() => {
+      setPreferredMovieId(movieId);
+      setPreferredRowTitle(rowTitle || null);
+      setHeroMovie(movie);
+      fetchHeroBranding(movie);
+
+      // Resolve hero banner stream
+      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+      heroStreamTimeout.current = setTimeout(() => {
+        resolveStream(movie, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
+      }, 1500);
+    }, 300);
+
+    // Clear any pending card stream resolution and drop the previous stream
+    // immediately so the old card's ExoPlayer releases.
+    if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+    currentCardId.current = movieId;
+    setFocusedCardStream(null);
+
+    // Resolve stream for the newly focused card (plays inline in the expanded
+    // card). 1200ms gives the user time to settle focus without firing on
+    // every frame during fast scrolling, while still feeling responsive.
+    cardStreamTimeout.current = setTimeout(async () => {
+      if (currentCardId.current !== movieId) return; // focus moved on
+      try {
+        const { resolveStreamFromCloud } = require('../../services/cloudResolver');
+        const type = movie.media_type || 'movie';
+        const result = await resolveStreamFromCloud(
+          movieId, type as 'movie' | 'tv',
+          type === 'tv' ? movie._season : undefined,
+          type === 'tv' ? movie._episode : undefined
+        );
+        // Guard again after async resolution — user may have moved focus
+        if (currentCardId.current === movieId && result?.url) {
+          setFocusedCardStream({
+            id: movieId,
+            url: result.url,
+            headers: result.headers && Object.keys(result.headers).length > 0
+              ? JSON.stringify(result.headers)
+              : undefined,
+          });
+        }
+      } catch (e) {
+        console.log('[Home] Card stream resolve failed:', e);
+      }
+    }, 1200);
+  }, [pauseHeroAutoplay, resolveStream]);
+
+  const handleItemPress = useCallback((movie: any) => {
+    const type = movie.media_type || 'movie';
+    // Kill ALL preview streams so every ExoPlayer releases its connection
+    // before the full-screen player starts.
+    setHeroStreamUrl(undefined);
+    setHeroStreamHeaders(undefined);
+    setFocusedCardStream(null);
+    currentCardId.current = null;
+    // Clear any pending stream resolution timeouts
+    if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+    if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+    // Invalidate cached URL so the full-screen player fetches a fresh one
+    invalidateCacheEntry(String(movie.id), type);
+    
+    // Append season/episode if it's a resume from history
+    let url = `/movie/${movie.id}?type=${type}`;
+    if (movie._season) url += `&season=${movie._season}`;
+    if (movie._episode) url += `&episode=${movie._episode}`;
+    
+    router.push(url as any);
+  }, [router]);
+
+  const handleHeroFocus = useCallback(() => {
+    isUserBrowsingRows.current = false;
+    stopAutoCycle();
+    if (heroMovie) {
+      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+      heroStreamTimeout.current = setTimeout(() => {
+        resolveStream(heroMovie, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
+      }, 800);
+    }
+  }, [heroMovie, resolveStream]);
+
+  const handleScroll = useCallback((event: any) => {
+    scrollY.current = event.nativeEvent.contentOffset.y;
+    if (scrollY.current <= 24) {
+      resumeHeroAutoplay();
+    } else {
+      pauseHeroAutoplay();
+    }
+  }, [pauseHeroAutoplay, resumeHeroAutoplay]);
+
+  // Memoize Top 10 lists to prevent unnecessary re-renders of native rows
+  const top10Movies = React.useMemo(() => popular.slice(0, 10), [popular]);
+  const top10Shows = React.useMemo(() => popularTv.slice(0, 10), [popularTv]);
+
+  /** Helper to render a row with standard props */
+  const renderRow = (title: string, content: any[], options?: { showRank?: boolean }) => {
+    if (!content || content.length === 0) return null;
+    // Only supply the stream URL to the row that owns the currently focused card.
+    // All other rows receive null, preventing multiple ExoPlayers from starting.
+    const isActiveRow = focusedCardStream !== null &&
+      content.some((m: any) => String(m.id) === focusedCardStream.id);
+    return (
+      <ExpandingRow
+        title={title}
+        content={content}
+        showRank={options?.showRank}
+        focusedStreamUrl={isActiveRow ? focusedCardStream?.url : undefined}
+        focusedStreamHeaders={isActiveRow ? focusedCardStream?.headers : undefined}
+        preferredMovieId={preferredRowTitle === title ? preferredMovieId ?? undefined : undefined}
+        focusRequestToken={preferredRowTitle === title ? focusRequestToken : 0}
+        onItemFocus={(movie) => handleItemFocus(movie, title)}
+        onItemPress={handleItemPress}
+      />
+    );
+  };
+
+  if (loading) return <HomeSkeleton />;
 
   return (
-    <View style={styles.masterContainer}>
-      {/* Ambient Background Layer — Fixed position for the whole screen */}
-      <View style={[StyleSheet.absoluteFill, { zIndex: 0 }]} pointerEvents="none">
-        <LinearGradient
-          colors={heroColors}
-          style={[StyleSheet.absoluteFill, { height: '100%' }]}
-        />
-      </View>
+    <View style={styles.container}>
 
-      {heroMovie && (
-        <ColorExtractor 
-          imageUrl={getBackdropUrl(heroMovie?.backdrop_path) || ''} 
-          onColorExtracted={handleColorExtracted}
-        />
-      )}
 
-      <FlatList
-        data={rowData}
-        renderItem={renderRow}
-        keyExtractor={item => item.id}
-        ListHeaderComponent={ListHeader}
-        style={[styles.container, { zIndex: 1, elevation: 1 }]}
-        contentContainerStyle={styles.contentContainer}
-        // Low-RAM optimization: render fewer items at once
-        initialNumToRender={2}
-        maxToRenderPerBatch={1}
-        windowSize={3}
-        removeClippedSubviews={true}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No content available right now. Try again shortly.</Text>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        onScrollBeginDrag={pauseHeroAutoplay}
+      >
+        <View style={styles.heroContainer}>
+          <NativeHeroBanner
+            ref={heroBannerRef}
+            movieData={JSON.stringify(heroMovie)}
+            streamUrl={heroStreamUrl}
+            streamHeaders={heroStreamHeaders}
+            placeholderColor={pageColor}
+            onColorExtracted={setPageColor}
+            onFocus={handleHeroFocus}
+            style={styles.hero}
+          />
+          <View style={styles.heroOverlay}>
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.92)']}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            <View style={styles.heroMetaWrapper}>
+              <HeroMeta movie={heroMovie} logoUrl={heroLogoUrl} />
+            </View>
           </View>
-        }
-      />
+        </View>
+
+        <View style={styles.rowsContainer}>
+          {/* 1. Continue Watching */}
+          {historyItems.length > 0 && renderRow(
+            `Continue Watching for ${selectedProfile?.name || 'You'}`,
+            historyItems
+          )}
+
+          {/* 2. Today's Top Picks */}
+          {renderRow("Today's Top Picks for You", trending)}
+
+          {/* 3. Top 10 Movies Today */}
+          {renderRow('Top 10 Movies Today', top10Movies, { showRank: true })}
+
+          {/* 4. Popular TV Shows */}
+          {renderRow('Popular TV Shows', popularTv)}
+
+          {/* 5. Because You Watched... */}
+          {similarToLastWatched.length > 0 && renderRow(
+            `Because You Watched ${lastWatchedTitle}`,
+            similarToLastWatched
+          )}
+
+          {/* 6. Trending TV Shows */}
+          {renderRow('Trending Now in Shows', trendingTv)}
+
+          {/* 7. Action & Adventure */}
+          {renderRow('Action & Adventure', actionMovies)}
+
+          {/* 8. Critically Acclaimed */}
+          {renderRow('Critically Acclaimed', topRated)}
+
+          {/* 9. Top 10 TV Shows Today */}
+          {renderRow('Top 10 TV Shows Today', top10Shows, { showRank: true })}
+
+          {/* 10. Comedy Movies */}
+          {renderRow('Comedy Movies', comedyMovies)}
+
+          {/* 11. Sci-Fi & Fantasy */}
+          {renderRow('Sci-Fi & Fantasy', sciFiMovies)}
+
+          {/* 12. New Releases */}
+          {renderRow('New Releases', upcoming)}
+
+          {/* 13. Award-Winning TV Shows */}
+          {renderRow('Award-Winning TV Shows', topRatedTv)}
+
+          {/* 14. Drama Movies */}
+          {renderRow('Drama Movies', dramaMovies)}
+
+          {/* 15. Horror Movies (hidden for kids) */}
+          {renderRow('Horror Movies', horrorMovies)}
+
+          {/* 16. Romantic Movies */}
+          {renderRow('Romantic Movies', romanceMovies)}
+
+          {/* 17. Documentaries */}
+          {renderRow('Documentaries', documentaries)}
+        </View>
+      </ScrollView>
     </View>
   );
 }
 
-const SCREEN_HEIGHT = Dimensions.get('window').height;
-
 const styles = StyleSheet.create({
-  masterContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  container: {
-    flex: 1,
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  pageGradient: { ...StyleSheet.absoluteFillObject, zIndex: 1, top: TV_TOP_NAV_TOTAL_OFFSET + 360 },
+  scrollView: { flex: 1, zIndex: 2 },
+  scrollContent: { paddingBottom: 80 },
+  heroContainer: { 
+    width: '100%', 
+    height: 450, 
+    position: 'relative',
     backgroundColor: 'transparent',
   },
-  contentContainer: {
-    paddingTop: 40, // Small native safe area padding so it's not flush with the screen top
-    paddingBottom: 100,
+  hero: { width: '100%', height: '100%' },
+  heroOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 180,
+    justifyContent: 'flex-end',
   },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
+  heroMetaWrapper: {
+    paddingBottom: 15,
+    zIndex: 10,
   },
-  rowsContainer: {
-    marginTop: 20,
-    paddingLeft: 60,
-    zIndex: 1,
-  },
-  row: {
-    marginBottom: 40,
-  },
-  rowTitle: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 22,
-    fontWeight: '600',
-    marginBottom: 15,
-  },
-  rowContent: {
-    paddingRight: 60,
-  },
-  emptyContainer: {
-    paddingTop: 180,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyText: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 20,
-    fontWeight: '600',
-  },
+  rowsContainer: { marginTop: -20, zIndex: 10 },
 });

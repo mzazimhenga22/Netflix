@@ -17,6 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import Screensaver from '../components/Screensaver';
 import { SplashAnimation } from '../components/SplashAnimation';
+import { MemoryManager } from '../components/MemoryManager';
+import { PageColorProvider, usePageColor } from '../context/PageColorContext';
 
 // Hide native splash immediately — we use our own animated one
 SplashScreen.preventAutoHideAsync();
@@ -25,7 +27,9 @@ const { width, height } = Dimensions.get('window');
 import { auth } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { SubscriptionService, SubscriptionStatus } from '../services/SubscriptionService';
-import { Text } from 'react-native';
+import { Text, ActivityIndicator } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
+
 
 function RootLayoutContent() {
   const { selectedProfile } = useProfile();
@@ -34,6 +38,11 @@ function RootLayoutContent() {
   const [initialRoute, setInitialRoute] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(true);
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
+  const [payHeroUrl, setPayHeroUrl] = useState<string | null>(null);
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+  const [paymentRetryTick, setPaymentRetryTick] = useState(0);
+  const subUnsubRef = useRef<(() => void) | null>(null);
+
 
   // Idle Timer for Screensaver (5 minutes = 300000ms)
   const [isIdle, setIsIdle] = useState(false);
@@ -109,8 +118,44 @@ function RootLayoutContent() {
 
   const handleRetrySub = () => {
     setSubscription({ status: 'loading' });
-    fetchSubscription();
+    // Clean up previous listener before creating a new one
+    if (subUnsubRef.current) subUnsubRef.current();
+    subUnsubRef.current = fetchSubscription();
   };
+
+  const isLocked = false; // We no longer block the entire app. Gating happens per-movie.
+
+  useEffect(() => {
+    if (!isLocked || subscription?.status === 'error' || !auth.currentUser || isFetchingUrl) return;
+
+    let isMounted = true;
+    setIsFetchingUrl(true);
+
+    SubscriptionService.initializePayHeroTransaction(auth.currentUser.uid, 500)
+      .then((url) => {
+        if (!isMounted) return;
+        // QRCode component crashes on null/empty string — only set valid URLs
+        if (url && typeof url === 'string' && url.length > 0) {
+          setPayHeroUrl(url);
+        } else {
+          setPayHeroUrl(null);
+        }
+      })
+      .catch((err) => {
+        console.warn('[PayHero] Failed to generate URL:', err);
+        if (!isMounted) return;
+        setPayHeroUrl(null);
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setIsFetchingUrl(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+    // NOTE: isFetchingUrl intentionally excluded to prevent infinite re-trigger loop
+  }, [isLocked, subscription?.status, paymentRetryTick]);
 
   const onLayoutRootView = useCallback(async () => {
     if (appIsReady && initialRoute) {
@@ -125,11 +170,6 @@ function RootLayoutContent() {
     return <View style={styles.splashContainer} />;
   }
 
-  const isLocked = initialRoute !== '/' && subscription && (
-    subscription.status === 'none' || 
-    subscription.status === 'past_due' || 
-    subscription.status === 'error'
-  );
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
@@ -138,8 +178,11 @@ function RootLayoutContent() {
         <Stack.Screen name="profiles" options={{ animation: 'fade' }} />
         <Stack.Screen name="edit-profile" options={{ animation: 'fade' }} />
         <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-        <Stack.Screen name="movie/[id]" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="movie/[id]" options={{ animation: 'fade' }} />
       </Stack>
+
+      {/* Global memory cleanup for low-RAM TV devices */}
+      <MemoryManager />
       
       {/* Subscription Lockdown Overlay */}
       {isLocked && (
@@ -155,8 +198,45 @@ function RootLayoutContent() {
           <Text style={styles.subscribeText}>
             {subscription?.status === 'error' 
               ? (subscription.errorMessage || 'We are having trouble connecting to Netflix. Please check your internet connection.')
-              : 'Your account is currently inactive. Please open the Netflix app on your mobile device to complete your subscription payment.'}
+              : 'Your account is currently inactive. Scan the QR code below to subscribe instantly or open the Netflix app on your mobile device.'}
           </Text>
+
+          {isLocked && subscription?.status !== 'error' && (
+            <View style={{ marginTop: 40, alignItems: 'center' }}>
+              {payHeroUrl && payHeroUrl.length > 0 ? (
+                <>
+                  <View style={{ padding: 15, backgroundColor: 'white', borderRadius: 12 }}>
+                    <QRCode
+                      value={payHeroUrl}
+                      size={220}
+                      color="black"
+                      backgroundColor="white"
+                    />
+                  </View>
+                  <Text style={{ color: 'white', fontSize: 22, marginTop: 20, fontWeight: 'bold' }}>
+                    Scan to Pay with M-Pesa (Standard Plan)
+                  </Text>
+                  <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 16, marginTop: 8 }}>
+                    Your TV will unlock automatically after payment
+                  </Text>
+                </>
+              ) : isFetchingUrl ? (
+                <ActivityIndicator size="large" color="#E50914" />
+              ) : (
+                <TouchableOpacity 
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setPayHeroUrl(null);
+                    setPaymentRetryTick((tick) => tick + 1);
+                  }}
+                  style={styles.retryButton}
+                >
+                  <Text style={styles.retryButtonText}>Generate Payment QR</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           
           {subscription?.status === 'error' ? (
             <TouchableOpacity 
@@ -195,8 +275,10 @@ export default function RootLayout() {
   return (
     <ProfileProvider>
       <FilterProvider>
-        <StatusBar style="light" hidden={false} />
-        <RootLayoutContent />
+        <PageColorProvider>
+          <StatusBar style="light" hidden={false} />
+          <RootLayoutContent />
+        </PageColorProvider>
       </FilterProvider>
     </ProfileProvider>
   );
@@ -242,6 +324,17 @@ const styles = StyleSheet.create({
   splashIcon: {
     width: width * 0.12,
     height: height * 0.3,
+  },
+  retryButton: {
+    marginTop: 20,
+    backgroundColor: '#E50914',
+    paddingHorizontal: 30,
+    paddingVertical: 12,
+    borderRadius: 4,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
   }
 });
-

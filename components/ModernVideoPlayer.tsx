@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, useWindowDimensions, ScrollView, Modal, Image } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions, ScrollView, Modal, Image, NativeModules, Alert, requireNativeComponent } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -18,6 +18,7 @@ import Animated, {
   FadeOut
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as Brightness from 'expo-brightness';
@@ -33,6 +34,17 @@ import { VidSrcStream } from '../services/vidsrc';
 import { useProfile } from '../context/ProfileContext';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { RatingsService, RatingValue } from '../services/RatingsService';
+import { ViewProps } from 'react-native';
+
+interface HologramNativeViewProps extends ViewProps {
+  videoUrl?: string;
+  title?: string;
+  drmLicenseUrl?: string;
+  videoFormat?: string;
+  onPlaybackStatusUpdate?: (event: any) => void;
+}
+
+const HologramNativeView = requireNativeComponent<HologramNativeViewProps>('HologramModule');
 
 // Stable empty array references to prevent useEffect infinite loops.
 // Default param `= []` creates a new ref every render; if that ref is in
@@ -97,6 +109,9 @@ export function ModernVideoPlayer({
   const [fetchError, setFetchError] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [showRemainingTime, setShowRemainingTime] = useState(true);
+  const wasPlayingBeforeBuffer = useRef(false);
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const [showEpisodePicker, setShowEpisodePicker] = useState(false);
   const [showSubtitlePicker, setShowSubtitlePicker] = useState(false);
@@ -110,6 +125,7 @@ export function ModernVideoPlayer({
   const [skipMarkers, setSkipMarkers] = useState<VidLinkSkipMarker[]>([]);
   const skipMarkersRef = useRef<VidLinkSkipMarker[]>([]);
   const [showSkipIntro, setShowSkipIntro] = useState(false);
+  const [activeSkipType, setActiveSkipType] = useState<'intro' | 'recap' | 'outro'>('intro');
   const showSkipIntroRef = useRef(false);
   const [isNextEpisodeCountdown, setIsNextEpisodeCountdown] = useState(false);
   const isNextEpisodeCountdownRef = useRef(false);
@@ -134,6 +150,7 @@ export function ModernVideoPlayer({
   const [activeSubtitle, setActiveSubtitle] = useState('');
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(-1);
   const [resizeMode, setResizeMode] = useState<'contain' | 'cover'>('contain');
+  const [isHologramMode, setIsHologramMode] = useState(false);
   const nextEpisodeData = React.useMemo(() => {
     if (contentType === 'tv' && episodes && episodes.length > 0 && episodeNum) {
       const currentIndex = episodes.findIndex((e: any) => e.episode_number === episodeNum);
@@ -147,6 +164,7 @@ export function ModernVideoPlayer({
   const controlsOpacity = useSharedValue(1);
   const loadingOpacity = useSharedValue(1);
   const progressPercentage = useSharedValue(0);
+  const bufferedPercentage = useSharedValue(0);
   const progressScale = useSharedValue(1);
   const isScrubbingReact = useSharedValue(false);
   const hideTimeout = useRef<NodeJS.Timeout | null>(null);
@@ -157,17 +175,15 @@ export function ModernVideoPlayer({
     uri: internalVideoUrl, 
     headers: internalHeaders || undefined,
     contentType: 'hls' as any,  // VidLink proxy URLs have no .m3u8 extension
-  } : null, (player) => {
+  } : '', (player) => {
     player.loop = false;
     player.staysActiveInBackground = true;
     player.timeUpdateEventInterval = 0.25; // 250ms for performance
     
-    // Aggressive pre-buffering — same config as TV app
-    // Buffers 120s ahead instead of default 20s, reducing stalls on weak networks
+    // Low-network resilience: buffer 60s ahead for smooth playback
+    // Only use valid expo-video bufferOptions keys
     player.bufferOptions = {
-      preferredForwardBufferDuration: 120,
-      minBufferForPlayback: 2.5,
-      prioritizeTimeOverSizeThreshold: true,
+      preferredForwardBufferDuration: 60,
     };
     
     if (internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') {
@@ -394,15 +410,13 @@ export function ModernVideoPlayer({
       }
     }
 
-    // Skip Intro Logic — only when stream metadata provides real intro markers
-    const introMarker = skipMarkersRef.current.find(m => m.type === 'intro');
-    const isIntroActive = introMarker
-      ? (current >= introMarker.start && current <= introMarker.end)
-      : false; // No fake fallback — skip intro only from stream metadata
-
-    if (isIntroActive) {
+    // Skip Intro/Recap Logic
+    const activeMarker = skipMarkersRef.current.find(m => current >= m.start && current <= m.end);
+    
+    if (activeMarker && (activeMarker.type === 'intro' || (activeMarker as any).type === 'recap')) {
       if (!showSkipIntroRef.current) {
         showSkipIntroRef.current = true;
+        setActiveSkipType((activeMarker.type as any) || 'intro');
         setShowSkipIntro(true);
       }
     } else {
@@ -520,6 +534,13 @@ export function ModernVideoPlayer({
           console.error(`[Player] 💥 Error details:`, payload.error);
         }
         setStatus(payload.status);
+        // Mid-stream buffering detection: if status goes back to 'loading'
+        // while we already had a URL, show a lightweight buffering indicator
+        if (payload.status === 'loading' && currentUrlRef.current) {
+          setIsBuffering(true);
+        } else if (payload.status === 'readyToPlay') {
+          setIsBuffering(false);
+        }
       }),
       player.addListener('timeUpdate', (payload: any) => {
         // Drive ALL progress-dependent logic from this single native event
@@ -527,6 +548,14 @@ export function ModernVideoPlayer({
         const current = payload.currentTime || 0;
         const playerDur = player.duration || 0;
         handleProgressUpdate(current, playerDur);
+        
+        // Update buffered percentage
+        if (playerDur > 0 && player.bufferedPosition !== undefined) {
+          bufferedPercentage.value = (player.bufferedPosition / playerDur) * 100;
+        }
+
+        // If time is advancing, we are not buffering
+        if (current > 0) setIsBuffering(false);
       }),
       (player as any).addListener('durationChange', (payload: any) => {
         setDuration(payload.duration);
@@ -783,6 +812,10 @@ export function ModernVideoPlayer({
     width: `${progressPercentage.value}%`,
   }));
 
+  const animatedBufferedStyle = useAnimatedStyle(() => ({
+    width: `${bufferedPercentage.value}%`,
+  }));
+
   const animatedTrackStyle = useAnimatedStyle(() => ({
     transform: [{ scaleY: progressScale.value }],
   }));
@@ -851,15 +884,37 @@ export function ModernVideoPlayer({
         />
 
         <Animated.View style={[StyleSheet.absoluteFill, animatedVideoStyle]}>
-          <VideoView
-            ref={videoViewRef}
-            style={StyleSheet.absoluteFill}
-            player={player}
-            nativeControls={false}
-            contentFit={resizeMode}
-            allowsPictureInPicture={true}
-          />
+          {isHologramMode && internalVideoUrl ? (
+            <HologramNativeView 
+              videoUrl={internalVideoUrl}
+              title={title || ''}
+              videoFormat="3d-top-bottom"
+              style={StyleSheet.absoluteFill}
+            />
+          ) : (
+            <VideoView
+              ref={videoViewRef}
+              style={StyleSheet.absoluteFill}
+              player={player}
+              nativeControls={false}
+              contentFit={resizeMode}
+              allowsPictureInPicture={true}
+            />
+          )}
         </Animated.View>
+
+        {isHologramMode && (
+          <Pressable 
+            style={styles.exitHologramBtn}
+            onPress={() => {
+              setIsHologramMode(false);
+              try { player.play(); } catch(_) {}
+            }}
+          >
+            <Ionicons name="close-circle-outline" size={24} color="white" />
+            <Text style={{color: 'white', marginLeft: 8, fontWeight: 'bold'}}>Exit Hologram</Text>
+          </Pressable>
+        )}
 
         {/* Premium Overlays */}
         {showSkipIntro && !isNextEpisodeCountdown && (
@@ -876,32 +931,51 @@ export function ModernVideoPlayer({
         )}
 
         {isNextEpisodeCountdown && (
-          <Animated.View entering={FadeInRight} exiting={FadeOutRight} style={styles.nextEpisodeOverlay}>
-            <Text style={styles.nextEpisodeHeader}>Up Next</Text>
+          <Animated.View entering={FadeInRight.duration(600).springify()} exiting={FadeOutRight} style={styles.nextEpisodeOverlay}>
+            <View style={styles.nextEpisodeHeaderRow}>
+              <Text style={styles.nextEpisodeHeader}>Up Next</Text>
+              <View style={styles.nextEpisodeTimerCircle}>
+                <Text style={styles.nextEpisodeTimerText}>{countdownValue}</Text>
+              </View>
+            </View>
+            
             {nextEpisodeData?.name && (
-              <Text style={styles.nextEpisodeTitle}>{nextEpisodeData.name}</Text>
+              <Text style={styles.nextEpisodeTitle} numberOfLines={2}>{nextEpisodeData.name}</Text>
             )}
-            <Text style={styles.nextEpisodeCountdownText}>Starting in {countdownValue} seconds</Text>
             
             <View style={styles.nextEpisodePreview}>
               {nextEpisodeData?.still_path && (
                 <Image 
                   source={{ uri: getImageUrl(nextEpisodeData.still_path) }} 
-                  style={[StyleSheet.absoluteFill, { borderRadius: 8 }]} 
+                  style={StyleSheet.absoluteFill} 
+                  resizeMode="cover"
                 />
               )}
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', borderRadius: 8 }]}>
-                <Ionicons name="play-circle" size={50} color="white" />
+              <LinearGradient 
+                colors={['transparent', 'rgba(0,0,0,0.8)']}
+                style={StyleSheet.absoluteFill}
+              />
+              <View style={styles.nextEpisodePlayIcon}>
+                <Ionicons name="play" size={32} color="white" />
               </View>
             </View>
 
             <View style={styles.nextEpisodeActions}>
-              <Pressable style={styles.nextEpisodeBtn} onPress={() => { setIsNextEpisodeCountdown(false); skip(20); }}>
-                 <Text style={[styles.nextEpisodeBtnText, { color: 'white' }]}>Watch Credits</Text>
-              </Pressable>
-              <Pressable style={[styles.nextEpisodeBtn, styles.nextEpisodeBtnPrimary]} onPress={() => { setIsNextEpisodeCountdown(false); onNextEpisode?.(); }}>
-                 <Ionicons name="play" size={16} color="black" />
+              <Pressable 
+                style={[styles.nextEpisodeBtn, styles.nextEpisodeBtnPrimary]} 
+                onPress={() => { setIsNextEpisodeCountdown(false); onNextEpisode?.(); }}
+              >
+                 <Ionicons name="play" size={20} color="black" />
                  <Text style={styles.nextEpisodeBtnText}>Play Now</Text>
+              </Pressable>
+              <Pressable 
+                style={styles.nextEpisodeBtn} 
+                onPress={() => { 
+                  setIsNextEpisodeCountdown(false); 
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                 <Text style={[styles.nextEpisodeBtnText, { color: 'white' }]}>Cancel</Text>
               </Pressable>
             </View>
           </Animated.View>
@@ -921,6 +995,7 @@ export function ModernVideoPlayer({
               <View style={{ flex: 1, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                 <Animated.View style={[styles.seekRipple, leftRippleStyle]}>
                   <MaterialIcons name="replay-10" size={40} color="white" />
+                  <Text style={styles.seekRippleText}>-10</Text>
                 </Animated.View>
               </View>
             </GestureDetector>
@@ -928,6 +1003,7 @@ export function ModernVideoPlayer({
               <View style={{ flex: 1, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' }}>
                 <Animated.View style={[styles.seekRipple, rightRippleStyle]}>
                   <MaterialIcons name="forward-10" size={40} color="white" />
+                  <Text style={styles.seekRippleText}>+10</Text>
                 </Animated.View>
               </View>
             </GestureDetector>
@@ -977,6 +1053,13 @@ export function ModernVideoPlayer({
             </>
           )}
         </Animated.View>
+
+        {/* Mid-Stream Buffering Indicator — lightweight spinner over the video */}
+        {isBuffering && status !== 'loading' && internalVideoUrl && (
+          <View style={styles.midStreamBuffering} pointerEvents="none">
+            <NetflixLoader size={36} />
+          </View>
+        )}
 
         {/* Error Overlay */}
         {(status === 'error' || fetchError) && (
@@ -1049,7 +1132,19 @@ export function ModernVideoPlayer({
                     <Pressable style={styles.iconBtn}>
                       <MaterialCommunityIcons name="cast" size={26} color="white" />
                     </Pressable>
-                    <Pressable onPress={onClose} style={styles.iconBtn}>
+                    <Pressable onPress={() => {
+                      // Save progress before closing
+                      const curr = currentPlaybackTimeRef.current || 0;
+                      const dur = duration || 0;
+                      if (curr > 5 && dur > 0 && tmdbId) {
+                        WatchHistoryService.saveProgress(
+                          { id: tmdbId.toString(), title, backdrop_path: backdropUrl, poster_path: backdropUrl, tmdbId, type: contentType || 'movie' },
+                          contentType || 'movie', curr, dur,
+                          selectedProfile?.id || '', seasonNum, episodeNum
+                        );
+                      }
+                      onClose();
+                    }} style={styles.iconBtn}>
                       <Ionicons name="close" size={30} color="white" />
                     </Pressable>
                   </View>
@@ -1123,18 +1218,20 @@ export function ModernVideoPlayer({
                 <Pressable 
                   style={styles.skipIntroBtn}
                   onPress={() => {
-                    const introMarker = skipMarkers.find(m => m.type === 'intro');
-                    if (introMarker && player) {
-                      player.currentTime = introMarker.end;
+                    const activeMarker = skipMarkers.find(m => currentTime >= m.start && currentTime <= m.end);
+                    if (activeMarker && player) {
+                      player.currentTime = activeMarker.end;
                     } else {
-                      skip(90 - currentTime); // Fallback to 90s mark
+                      skip(90 - currentTime); // Fallback
                     }
                     setShowSkipIntro(false);
                     showSkipIntroRef.current = false;
                     resetHideTimer();
                   }}
                 >
-                  <Text style={styles.skipIntroText}>Skip Intro</Text>
+                  <Text style={styles.skipIntroText}>
+                    {activeSkipType === 'recap' ? 'Skip Recap' : 'Skip Intro'}
+                  </Text>
                 </Pressable>
               </Animated.View>
             )}
@@ -1143,7 +1240,14 @@ export function ModernVideoPlayer({
             {!isLocked && (
               <View style={styles.bottomSection}>
                 <View style={styles.progressContainer}>
-                  <Text style={styles.timeTextRemaining}>{formatTime((duration || 0) - currentTime)}</Text>
+                  <Pressable onPress={() => setShowRemainingTime(prev => !prev)}>
+                    <Text style={styles.timeTextRemaining}>
+                      {showRemainingTime 
+                        ? `-${formatTime((duration || 0) - currentTime)}`
+                        : formatTime(currentTime)
+                      }
+                    </Text>
+                  </Pressable>
                   
                   <GestureDetector gesture={scrubGesture}>
                     <View 
@@ -1151,6 +1255,7 @@ export function ModernVideoPlayer({
                       onLayout={(e) => setProgressBarWidth(e.nativeEvent.layout.width)}
                     >
                       <Animated.View style={[styles.progressTrack, animatedTrackStyle]}>
+                        <Animated.View style={[styles.bufferedFill, animatedBufferedStyle]} />
                         <Animated.View style={[styles.progressFill, animatedProgressStyle]} />
                       </Animated.View>
                       
@@ -1429,6 +1534,26 @@ export function ModernVideoPlayer({
               <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.4)" />
             </Pressable>
 
+            <Pressable 
+              style={[styles.moreOptionRow, { borderTopWidth: 1, borderTopColor: 'rgba(0,229,255,0.15)', marginTop: 8, paddingTop: 16 }]} 
+              onPress={() => {
+                setShowMoreOptions(false);
+                if (internalVideoUrl) {
+                  try { player.pause(); } catch(_) {}
+                  setIsHologramMode(true);
+                } else {
+                  Alert.alert('Hologram', 'No active video stream to project. Please wait for the video to load first.');
+                }
+              }}
+            >
+              <Ionicons name="cube-outline" size={24} color="#00E5FF" />
+              <View style={styles.moreOptionInfo}>
+                <Text style={[styles.moreOptionLabel, { color: '#00E5FF' }]}>Hologram Mode</Text>
+                <Text style={styles.moreOptionValue}>Project video through a pyramid</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#00E5FF" />
+            </Pressable>
+
           </Pressable>
         </Pressable>
       </Modal>
@@ -1448,65 +1573,159 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
     zIndex: 10,
   },
-  centeredOverlay: {
+  midStreamBuffering: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: 'rgba(0,0,0,0.3)',
     zIndex: 5,
   },
-  subtitleContainer: {
+  exitHologramBtn: {
     position: 'absolute',
-    bottom: 90,
-    left: 40,
+    top: 40,
     right: 40,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 30,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 2,
-    pointerEvents: 'none',
+    zIndex: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
-  subtitleText: {
+  nextEpisodeOverlay: {
+    position: 'absolute',
+    right: 48,
+    bottom: 120,
+    width: 320,
+    backgroundColor: 'rgba(20, 20, 20, 0.95)',
+    borderRadius: 12,
+    padding: 24,
+    zIndex: 100,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 15,
+  },
+  nextEpisodeHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  nextEpisodeHeader: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  nextEpisodeTimerCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  nextEpisodeTimerText: {
     color: 'white',
-    fontSize: 26,
-    fontWeight: '800',
-    textAlign: 'center',
-    textShadowColor: 'black',
-    textShadowOffset: { width: 2, height: 2 },
-    textShadowRadius: 6,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  nextEpisodeTitle: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 16,
+    lineHeight: 26,
+  },
+  nextEpisodePreview: {
+    height: 140,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 20,
+    position: 'relative',
+    backgroundColor: '#1a1a1a',
+  },
+  nextEpisodePlayIcon: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -22 }, { translateY: -22 }],
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  nextEpisodeActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  nextEpisodeBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  nextEpisodeBtnPrimary: {
+    backgroundColor: 'white',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  nextEpisodeBtnText: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: 'black',
+  },
+  centeredOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 20,
+  },
+  loadingStatusText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
+    marginTop: 15,
   },
   errorText: {
     color: 'white',
-    marginTop: 10,
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: 'bold',
+    marginTop: 20,
     textAlign: 'center',
-  },
-  loadingStatusText: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 16,
-    fontWeight: '500',
-    letterSpacing: 1,
-    textAlign: 'center',
+    paddingHorizontal: 40,
   },
   errorActions: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 20,
+    marginTop: 30,
+    gap: 15,
   },
   retryBtn: {
-    backgroundColor: 'white',
+    backgroundColor: COLORS.primary,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 4,
   },
   retryText: {
-    color: 'black',
-    fontWeight: 'bold',
+    color: 'white',
     fontSize: 16,
+    fontWeight: 'bold',
   },
   topBar: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -1764,27 +1983,55 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 16,
+    backgroundColor: 'rgba(229,9,20,0.1)',
+    marginHorizontal: -12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
   },
   trackItemText: {
-    color: '#A0A0A0',
+    color: '#D1D1D1',
     fontSize: 16,
     fontWeight: '500',
   },
   trackItemTextActive: {
-    color: 'white',
+    color: '#E50914',
     fontSize: 16,
     fontWeight: 'bold',
   },
-  
-  // Episodes Panel Specific Styles
+  subtitleContainer: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  subtitleText: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    textShadowColor: 'rgba(0,0,0,0.75)',
+    textShadowOffset: { width: -1, height: 1 },
+    textShadowRadius: 10,
+  },
   epOptionItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
+    paddingVertical: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
     gap: 16,
   },
   epOptionItemActive: {
-    opacity: 1,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    marginHorizontal: -12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
   },
   epThumbWrapper: {
     width: 130,
@@ -1844,74 +2091,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  nextEpisodeOverlay: {
-    position: 'absolute',
-    right: 40,
-    bottom: 40,
-    width: '35%',
-    maxWidth: 300,
-    backgroundColor: 'rgba(20,20,20,0.95)',
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#333',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 10,
-    zIndex: 40,
-  },
-  nextEpisodeHeader: {
-    color: 'white',
-    fontSize: 18,
-    fontFamily: 'NetflixSans-Bold',
-    marginBottom: 4,
-  },
-  nextEpisodeTitle: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 14,
-    fontFamily: 'NetflixSans-Medium',
-    marginBottom: 8,
-    maxWidth: 200,
-  },
-  nextEpisodeCountdownText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  nextEpisodePreview: {
-    height: 100,
-    backgroundColor: '#333',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  nextEpisodeActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  nextEpisodeBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: '#333',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  nextEpisodeBtnPrimary: {
-    backgroundColor: 'white',
-    flexDirection: 'row',
-    gap: 4,
-  },
-  nextEpisodeBtnText: {
-    color: 'black',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
   // More Options Bottom Sheet
   moreOptionsOverlay: {
     flex: 1,
@@ -1965,5 +2144,19 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.5)',
     fontSize: 13,
     marginTop: 2,
+  },
+  seekRippleText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 4,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowRadius: 4,
+  },
+  bufferedFill: {
+    position: 'absolute',
+    height: '100%',
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    borderRadius: 2,
   },
 });

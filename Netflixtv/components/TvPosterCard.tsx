@@ -26,6 +26,7 @@ interface TvPosterCardProps {
   height?: number;
   showBadge?: boolean;
   progressPercentage?: number; // 0-100
+  isLocked?: boolean;
 }
 
 export default function TvPosterCard({ 
@@ -40,6 +41,7 @@ export default function TvPosterCard({
   height = 300,
   showBadge = false,
   progressPercentage,
+  isLocked = false,
 }: TvPosterCardProps) {
   const scale = useSharedValue(1);
   const borderOpacity = useSharedValue(0);
@@ -100,6 +102,12 @@ export default function TvPosterCard({
                 style={styles.nBadgeImage} 
                 contentFit="contain"
               />
+            </View>
+          )}
+
+          {isLocked && (
+            <View style={styles.lockOverlay}>
+              <Text style={{ fontSize: 32 }}>🔒</Text>
             </View>
           )}
           
@@ -232,6 +240,13 @@ const styles = StyleSheet.create({
   nBadgeImage: {
     width: 14,
     height: 22,
+  },
+  lockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 15,
   },
   progressBarContainer: {
     position: 'absolute',

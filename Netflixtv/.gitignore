@@ -11,6 +11,13 @@ npm-debug.*
 *.mobileprovision
 *.orig.*
 web-build/
+serverless
+scratch
+.idea
+.qwen
+**/.cache
+**/.gradle
+**/build
 
 # macOS
 .DS_Store

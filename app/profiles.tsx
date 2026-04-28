@@ -233,7 +233,7 @@ export default function ProfilesScreen() {
                       <Ionicons name="lock-closed" size={32} color="rgba(255,255,255,0.5)" />
                     )}
                   </View>
-                  <Text style={styles.profileName}>{canAddProfile ? 'Add Profile' : 'Upgrade'}</Text>
+                  <Text style={styles.profileName}>{canAddProfile ? 'Add Profile' : 'Upgrade Plan'}</Text>
                 </Pressable>
               </Animated.View>
             )}

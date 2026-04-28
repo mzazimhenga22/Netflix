@@ -3,17 +3,18 @@ import { StyleSheet, View, ActivityIndicator, Modal, Pressable, SafeAreaView } f
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 
-interface PaystackCheckoutModalProps {
+interface PayHeroCheckoutModalProps {
   onSuccess: () => void;
   onClose: () => void;
 }
 
-export interface PaystackCheckoutModalRef {
+export interface PayHeroCheckoutModalRef {
   present: (url: string) => void;
   dismiss: () => void;
 }
 
-export const PaystackCheckoutModal = forwardRef<PaystackCheckoutModalRef, PaystackCheckoutModalProps>(
+export const PayHeroCheckoutModal = forwardRef<PayHeroCheckoutModalRef, PayHeroCheckoutModalProps>(
+
   ({ onSuccess, onClose }, ref) => {
     const [visible, setVisible] = useState(false);
     const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -30,8 +31,12 @@ export const PaystackCheckoutModal = forwardRef<PaystackCheckoutModalRef, Paysta
     }));
 
     const handleNavigationStateChange = (navState: any) => {
-      // Paystack success detection
-      if (navState.url && (navState.url.includes('status=success') || navState.url.includes('trxref='))) {
+      // Success detection for Paystack and Pay Hero
+      if (navState.url && (
+        navState.url.includes('status=success') || 
+        navState.url.includes('trxref=') ||
+        navState.url.includes('lipwa.link/success')
+      )) {
         onSuccess();
       }
     };

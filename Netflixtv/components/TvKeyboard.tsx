@@ -26,19 +26,25 @@ export default function TvKeyboard({ onKeyPress, onBackspace, onClear }: Keyboar
           style={({ focused }) => [styles.specialKey, focused && styles.focusedKey]}
           onPress={() => onKeyPress(' ')}
         >
-          <View style={styles.spaceBarSymbol} />
+          {({ focused }) => (
+            <View style={[styles.spaceBarSymbol, focused && { backgroundColor: 'black' }]} />
+          )}
         </Pressable>
         <Pressable 
           style={({ focused }) => [styles.specialKey, focused && styles.focusedKey]}
           onPress={onBackspace}
         >
-          <Ionicons name="backspace-outline" size={24} color="white" />
+          {({ focused }) => (
+            <Ionicons name="backspace-outline" size={24} color={focused ? 'black' : 'white'} />
+          )}
         </Pressable>
         <Pressable 
           style={({ focused }) => [styles.specialKey, focused && styles.focusedKey]}
           onPress={onClear}
         >
-          <Ionicons name="close-circle-outline" size={24} color="white" />
+          {({ focused }) => (
+            <Ionicons name="close-circle-outline" size={24} color={focused ? 'black' : 'white'} />
+          )}
         </Pressable>
       </View>
 
@@ -50,7 +56,9 @@ export default function TvKeyboard({ onKeyPress, onBackspace, onClear }: Keyboar
               style={({ focused }) => [styles.key, focused && styles.focusedKey]}
               onPress={() => onKeyPress(key)}
             >
-              <Text style={styles.keyText}>{key}</Text>
+              {({ focused }) => (
+                <Text style={[styles.keyText, focused && styles.keyTextFocused]}>{key}</Text>
+              )}
             </Pressable>
           ))}
         </View>
@@ -62,50 +70,56 @@ export default function TvKeyboard({ onKeyPress, onBackspace, onClear }: Keyboar
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    gap: 8,
-    backgroundColor: '#000',
-    borderRadius: 16,
-    padding: 15,
+    padding: 10,
+    backgroundColor: 'transparent',
   },
   topRow: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
+    gap: 10,
+    marginBottom: 10,
   },
   row: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
+    marginBottom: 10,
   },
   key: {
     flex: 1,
-    aspectRatio: 1,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 8,
+    height: 52,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
   specialKey: {
     flex: 1,
-    height: 50,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 8,
+    height: 52,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
   focusedKey: {
-    backgroundColor: 'white',
-    transform: [{ scale: 1.1 }],
+    backgroundColor: 'rgba(255,255,255,1)',
+    borderColor: '#E50914', // Netflix Red accent
   },
   keyText: {
-    color: 'white',
-    fontSize: 20,
-    fontWeight: '600',
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 22,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  keyTextFocused: {
+    color: '#000',
   },
   spaceBarSymbol: {
-    width: 30,
-    height: 4,
-    backgroundColor: 'white',
+    width: 24,
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.8)',
     borderRadius: 2,
-    marginTop: 10,
   }
 });

@@ -8,6 +8,7 @@ import { fetchPopular, getImageUrl, getBackdropUrl, searchMulti } from '../servi
 import { SearchService } from '../services/SearchService';
 import { NetflixLoader } from '../components/NetflixLoader';
 import { useProfile } from '../context/ProfileContext';
+import { isContentLockedForFreePlan } from '../services/AccessControl';
 import Animated, { 
   FadeIn, 
   useSharedValue, 
@@ -30,6 +31,16 @@ export default function SearchScreen() {
   
   const { selectedProfile } = useProfile();
   const isKids = selectedProfile?.isKids || false;
+  
+  const [isFreePlan, setIsFreePlan] = useState(false);
+
+  useEffect(() => {
+    const { SubscriptionService } = require('../services/SubscriptionService');
+    const unsub = SubscriptionService.listenToSubscription((sub: any) => {
+      setIsFreePlan(sub.status !== 'active');
+    });
+    return () => unsub();
+  }, []);
   
   const searchBarWidth = useSharedValue(width - 32);
 
@@ -136,11 +147,14 @@ export default function SearchScreen() {
         ) : null}
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {!searchQuery ? (
-          <>
-            {/* Recent Searches Section */}
-            {recentSearches.length > 0 && (
+      {!searchQuery ? (
+        <FlatList
+          data={topSearches}
+          keyExtractor={(item) => item.id.toString()}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+          ListHeaderComponent={
+            recentSearches.length > 0 ? (
               <View style={[styles.section, { marginBottom: 20 }]}>
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>Recent Searches</Text>
@@ -160,73 +174,129 @@ export default function SearchScreen() {
                   ))}
                 </ScrollView>
               </View>
-            )}
-
-            {/* Top Searches List */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Top Searches</Text>
-              {topSearches.map((item) => (
-                <Pressable 
-                  key={item.id} 
-                  style={styles.searchItem}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    router.push({
-                      pathname: "/movie/[id]",
-                      params: { id: item.id.toString(), type: 'movie' }
-                    });
-                  }}
-                >
-                  <Image 
-                    source={{ uri: getBackdropUrl(item.backdrop_path) }} 
-                    style={styles.searchItemImage} 
-                  />
-                  <View style={styles.searchItemInfo}>
-                    <Text style={styles.searchItemTitle} numberOfLines={2}>
-                      {item.title}
-                    </Text>
-                  </View>
-                  <Pressable onPress={(e) => {
-                    e.stopPropagation();
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                    router.push({ pathname: "/movie/[id]", params: { id: item.id.toString(), type: 'movie', autoplay: 'true' }});
-                  }}>
-                    <Ionicons name="play-circle-outline" size={32} color="#fff" style={styles.playIcon} />
-                  </Pressable>
+            ) : null
+          }
+          ListHeaderComponentStyle={{ paddingBottom: 10 }}
+          ListEmptyComponent={
+             <View style={styles.section}><Text style={styles.sectionTitle}>Top Searches</Text></View>
+          }
+          renderItem={({ item }) => {
+            const isLocked = isContentLockedForFreePlan(item.id, isFreePlan);
+            
+            return (
+              <Pressable 
+                style={styles.searchItem}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  if (isLocked) {
+                    const { Alert } = require('react-native');
+                    Alert.alert(
+                      'Upgrade Required',
+                      'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Upgrade', onPress: () => router.push('/subscription') }
+                      ]
+                    );
+                    return;
+                  }
+                  router.push({
+                    pathname: "/movie/[id]",
+                    params: { id: item.id.toString(), type: 'movie' }
+                  });
+                }}
+              >
+                <Image 
+                  source={{ uri: getBackdropUrl(item.backdrop_path) }} 
+                  style={styles.searchItemImage} 
+                />
+                <View style={styles.searchItemInfo}>
+                  <Text style={styles.searchItemTitle} numberOfLines={2}>
+                    {item.title}
+                  </Text>
+                </View>
+                <Pressable onPress={(e) => {
+                  e.stopPropagation();
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                  if (isLocked) {
+                    const { Alert } = require('react-native');
+                    Alert.alert(
+                      'Upgrade Required',
+                      'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Upgrade', onPress: () => router.push('/subscription') }
+                      ]
+                    );
+                    return;
+                  }
+                  router.push({ pathname: "/movie/[id]", params: { id: item.id.toString(), type: 'movie', autoplay: 'true' }});
+                }}>
+                  <Ionicons name="play-circle-outline" size={32} color="#fff" style={styles.playIcon} />
                 </Pressable>
-              ))}
+              </Pressable>
+            );
+          }}
+        />
+      ) : (
+        <View style={styles.resultsGrid}>
+          {loading ? (
+            <View style={{ marginTop: 50, alignItems: 'center' }}>
+               <NetflixLoader size={40} />
             </View>
-          </>
-        ) : (
-          <View style={styles.resultsGrid}>
-            {loading ? (
-              <View style={{ marginTop: 50, alignItems: 'center' }}>
-                 <NetflixLoader size={40} />
-              </View>
-            ) : (
-              <View style={styles.grid}>
-                {searchResults.map((item, index) => (
+          ) : (
+            <FlatList
+              key={`grid-${Math.max(3, Math.floor((width - 16) / 110))}`}
+              data={searchResults}
+              keyExtractor={(item) => item.id.toString()}
+              numColumns={Math.max(3, Math.floor((width - 16) / 110))}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.listContent}
+              columnWrapperStyle={styles.columnWrapper}
+              renderItem={({ item, index }) => {
+                const isLocked = isContentLockedForFreePlan(item.id, isFreePlan);
+                
+                const numCols = Math.max(3, Math.floor((width - 16) / 110));
+                const itemWidth = (width - 16 - (8 * (numCols - 1))) / numCols;
+                
+                return (
                   <Animated.View 
-                    key={item.id} 
-                    entering={FadeIn.delay(index * 30)}
-                    style={[styles.gridItem, { width: (width - 32) / 3, aspectRatio: 2/3 }]}
+                    entering={FadeIn.delay((index % 15) * 30)}
+                    style={[styles.gridItem, { width: itemWidth, aspectRatio: 2/3 }]}
                   >
                     <Pressable onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if (isLocked) {
+                        const { Alert } = require('react-native');
+                        Alert.alert(
+                          'Upgrade Required',
+                          'This content is locked on the Free Plan. Upgrade your subscription to watch.',
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Upgrade', onPress: () => router.push('/subscription') }
+                          ]
+                        );
+                        return;
+                      }
                       router.push({
                         pathname: "/movie/[id]",
                         params: { id: item.id.toString(), type: item.media_type || 'movie' }
                       });
                     }}>
                       <Image source={{ uri: getImageUrl(item.poster_path) }} style={styles.gridImage} />
+                      {isLocked && (
+                        <View style={{...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'}}>
+                          <Text style={{fontSize: 24}}>🔒</Text>
+                        </View>
+                      )}
                     </Pressable>
                   </Animated.View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-      </ScrollView>
+                );
+              }}
+            />
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -271,6 +341,9 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 40,
+  },
+  listContent: {
+    paddingBottom: 60,
   },
   section: {
     marginTop: 10,
@@ -326,6 +399,10 @@ const styles = StyleSheet.create({
   },
   playIcon: {
     paddingHorizontal: 16,
+  },
+  columnWrapper: {
+    gap: 8,
+    paddingHorizontal: 8,
   },
   grid: {
     flexDirection: 'row',

@@ -54,24 +54,34 @@ serve(async (req) => {
   }
 
   const payload = JSON.parse(bodyText);
-  const eventName = payload.event;
   
-  // Paystack sends 'subscription.create' or 'charge.success'
-  if (eventName === "charge.success" || eventName === "subscription.create") {
-    const customerEmail = payload.data.customer.email;
-    // We can find the user by email in Firestore or use metadata
-    // For simplicity in this demo, we assume the customer email matches a user.
-    // In production, you'd pass the UID in metadata.
-    
-    // We'll try to find the user_id if we passed it in metadata during init
+  // 1. Paystack Handling
+  if (payload.event === "charge.success" || payload.event === "subscription.create") {
     const userId = payload.data.metadata?.custom_fields?.find((f: any) => f.variable_name === 'user_id')?.value;
-    
     if (userId) {
       const planName = payload.data.plan?.name || "Premium Plan";
       const planCode = payload.data.plan?.plan_code || "standard";
-      
       await updateFirestore(userId, planCode, planName);
       console.log(`[Webhook] Paystack activated subscription for user: ${userId}`);
+    }
+  } 
+  // 2. Pay Hero Handling
+  else if (payload.Reference || payload.ReferenceID) {
+    const userId = payload.Reference || payload.ReferenceID;
+    const resultCode = payload.ResultCode;
+    
+    if (resultCode === 0) {
+      // Pay Hero success
+      const amount = payload.Amount;
+      // Map amount to plan
+      let planId = "basic";
+      let planName = "Basic Plan";
+      
+      if (amount >= 700) { planId = "premium"; planName = "Premium Plan"; }
+      else if (amount >= 500) { planId = "standard"; planName = "Standard Plan"; }
+      
+      await updateFirestore(userId, planId, planName);
+      console.log(`[Webhook] Pay Hero activated subscription for user: ${userId} (${amount} KES)`);
     }
   }
 

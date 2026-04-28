@@ -45,10 +45,7 @@ const ClipCard = ({ item, width }: { item: ClipItem, width: number }) => {
 
   const handlePress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({
-      pathname: '/(tabs)/new',
-      params: { tab: 'discovery', clipId: item.id }
-    });
+    router.navigate('/(tabs)/clips');
   };
 
   return (

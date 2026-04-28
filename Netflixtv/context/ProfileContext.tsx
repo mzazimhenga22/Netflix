@@ -2,15 +2,13 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { 
-  collection, 
-  getDocs, 
-  addDoc, 
-  setDoc, 
-  doc, 
-  deleteDoc, 
+import {
+  collection,
+  addDoc,
+  setDoc,
+  doc,
+  deleteDoc,
   onSnapshot,
-  query 
 } from 'firebase/firestore';
 
 export interface Profile {
@@ -21,6 +19,7 @@ export interface Profile {
   isLocked?: boolean;
   pin?: string;
   isKids?: boolean;
+  maturityLevel?: 'G' | 'PG' | 'TV-14' | 'MA';
 }
 
 const AVATAR_MAP: Record<string, any> = {
@@ -36,20 +35,12 @@ const AVATAR_MAP: Record<string, any> = {
   avatar10: require('../assets/avatars/avatar10.png'),
 };
 
-const DEFAULT_PROFILES: Profile[] = [
-  { id: '1', name: 'Brian', avatar: AVATAR_MAP.avatar1, avatarId: 'avatar1', isLocked: false },
-  { id: '2', name: 'Addams', avatar: AVATAR_MAP.avatar2, avatarId: 'avatar2', isLocked: false },
-  { id: '3', name: 'Saurabh', avatar: AVATAR_MAP.avatar3, avatarId: 'avatar3', isLocked: false },
-  { id: '4', name: 'Money', avatar: AVATAR_MAP.avatar4, avatarId: 'avatar4', isLocked: true, pin: '1234' },
-  { id: '5', name: 'Kids', avatar: AVATAR_MAP.avatar5, avatarId: 'avatar5', isLocked: false, isKids: true },
-];
-
 interface ProfileContextType {
   profiles: Profile[];
   selectedProfile: Profile | null;
   selectProfile: (profile: Profile) => void;
-  addProfile: (name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean) => void;
-  updateProfile: (id: string, name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean) => void;
+  addProfile: (name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean, maturityLevel?: string) => void;
+  updateProfile: (id: string, name: string, avatarId: string, isLocked?: boolean, pin?: string, isKids?: boolean, maturityLevel?: string) => void;
   deleteProfile: (id: string) => void;
   isLoading: boolean;
   canAddProfile: boolean;
@@ -75,6 +66,7 @@ export function useProfile() {
 }
 
 const SELECTED_PROFILE_KEY = 'netflix_selected_profile_id';
+const getProfilesCacheKey = (uid: string) => `netflix_profiles_cache_${uid}`;
 
 export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -83,11 +75,28 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const [maxProfilesAllowed, setMaxProfilesAllowed] = useState(5);
 
   useEffect(() => {
-    const unsub = SubscriptionService.listenToSubscription((sub) => {
-      const limit = PLAN_PROFILE_LIMITS[sub?.planId || 'none'] || 2;
-      setMaxProfilesAllowed(limit);
+    // Wait for auth to be ready before subscribing to subscription status.
+    // Without this, listenToSubscription fires with no uid, the 15s timeout
+    // triggers, and the TV app incorrectly shows the subscription overlay.
+    let subUnsub: (() => void) | null = null;
+
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      // Clean up previous subscription listener on auth state change
+      if (subUnsub) { subUnsub(); subUnsub = null; }
+
+      if (user) {
+        subUnsub = SubscriptionService.listenToSubscription((sub) => {
+          const limit = PLAN_PROFILE_LIMITS[sub?.planId || 'none'] || 2;
+          setMaxProfilesAllowed(limit);
+        });
+      } else {
+        setMaxProfilesAllowed(5);
+      }
     });
-    return () => unsub();
+    return () => {
+      unsubAuth();
+      if (subUnsub) subUnsub();
+    };
   }, []);
 
   // 1. Listen for Auth Changes and Fetch Profiles
@@ -96,11 +105,26 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       const activeUid = user ? user.uid : 'dev-guest';
-      
       setIsLoading(true);
-      
+
       // Clean up previous listener
       if (unsubProfiles) unsubProfiles();
+
+      AsyncStorage.getItem(getProfilesCacheKey(activeUid))
+        .then((cached) => {
+          if (!cached) return;
+          const parsed = JSON.parse(cached) as Omit<Profile, 'avatar'>[];
+          if (!Array.isArray(parsed) || parsed.length === 0) return;
+
+          const cachedProfiles = parsed.map((profile) => ({
+            ...profile,
+            avatar: AVATAR_MAP[profile.avatarId] || AVATAR_MAP.avatar1,
+          }));
+
+          setProfiles(cachedProfiles);
+          setIsLoading(false);
+        })
+        .catch(() => {});
 
       const profilesCol = collection(db, 'users', activeUid, 'profiles');
       
@@ -116,22 +140,18 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
             avatar: AVATAR_MAP[data.avatarId] || AVATAR_MAP.avatar1,
             isLocked: data.isLocked,
             pin: data.pin,
-            isKids: data.isKids === true || data.isKids === 'true'
+            isKids: data.isKids === true || data.isKids === 'true',
+            maturityLevel: data.maturityLevel || (data.isKids ? 'G' : 'MA')
           });
         });
 
         setProfiles(fetchedProfiles);
-
-        // If no profiles exist, initialize with defaults
-        if (fetchedProfiles.length === 0 && isLoading) {
-           DEFAULT_PROFILES.forEach(p => {
-              setDoc(doc(db, 'users', activeUid, 'profiles', p.id), {
-                 name: p.name,
-                 avatarId: p.avatarId,
-                 isLocked: p.isLocked
-              });
-           });
-        }
+        AsyncStorage.setItem(
+          getProfilesCacheKey(activeUid),
+          JSON.stringify(
+            fetchedProfiles.map(({ avatar, ...profile }) => profile)
+          )
+        ).catch(() => {});
 
         // Restore selected profile from storage if not set in memory
         if (fetchedProfiles.length > 0) {
@@ -145,6 +165,17 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
         setIsLoading(false);
       }, (error) => {
+        AsyncStorage.getItem(getProfilesCacheKey(activeUid))
+          .then((cached) => {
+            if (!cached) return;
+            const parsed = JSON.parse(cached) as Omit<Profile, 'avatar'>[];
+            if (!Array.isArray(parsed)) return;
+            setProfiles(parsed.map((profile) => ({
+              ...profile,
+              avatar: AVATAR_MAP[profile.avatarId] || AVATAR_MAP.avatar1,
+            })));
+          })
+          .catch(() => {});
         setIsLoading(false);
       });
     });
@@ -159,17 +190,23 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     setSelectedProfile(profile);
     await AsyncStorage.setItem(SELECTED_PROFILE_KEY, profile.id);
 
-    // Sync watch history for the newly selected profile
-    try {
-      const { WatchHistoryService } = require('../services/WatchHistoryService');
-      WatchHistoryService.syncWithFirestore(profile.id);
-    } catch (e) {
-      console.error('[ProfileContext] Failed to sync watch history:', e);
-    }
+    // Defer cloud sync so profile selection stays responsive on weak networks.
+    setTimeout(() => {
+      try {
+        const { WatchHistoryService } = require('../services/WatchHistoryService');
+        WatchHistoryService.syncWithFirestore(profile.id);
+      } catch (e) {
+        console.error('[ProfileContext] Failed to sync watch history:', e);
+      }
+    }, 0);
   };
 
-  const addProfile = async (name: string, avatarId: string, isLocked = false, pin = '', isKids = false) => {
+  const addProfile = async (name: string, avatarId: string, isLocked = false, pin = '', isKids = false, maturityLevel?: 'G' | 'PG' | 'TV-14' | 'MA') => {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
+    if (profiles.length >= maxProfilesAllowed) {
+      console.warn('[Profiles] Max profile limit reached:', maxProfilesAllowed);
+      return;
+    }
     try {
       console.log('[Profiles] Adding profile for:', activeUid);
       await addDoc(collection(db, 'users', activeUid, 'profiles'), {
@@ -178,6 +215,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         isLocked,
         pin,
         isKids,
+        maturityLevel: maturityLevel || (isKids ? 'G' : 'MA'),
         createdAt: Date.now()
       });
     } catch (e) {
@@ -185,7 +223,7 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const updateProfile = async (id: string, name: string, avatarId: string, isLocked = false, pin = '', isKids = false) => {
+  const updateProfile = async (id: string, name: string, avatarId: string, isLocked = false, pin = '', isKids = false, maturityLevel?: 'G' | 'PG' | 'TV-14' | 'MA') => {
     const activeUid = auth.currentUser?.uid || 'dev-guest';
     try {
        console.log('[Profiles] Updating profile:', id);
@@ -194,7 +232,8 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         avatarId,
         isLocked,
         pin,
-        isKids
+        isKids,
+        maturityLevel: maturityLevel || (isKids ? 'G' : 'MA')
       }, { merge: true });
     } catch (e) {
       console.error('[Profiles] Update failed:', e);

@@ -1,150 +1,209 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Pressable, Modal, findNodeHandle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, usePathname } from 'expo-router';
-import { useFilter, ContentFilter } from '../context/FilterContext';
 import { useProfile } from '../context/ProfileContext';
+import { usePageColor } from '../context/PageColorContext';
+import { useTvFocusBridge } from '../context/TvFocusBridgeContext';
 import { Image } from 'expo-image';
-import Animated, { FadeInLeft, FadeOutLeft } from 'react-native-reanimated';
+import Animated, { FadeInLeft, FadeOutLeft, FadeIn } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const NAV_ITEMS = [
   { label: 'Search', icon: 'search', path: '/search', type: 'nav' },
-  { label: 'Home', path: '/', type: 'filter', filter: 'all' as ContentFilter },
-  { label: 'Shows', path: '/', type: 'filter', filter: 'tv' as ContentFilter },
-  { label: 'Movies', path: '/', type: 'filter', filter: 'movie' as ContentFilter },
+  { label: 'Home', path: '/', type: 'nav' },
+  { label: 'New & Hot', path: '/new-hot', type: 'nav' },
+  { label: 'Shows', path: '/shows', type: 'nav' },
+  { label: 'Movies', path: '/movies', type: 'nav' },
   { label: 'My Netflix', path: '/my-netflix', type: 'nav' },
-];
+] as const;
 
 export default function TvTopNav() {
   const router = useRouter();
   const pathname = usePathname();
-  const { filter, setFilter } = useFilter();
   const { selectedProfile, profiles, selectProfile } = useProfile();
+  const { pageColor } = usePageColor();
+  const { heroFocusTag, setNavFocusTag } = useTvFocusBridge();
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const navRefs = useRef<Array<any>>([]);
 
-  const handlePress = useCallback((item: typeof NAV_ITEMS[0]) => {
+  const handlePress = useCallback((item: (typeof NAV_ITEMS)[number]) => {
     if (item.type === 'nav') {
-      router.push(item.path as any);
-    } else if (item.type === 'filter') {
-      setFilter(item.filter!);
-      if (pathname !== '/(tabs)' && pathname !== '/' && pathname !== '/index') {
-        router.push('/(tabs)');
-      }
+      // Use navigate for tabs to persist state and prevent full remounts
+      router.navigate(item.path as any);
     }
-  }, [pathname, router, setFilter]);
+  }, [router]);
 
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
 
+  useEffect(() => {
+    const activeIndex = NAV_ITEMS.findIndex((item) => (
+      pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path))
+    ));
+
+    if (activeIndex < 0) return;
+
+    const activeTag = findNodeHandle(navRefs.current[activeIndex]);
+    if (typeof activeTag === 'number') {
+      setNavFocusTag(activeTag);
+    }
+  }, [pathname, setNavFocusTag]);
+
   return (
     <View style={styles.container}>
-      {/* importantForAccessibility ensures individual nav items are focusable, not the container */}
-      {isSidebarOpen && (
-        <Pressable 
-          style={styles.sidebarOverlay} 
-          onPress={() => setIsSidebarOpen(false)}
-        >
-          <Animated.View 
-            entering={FadeInLeft.duration(300)} 
-            exiting={FadeOutLeft.duration(200)}
+      <Modal
+        visible={isSidebarOpen}
+        transparent
+        animationType="none"
+        onRequestClose={() => setIsSidebarOpen(false)}
+      >
+        <View style={styles.sidebarOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setIsSidebarOpen(false)}
+          >
+            <Animated.View entering={FadeIn.duration(400)} style={StyleSheet.absoluteFill}>
+              <LinearGradient
+                colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0.4)', 'transparent']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={StyleSheet.absoluteFill}
+              />
+            </Animated.View>
+          </Pressable>
+
+          <Animated.View
+            entering={FadeInLeft.duration(400).springify().damping(25)}
+            exiting={FadeOutLeft.duration(300)}
             style={styles.sidebar}
           >
-            <View style={styles.sidebarHeader}>
-               <Text style={styles.sidebarTitle}>Switch Profile</Text>
-            </View>
-            <View style={styles.sidebarProfiles}>
-              {profiles.map((p) => (
+            <LinearGradient
+              colors={['#141414', '#000000']}
+              style={StyleSheet.absoluteFill}
+            />
+
+            <View style={styles.sidebarInner}>
+              <View style={styles.sidebarHeader}>
+                <Text style={styles.sidebarTitle}>Switch Profile</Text>
+              </View>
+              <View style={styles.sidebarProfiles}>
+                {profiles.map((p) => (
+                  <Pressable
+                    key={p.id}
+                    style={({ focused }) => [
+                      styles.sidebarProfileItem,
+                      focused && styles.sidebarProfileItemFocused,
+                      p.id === selectedProfile?.id && styles.sidebarProfileItemActive
+                    ]}
+                    onPress={() => {
+                      selectProfile(p);
+                      setIsSidebarOpen(false);
+                    }}
+                  >
+                    <Image source={p.avatar} style={styles.sidebarAvatar} contentFit="cover" />
+                    <Text style={styles.sidebarProfileName}>{p.name}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={styles.sidebarFooter}>
                 <Pressable
-                  key={p.id}
-                  style={({ focused }) => [
-                    styles.sidebarProfileItem,
-                    focused && styles.sidebarProfileItemFocused,
-                    p.id === selectedProfile?.id && styles.sidebarProfileItemActive
-                  ]}
+                  style={({ focused }) => [styles.exitBtn, focused && styles.exitBtnFocused]}
                   onPress={() => {
-                    selectProfile(p);
                     setIsSidebarOpen(false);
+                    router.replace('/profiles');
                   }}
                 >
-                  <Image source={p.avatar} style={styles.sidebarAvatar} contentFit="cover" />
-                  <Text style={styles.sidebarProfileName}>{p.name}</Text>
+                  <Ionicons name="people-outline" size={24} color="white" />
+                  <Text style={styles.exitBtnText}>Manage Profiles</Text>
                 </Pressable>
-              ))}
-            </View>
-            <View style={styles.sidebarFooter}>
-               <Pressable 
-                style={({ focused }) => [styles.exitBtn, focused && styles.exitBtnFocused]}
-                onPress={() => router.replace('/')}
-               >
-                 <Ionicons name="exit-outline" size={24} color="white" />
-                 <Text style={styles.exitBtnText}>Exit Profiles</Text>
-               </Pressable>
+              </View>
             </View>
           </Animated.View>
-        </Pressable>
-      )}
+        </View>
+      </Modal>
 
-      {/* Left Section: Profile Icon */}
       <View style={styles.leftSection}>
-        <Pressable 
+        <Pressable
           onPress={toggleSidebar}
           style={({ focused }) => [styles.profileBtn, focused && styles.profileBtnFocused]}
         >
-          <Image 
-            source={selectedProfile?.avatar} 
-            style={styles.profileBox} 
+          <Image
+            source={selectedProfile?.avatar}
+            style={styles.profileBox}
             contentFit="cover"
           />
           <Ionicons name="caret-down" size={12} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />
         </Pressable>
       </View>
 
-      {/* Center Section: Navigation */}
-      <View style={styles.navContent}>
-        {NAV_ITEMS.map((item, index) => {
-          const isHomeRoute = pathname === '/' || pathname === '/index' || pathname === '(tabs)';
-          const isFilterActive = item.type === 'filter' && filter === item.filter && isHomeRoute;
-          const isNavActive = item.type === 'nav' && (pathname === item.path || pathname.includes(item.path));
-          const isActive = isFilterActive || isNavActive;
-          const isFocused = focusedIndex === index;
+      <View style={styles.navShell}>
+        <LinearGradient
+          colors={['rgba(0,0,0,0.18)', `${pageColor}AA`, 'rgba(0,0,0,0.3)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
 
-          return (
-            <Pressable
-              key={item.label}
-              onFocus={() => setFocusedIndex(index)}
-              onBlur={() => setFocusedIndex(null)}
-              onPress={() => handlePress(item)}
-              style={({ focused }) => [
-                styles.navItem,
-                isActive && styles.navItemActive,
-                focused && styles.navItemFocused,
-                item.label === 'Search' && styles.searchNavItem
-              ]}
-            >
-              {item.label === 'Search' ? (
-                <Ionicons 
-                  name="search" 
-                  size={24} 
-                  color={isActive ? '#000' : (isFocused ? '#fff' : 'rgba(255,255,255,0.8)')} 
-                />
-              ) : (
-                <Text style={[
-                  styles.navLabel,
-                  isActive && styles.navLabelActive,
-                  isFocused && !isActive && styles.navLabelFocused
-                ]}>
-                  {item.label}
-                </Text>
-              )}
-            </Pressable>
-          );
-        })}
+        <View style={styles.navContent}>
+          {NAV_ITEMS.map((item, index) => {
+            const isActive = pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path));
+            const isFocused = focusedIndex === index;
+
+            return (
+              <Pressable
+                key={item.label}
+                ref={(node) => {
+                  navRefs.current[index] = node;
+                }}
+                onFocus={() => {
+                  setFocusedIndex(index);
+                  const tag = findNodeHandle(navRefs.current[index]);
+                  if (typeof tag === 'number') {
+                    setNavFocusTag(tag);
+                  }
+                }}
+                onBlur={() => setFocusedIndex(null)}
+                onPress={() => handlePress(item)}
+                nextFocusDown={heroFocusTag ?? undefined}
+                style={styles.navItemContainer}
+              >
+                {({ focused }) => (
+                  <Animated.View
+                    entering={FadeIn.duration(300)}
+                    style={[
+                      styles.navItem,
+                      isActive && styles.navItemActive,
+                      focused && styles.navItemFocused,
+                      item.label === 'Search' && styles.searchNavItem
+                    ]}
+                  >
+                    {item.label === 'Search' ? (
+                      <Ionicons
+                        name="search"
+                        size={24}
+                        color={isActive ? '#050505' : (isFocused ? '#fff' : 'rgba(255,255,255,0.8)')}
+                      />
+                    ) : (
+                      <Text style={[
+                        styles.navLabel,
+                        isActive && styles.navLabelActive,
+                        isFocused && !isActive && styles.navLabelFocused
+                      ]}>
+                        {item.label}
+                      </Text>
+                    )}
+                  </Animated.View>
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
-      
-      {/* Right Section: Logo */}
+
       <View style={styles.rightSection}>
-        <Image 
-          source={require('../assets/images/netflix-n-logo.svg')} 
+        <Image
+          source={require('../assets/images/netflix-n-logo.svg')}
           style={styles.nLogo}
           contentFit="contain"
         />
@@ -168,38 +227,60 @@ const styles = StyleSheet.create({
   leftSection: {
     flexDirection: 'row',
     alignItems: 'center',
+    minWidth: 84,
+  },
+  navShell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(10,10,10,0.5)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 8,
+    paddingHorizontal: 10,
+    minHeight: 56,
   },
   navContent: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'transparent',
-    gap: 30,
+    gap: 8, // Tighter gap for animated items
+  },
+  navItemContainer: {
+    borderRadius: 30,
+    overflow: 'hidden',
   },
   navItem: {
     paddingVertical: 10,
-    paddingHorizontal: 25,
+    paddingHorizontal: 22,
     borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
     minWidth: 60,
+    backgroundColor: 'transparent', // Default
   },
   searchNavItem: {
     paddingHorizontal: 15,
   },
   navItemFocused: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    transform: [{ scale: 1.04 }],
   },
   navItemActive: {
     backgroundColor: '#fff',
   },
   navLabel: {
     color: 'rgba(255,255,255,0.8)',
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '600',
+    letterSpacing: 0.3,
   },
   navLabelActive: {
-    color: '#000',
-    fontWeight: 'bold',
+    color: '#050505',
+    fontWeight: '800',
   },
   navLabelFocused: {
     color: '#fff',
@@ -207,13 +288,19 @@ const styles = StyleSheet.create({
   rightSection: {
     justifyContent: 'center',
     alignItems: 'center',
+    minWidth: 84,
   },
   profileBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
   profileBtnFocused: {
-    transform: [{ scale: 1.1 }],
+    transform: [{ scale: 1.06 }],
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   profileBox: {
     width: 32,
@@ -234,10 +321,18 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
-    width: 300,
+    width: 450,
     backgroundColor: '#141414',
-    padding: 30,
     zIndex: 2001,
+    shadowColor: '#000',
+    shadowOffset: { width: 10, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  sidebarInner: {
+    flex: 1,
+    padding: 60,
   },
   sidebarHeader: {
     marginBottom: 40,

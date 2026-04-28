@@ -6,7 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { SubscriptionService } from '../services/SubscriptionService';
 import * as Haptics from 'expo-haptics';
 import { auth } from '../services/firebase';
-import { PaystackCheckoutModal, PaystackCheckoutModalRef } from '../components/PaystackCheckoutModal';
+import { PayHeroCheckoutModal, PayHeroCheckoutModalRef } from '../components/PaystackCheckoutModal';
+
 
 const PLANS = [
   {
@@ -47,7 +48,8 @@ export default function SubscriptionScreen() {
   const [isLoading, setIsLoading] = useState(false);
   
   // Ref for the Native Modal
-  const checkoutModalRef = useRef<PaystackCheckoutModalRef>(null);
+  const checkoutModalRef = useRef<PayHeroCheckoutModalRef>(null);
+
 
   const handleSelectPlan = (plan: any) => {
     Haptics.selectionAsync();
@@ -65,12 +67,10 @@ export default function SubscriptionScreen() {
       setIsLoading(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       
-      // Initialize transaction via Paystack
-      const url = await SubscriptionService.initializePaystackTransaction(
+      // Initialize transaction via Pay Hero
+      const url = await SubscriptionService.initializePayHeroTransaction(
         user.uid,
-        user.email, 
-        selectedPlan.amount,
-        selectedPlan.planCode
+        selectedPlan.amount
       );
 
       setIsLoading(false);
@@ -168,7 +168,7 @@ export default function SubscriptionScreen() {
 
       <View style={styles.footer}>
         <Text style={styles.termsText}>
-          By continuing, you agree to our Terms of Use and Privacy Statement. You will be billed securely via Paystack.
+          By continuing, you agree to our Terms of Use and Privacy Statement. You will be billed securely via Pay Hero / M-Pesa.
         </Text>
         <Pressable 
           style={[styles.payButton, isLoading && { opacity: 0.6 }]} 
@@ -179,12 +179,13 @@ export default function SubscriptionScreen() {
         </Pressable>
       </View>
 
-      {/* Paystack Native Modal WebView */}
-      <PaystackCheckoutModal
+      {/* PayHero Native Modal WebView */}
+      <PayHeroCheckoutModal
         ref={checkoutModalRef}
         onSuccess={handlePaymentSuccess}
         onClose={() => {}}
       />
+
     </SafeAreaView>
   );
 }

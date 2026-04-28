@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Pressable, Dimensions, StatusBar } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Pressable, Dimensions, StatusBar, Modal, Switch } from 'react-native';
 import { COLORS, SPACING } from '../../constants/theme';
 import { HorizontalCarousel } from '../../components/HorizontalCarousel';
 import { fetchPopular, getImageUrl, getBackdropUrl } from '../../services/tmdb';
@@ -29,7 +29,8 @@ const { width } = Dimensions.get('window');
 import { auth, db } from '../../services/firebase';
 import { signOut } from 'firebase/auth';
 import { doc, updateDoc, getDoc } from 'firebase/firestore';
-import { Alert } from 'react-native';
+import { Alert, TextInput } from 'react-native';
+import Constants from 'expo-constants';
 
 const SMART_ACTIONS = [
   { id: '1', title: 'Notifications', icon: 'notifications', color: '#e50914', badge: '3' },
@@ -41,81 +42,49 @@ const SMART_ACTIONS = [
 
 export default function MyNetflixScreen() {
   const router = useRouter();
-  const { selectedProfile } = useProfile();
+  const { selectedProfile, updateProfileSettings } = useProfile();
   const { setThemeColor } = useTheme();
   const [myList, setMyList] = useState<any[]>([]);
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isLinking, setIsLinking] = useState(false);
   const [activeListFilter, setActiveListFilter] = useState<'All' | 'Movies' | 'TV Shows' | 'Started'>('All');
+  const [tvLinkCode, setTvLinkCode] = useState('');
+  const [showTvLinkModal, setShowTvLinkModal] = useState(false);
   
   const handleLinkTV = () => {
-    Alert.prompt(
-      "Link TV",
-      "Enter the 8-digit code shown on your TV screen (e.g. 1234-5678)",
-      [
-        { text: "Cancel", style: "cancel" },
-        { 
-          text: "Link", 
-          onPress: async (code?: string) => {
-            if (!code) return;
-            const formattedCode = code.trim();
-            setIsLinking(true);
-            try {
-              const codeDoc = await getDoc(doc(db, 'tv_codes', formattedCode));
-              if (codeDoc.exists()) {
-                // In this implementation, we need to pass credentials
-                // Typically you'd prompt for password again or use a secure token
-                // For now, we'll assume the user is signed in and we'll use a placeholder
-                // or the actual credentials if we had them stored. 
-                // Since Firebase doesn't let us retrieve the password, 
-                // we'll prompt the user for their password to confirm linking.
-                confirmLinkWithPassword(formattedCode);
-              } else {
-                Alert.alert("Error", "Invalid code. Please check your TV screen.");
-              }
-            } catch (err) {
-              console.error(err);
-              Alert.alert("Error", "Failed to connect to TV.");
-            } finally {
-              setIsLinking(false);
-            }
-          } 
-        }
-      ]
-    );
+    setTvLinkCode('');
+    setShowTvLinkModal(true);
   };
 
-  const confirmLinkWithPassword = (code: string) => {
-    Alert.prompt(
-      "Confirm Linking",
-      "Please enter your Netflix password to authorize this TV.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Authorize",
-          onPress: async (password?: string) => {
-            if (!password) return;
-            try {
-              const userEmail = auth.currentUser?.email;
-              if (!userEmail) throw new Error("No user logged in");
-
-              await updateDoc(doc(db, 'tv_codes', code), {
-                status: 'authorized',
-                email: userEmail,
-                password: password, // The TV app will use this to sign in
-                authorizedAt: new Date()
-              });
-              Alert.alert("Success", "Your TV is now linked!");
-            } catch (err) {
-              console.error(err);
-              Alert.alert("Error", "Authorization failed.");
-            }
-          }
-        }
-      ],
-      "secure-text"
-    );
+  const confirmLinkTV = async () => {
+    const formattedCode = tvLinkCode.trim();
+    if (!formattedCode) return;
+    setShowTvLinkModal(false);
+    setIsLinking(true);
+    try {
+      const codeDoc = await getDoc(doc(db, 'tv_codes', formattedCode));
+      if (codeDoc.exists()) {
+        const userEmail = auth.currentUser?.email;
+        const uid = auth.currentUser?.uid;
+        if (!userEmail || !uid) throw new Error('No user logged in');
+        // Only store uid for the TV app to use for auth — NEVER the password
+        await updateDoc(doc(db, 'tv_codes', formattedCode), {
+          status: 'authorized',
+          email: userEmail,
+          uid,
+          authorizedAt: new Date()
+        });
+        Alert.alert('Success', 'Your TV is now linked!');
+      } else {
+        Alert.alert('Error', 'Invalid code. Please check your TV screen.');
+      }
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Error', 'Failed to connect to TV.');
+    } finally {
+      setIsLinking(false);
+    }
   };
   
   const scrollY = useSharedValue(0);
@@ -136,7 +105,14 @@ export default function MyNetflixScreen() {
   );
 
   useEffect(() => {
-    if (!selectedProfile) return;
+    if (!selectedProfile) {
+      setMyList([]);
+      setContinueWatching([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
 
     // 1. My List Subscription
     const unsubList = MyListService.subscribeToList(selectedProfile.id, (items: any[]) => {
@@ -183,6 +159,7 @@ export default function MyNetflixScreen() {
 
   const showContinueWatching = continueWatching.length > 0 && (activeListFilter === 'All' || activeListFilter === 'Started');
   const showMyList = activeListFilter !== 'Started';
+  const spatialEnabled = selectedProfile?.settings?.spatialMode !== false;
 
   return (
     <View style={styles.container}>
@@ -259,6 +236,7 @@ export default function MyNetflixScreen() {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     if (action.id === '1') router.push('/notifications');
                     if (action.id === '2') router.push('/downloads');
+                    if (action.id === '3') router.push('/my-list' as any);
                     if (action.id === '5') handleLinkTV();
                     if (action.id === '4') router.push('/account');
                   }}
@@ -294,6 +272,25 @@ export default function MyNetflixScreen() {
           ))}
         </ScrollView>
 
+        <View style={styles.preferenceCard}>
+          <View style={styles.preferenceCopy}>
+            <Text style={styles.preferenceTitle}>Spatial Hero Motion</Text>
+            <Text style={styles.preferenceBody}>
+              Turn the 3D home hero motion on or off for this profile.
+            </Text>
+          </View>
+          <Switch
+            value={spatialEnabled}
+            onValueChange={(value) => {
+              if (!selectedProfile) return;
+              Haptics.selectionAsync();
+              updateProfileSettings(selectedProfile.id, { spatialMode: value });
+            }}
+            trackColor={{ false: 'rgba(255,255,255,0.18)', true: 'rgba(229,9,20,0.5)' }}
+            thumbColor={spatialEnabled ? '#E50914' : '#f4f3f4'}
+          />
+        </View>
+
         {/* Personalized Feed Rows */}
         <View style={styles.contentRows}>
           {showContinueWatching && (
@@ -322,7 +319,9 @@ export default function MyNetflixScreen() {
                   <Text style={styles.cwTitle} numberOfLines={1}>{continueWatching[0].title}</Text>
                   <Text style={styles.cwSubtitle}>Continue watching</Text>
                   <View style={styles.cwProgressBackground}>
-                    <View style={[styles.cwProgressFill, { width: `${(continueWatching[0].currentTime / continueWatching[0].duration) * 100}%` }]} />
+                    <View style={[styles.cwProgressFill, { 
+                      width: `${Math.min(100, ((continueWatching[0].currentTime || 0) / (continueWatching[0].duration || 1)) * 100)}%` 
+                    }]} />
                   </View>
                 </View>
               </Pressable>
@@ -351,10 +350,38 @@ export default function MyNetflixScreen() {
           )}
         </View>
 
-        <Text style={styles.footerInfo}>Version 1.0.0 (2026.03.24)</Text>
+        <Text style={styles.footerInfo}>Version {Constants.expoConfig?.version || '1.0.0'}</Text>
         <Text style={styles.footerSignature}>made by mzazimhenga ❤️</Text>
         <View style={{ height: 120 }} />
       </Animated.ScrollView>
+
+      {/* TV Link Modal — cross-platform replacement for Alert.prompt */}
+      <Modal visible={showTvLinkModal} transparent animationType="fade" onRequestClose={() => setShowTvLinkModal(false)}>
+        <Pressable style={styles.tvModalOverlay} onPress={() => setShowTvLinkModal(false)}>
+          <Pressable style={styles.tvModalBox} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.tvModalTitle}>Link TV</Text>
+            <Text style={styles.tvModalSubtitle}>Enter the code shown on your TV screen</Text>
+            <TextInput
+              style={styles.tvModalInput}
+              value={tvLinkCode}
+              onChangeText={setTvLinkCode}
+              placeholder="e.g. 1234-5678"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoCapitalize="characters"
+              keyboardType="default"
+              maxLength={9}
+            />
+            <View style={styles.tvModalButtons}>
+              <Pressable style={styles.tvModalCancel} onPress={() => setShowTvLinkModal(false)}>
+                <Text style={styles.tvModalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={styles.tvModalConfirm} onPress={confirmLinkTV}>
+                <Text style={styles.tvModalConfirmText}>Link</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Menu Bottom Sheet */}
       <BottomSheet
@@ -504,6 +531,34 @@ const styles = StyleSheet.create({
   bentoSection: {
     paddingHorizontal: 16,
     marginBottom: 30,
+  },
+  preferenceCard: {
+    marginHorizontal: 16,
+    marginBottom: 28,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  preferenceCopy: {
+    flex: 1,
+  },
+  preferenceTitle: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  preferenceBody: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 13,
+    lineHeight: 18,
   },
   bentoRow: {
     flexDirection: 'row',
@@ -699,5 +754,75 @@ const styles = StyleSheet.create({
   },
   listFilterTextActive: {
     color: '#000',
+  },
+  tvModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  tvModalBox: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 20,
+    padding: 28,
+    width: '100%',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  tvModalTitle: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '900',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  tvModalSubtitle: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  tvModalInput: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    letterSpacing: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    marginBottom: 24,
+  },
+  tvModalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  tvModalCancel: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+  },
+  tvModalCancelText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  tvModalConfirm: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#e50914',
+    alignItems: 'center',
+  },
+  tvModalConfirmText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
   }
 });
