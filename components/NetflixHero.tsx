@@ -340,7 +340,7 @@ const NetflixHeroComponent = ({ item, onPress, tiltX, tiltY, shineX, sensor, sty
                 <Text style={styles.top10Text}>TOP</Text>
                 <Text style={styles.top10Num}>10</Text>
               </View>
-              <Text style={styles.top10Rank}>#1 in TV Shows Today</Text>
+              <Text style={styles.top10Rank}>#{(Math.abs(parseInt(item.id.toString() || '0')) % 10) + 1} in {item.type === 'tv' ? 'TV Shows' : 'Movies'} Today</Text>
             </View>
 
             <Text style={styles.title} numberOfLines={2}>{item.title.toUpperCase()}</Text>

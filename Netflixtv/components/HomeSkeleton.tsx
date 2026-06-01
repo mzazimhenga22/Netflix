@@ -35,7 +35,7 @@ export default function HomeSkeleton() {
       <Animated.View style={[styles.heroSkeleton, animatedStyle]} />
       
       <ScrollView style={styles.scroll} scrollEnabled={false} showsVerticalScrollIndicator={false}>
-         <View style={{ marginTop: height * 0.7 }}>
+         <View style={{ marginTop: 700 }}>
            {/* Generate Row skeletons mimicking the exact ExpandingRow structure */}
            {[1, 2, 3].map(row => (
              <View key={row} style={styles.row}>
@@ -66,7 +66,7 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: height * 0.85,
+    height: 780,
     backgroundColor: 'rgba(255,255,255,0.05)',
   },
   row: { 

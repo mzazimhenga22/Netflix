@@ -5,9 +5,16 @@ import android.os.Handler
 import android.os.Looper
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -16,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -42,7 +50,153 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.ImageLoader
+import coil.decode.SvgDecoder
 import org.json.JSONObject
+
+/**
+ * Skeleton loading state — matches the React Native HeroSkeleton.tsx shimmer.
+ * Shown while movie data is null / loading.
+ */
+@Composable
+private fun HeroBannerSkeleton() {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val alpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "shimmer_alpha"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 40.dp, vertical = 12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .shadow(20.dp, RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+        ) {
+            // Shimmer background fill
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = alpha * 0.08f))
+            )
+
+            // Gradient overlay
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.4f),
+                                Color.Black.copy(alpha = 0.8f)
+                            )
+                        )
+                    )
+            )
+
+            // Content placeholders — bottom-left
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 40.dp, bottom = 40.dp)
+            ) {
+                // N logo + series badge row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // N logo placeholder
+                    Box(
+                        modifier = Modifier
+                            .width(24.dp)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color.White.copy(alpha = alpha * 0.25f))
+                    )
+                    // "SERIES" text placeholder
+                    Box(
+                        modifier = Modifier
+                            .width(100.dp)
+                            .height(14.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color.White.copy(alpha = alpha * 0.2f))
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(15.dp))
+
+                // Title line 1
+                Box(
+                    modifier = Modifier
+                        .width(400.dp)
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.White.copy(alpha = alpha * 0.3f))
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Title line 2
+                Box(
+                    modifier = Modifier
+                        .width(250.dp)
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.White.copy(alpha = alpha * 0.3f))
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Metadata pills row
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    listOf(120, 60, 80, 50).forEach { w ->
+                        Box(
+                            modifier = Modifier
+                                .width(w.dp)
+                                .height(16.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color.White.copy(alpha = alpha * 0.2f))
+                        )
+                    }
+                }
+            }
+
+            // Bottom-right badge placeholders
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 40.dp, bottom = 40.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(140.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.White.copy(alpha = alpha * 0.2f))
+                )
+                Box(
+                    modifier = Modifier
+                        .width(220.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.White.copy(alpha = alpha * 0.2f))
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -52,16 +206,21 @@ fun TvHeroBanner(
     streamUrl: String? = null,
     streamHeaders: String? = null,
     isFocused: Boolean = false,
-    onColorExtracted: ((Int) -> Unit)? = null
+    isScreenActive: Boolean = true,
+    onColorExtracted: ((Int) -> Unit)? = null,
+    onPlayClick: (() -> Unit)? = null,
+    onMyListClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var movie by remember { mutableStateOf<JSONObject?>(null) }
     var dominantColor by remember { mutableStateOf(Color.Black) }
+    var logoUrl by remember { mutableStateOf<String?>(null) }
     var isVideoReady by remember { mutableStateOf(false) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     LaunchedEffect(movieData) {
         isVideoReady = false
+        logoUrl = null
         if (!movieData.isNullOrEmpty()) {
             try {
                 movie = JSONObject(movieData)
@@ -71,13 +230,53 @@ fun TvHeroBanner(
         }
     }
 
+    LaunchedEffect(movie) {
+        val currentMovie = movie ?: return@LaunchedEffect
+        val id = currentMovie.optString("id", "")
+        val mediaType = currentMovie.optString("media_type", "movie")
+        if (id.isNotEmpty()) {
+            val apiKey = "8baba8ab6b8bbe247645bcae7df63d0d"
+            val url = "https://api.themoviedb.org/3/$mediaType/$id/images?api_key=$apiKey&include_image_language=en,null"
+            
+            Thread {
+                try {
+                    val response = java.net.URL(url).readText()
+                    val json = JSONObject(response)
+                    val logos = json.optJSONArray("logos")
+                    if (logos != null && logos.length() > 0) {
+                        var bestPath = ""
+                        for (i in 0 until logos.length()) {
+                            val l = logos.getJSONObject(i)
+                            if (l.optString("iso_639_1") == "en") {
+                                bestPath = l.optString("file_path", "")
+                                break
+                            }
+                        }
+                        if (bestPath.isEmpty()) bestPath = logos.getJSONObject(0).optString("file_path", "")
+                        
+                        if (bestPath.isNotEmpty()) {
+                            mainHandler.post {
+                                logoUrl = "https://image.tmdb.org/t/p/original$bestPath"
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }.start()
+        }
+    }
+
     // Extract dominant color from backdrop
     LaunchedEffect(movie) {
         val imagePath = movie?.optString("backdrop_path", "").takeUnless { it.isNullOrEmpty() }
             ?: movie?.optString("poster_path", "")
         if (!imagePath.isNullOrEmpty()) {
             try {
-                val imageUrl = "https://image.tmdb.org/t/p/w780$imagePath"
+                // Use w185 (tiny thumbnail) instead of w780 for color extraction.
+                // It's 10x smaller, so it downloads instantly over the network
+                // without sacrificing any color palette accuracy.
+                val imageUrl = "https://image.tmdb.org/t/p/w185$imagePath"
                 val loader = ImageLoader(context)
                 val request = ImageRequest.Builder(context)
                     .data(imageUrl)
@@ -185,13 +384,40 @@ fun TvHeroBanner(
         }
     }
 
+    var videoProgress by remember { mutableStateOf(0f) }
+    LaunchedEffect(isVideoReady, exoPlayer) {
+        val player = exoPlayer
+        if (isVideoReady && player != null) {
+            while (true) {
+                val dur = player.duration
+                if (dur > 0) {
+                    videoProgress = (player.currentPosition.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                }
+                kotlinx.coroutines.delay(100)
+            }
+        } else {
+            videoProgress = 0f
+        }
+    }
+
+    // Pause / resume based on screen visibility (tab switches)
+    LaunchedEffect(isScreenActive, exoPlayer) {
+        val player = exoPlayer ?: return@LaunchedEffect
+        if (!isScreenActive) {
+            try { player.pause() } catch (_: Exception) {}
+        }
+    }
+
     Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .height(450.dp)
+            .fillMaxSize()
             .background(dominantColor)
-            .padding(top = 6.dp)
     ) {
+        // Show skeleton while movie data is loading
+        if (movie == null) {
+            HeroBannerSkeleton()
+            return@Box
+        }
         Crossfade(targetState = movie, animationSpec = tween(1000), label = "hero_bg") { currentMovie ->
             if (currentMovie != null) {
                 val backdropPath = currentMovie.optString("backdrop_path", "")
@@ -202,16 +428,33 @@ fun TvHeroBanner(
                     "https://image.tmdb.org/t/p/w780$posterPath"
                 } else ""
 
+                val kenBurnsTransition = rememberInfiniteTransition(label = "kenBurns")
+                val kenBurnsScale by kenBurnsTransition.animateFloat(
+                    initialValue = 1.0f,
+                    targetValue = 1.08f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(25000),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "kenBurns_scale"
+                )
+
+                var contentVisible by remember { mutableStateOf(false) }
+                LaunchedEffect(currentMovie) {
+                    contentVisible = true
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 40.dp, vertical = 12.dp)
+                        .shadow(20.dp, RoundedCornerShape(24.dp))
                         .border(
                             width = if (isFocused) 2.5.dp else 0.dp,
                             color = if (isFocused) Color.White.copy(alpha = 0.92f) else Color.Transparent,
-                            shape = RoundedCornerShape(16.dp)
+                            shape = RoundedCornerShape(24.dp)
                         )
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(24.dp))
                 ) {
                     // Static backdrop image (always visible as fallback)
                     AsyncImage(
@@ -220,11 +463,11 @@ fun TvHeroBanner(
                             .crossfade(true)
                             .build(),
                         contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().scale(kenBurnsScale),
                         contentScale = ContentScale.Crop
                     )
 
-                    // Bottom gradient
+                    // Bottom gradient for readability
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -233,7 +476,7 @@ fun TvHeroBanner(
                                     colors = listOf(
                                         Color.Transparent,
                                         Color.Transparent,
-                                        Color.Black.copy(alpha = 0.3f),
+                                        Color.Black.copy(alpha = 0.4f),
                                         Color.Black.copy(alpha = 0.85f)
                                     )
                                 )
@@ -271,187 +514,259 @@ fun TvHeroBanner(
                         val popularity = m.optDouble("popularity", 0.0)
 
                         // Left side: N SERIES badge + title + metadata
-                        Column(
+                        AnimatedVisibility(
+                            visible = contentVisible,
+                            enter = slideInVertically(initialOffsetY = { 30 }, animationSpec = tween(800, delayMillis = 150)) + fadeIn(tween(800, delayMillis = 150)),
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .width(520.dp)
-                                .padding(start = 40.dp, bottom = 24.dp),
-                            verticalArrangement = Arrangement.Bottom
+                                .padding(start = 32.dp, bottom = 32.dp)
+                                .align(Alignment.BottomStart)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Column(
+                                verticalArrangement = Arrangement.Bottom
                             ) {
-                                Text(
-                                    text = "N",
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        color = Color(0xFFE50914),
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 28.sp
-                                    )
-                                )
-                                Text(
-                                    text = if (mediaType == "tv") "S E R I E S" else "F I L M",
-                                    style = MaterialTheme.typography.labelLarge.copy(
-                                        color = Color.White.copy(alpha = 0.9f),
-                                        fontWeight = FontWeight.SemiBold,
-                                        letterSpacing = 4.sp,
-                                        fontSize = 14.sp
-                                    )
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.headlineLarge.copy(
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 36.sp,
-                                    lineHeight = 40.sp,
-                                    shadow = androidx.compose.ui.graphics.Shadow(
-                                        color = Color.Black,
-                                        blurRadius = 12f
-                                    )
-                                ),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            // Metadata line: Genre • Year • Rating
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Genre
-                                val genreIds = m.optJSONArray("genre_ids")
-                                val genreMap = mapOf(
-                                    28 to "Action", 12 to "Adventure", 16 to "Animation",
-                                    35 to "Comedy", 80 to "Crime", 99 to "Documentary",
-                                    18 to "Drama", 10751 to "Family", 14 to "Fantasy",
-                                    27 to "Horror", 9648 to "Mystery", 10749 to "Romance",
-                                    878 to "Sci-Fi", 53 to "Thriller", 10752 to "War",
-                                    10759 to "Action", 10762 to "Kids", 10765 to "Sci-Fi"
-                                )
-                                val genres = mutableListOf<String>()
-                                if (genreIds != null) {
-                                    for (gi in 0 until minOf(genreIds.length(), 2)) {
-                                        genreMap[genreIds.optInt(gi)]?.let { genres.add(it) }
-                                    }
-                                }
-                                if (genres.isNotEmpty()) {
-                                    Text(
-                                        text = genres.joinToString(" · "),
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = Color.White.copy(alpha = 0.7f),
-                                            fontSize = 13.sp
-                                        )
-                                    )
-                                    Text(text = "•", style = MaterialTheme.typography.bodyMedium.copy(color = Color.White.copy(alpha = 0.4f)))
-                                }
-                                if (year.isNotEmpty()) {
-                                    Text(text = year, style = MaterialTheme.typography.bodyMedium.copy(color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp))
-                                    Text(text = "•", style = MaterialTheme.typography.bodyMedium.copy(color = Color.White.copy(alpha = 0.4f)))
-                                }
-                                if (voteAvg > 0) {
-                                    Text(
-                                        text = "★ ${String.format("%.1f", voteAvg)}",
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = Color(0xFFFFD700),
-                                            fontSize = 13.sp
-                                        )
-                                    )
-                                }
-                            }
-                        }
-
-                        AnimatedVisibility(
-                            visible = isFocused,
-                            enter = fadeIn(animationSpec = tween(180)),
-                            exit = fadeOut(animationSpec = tween(120))
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(start = 40.dp, bottom = 28.dp),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .background(Color.White)
-                                        .padding(horizontal = 26.dp, vertical = 14.dp)
-                                ) {
-                                    Text(
-                                        text = "Play",
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            color = Color(0xFF090909),
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 18.sp
-                                        )
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .background(Color.White.copy(alpha = 0.16f))
-                                        .border(
-                                            width = 1.dp,
-                                            color = Color.White.copy(alpha = 0.34f),
-                                            shape = RoundedCornerShape(999.dp)
-                                        )
-                                        .padding(horizontal = 24.dp, vertical = 14.dp)
-                                ) {
-                                    Text(
-                                        text = "My List",
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 18.sp
-                                        )
-                                    )
-                                }
-                            }
-                        }
-
-                    // Bottom-right badges area
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 50.dp, bottom = 28.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Top 10 badge (show for high popularity)
-                            if (popularity > 100) {
                                 Row(
-                                    modifier = Modifier
-                                        .background(
-                                            Color(0xFF333333).copy(alpha = 0.85f),
-                                            RoundedCornerShape(4.dp)
-                                        )
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text(
-                                        text = "🔟",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp)
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data("file:///android_asset/images/netflix-n-logo.svg")
+                                            .decoderFactory(SvgDecoder.Factory())
+                                            .build(),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp, 36.dp),
+                                        contentScale = ContentScale.Fit
                                     )
                                     Text(
-                                        text = if (mediaType == "tv") "#1 in TV Shows" else "#1 in Movies",
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
+                                        text = if (mediaType == "tv") "S E R I E S" else "F I L M",
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            color = Color.White.copy(alpha = 0.9f),
+                                            fontWeight = FontWeight.SemiBold,
+                                            letterSpacing = 4.sp,
                                             fontSize = 12.sp
                                         )
                                     )
                                 }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                if (!logoUrl.isNullOrEmpty()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(logoUrl)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = title,
+                                        modifier = Modifier
+                                            .height(100.dp)
+                                            .widthIn(max = 400.dp),
+                                        contentScale = ContentScale.Fit,
+                                        alignment = Alignment.CenterStart
+                                    )
+                                } else {
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.headlineLarge.copy(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 32.sp,
+                                            lineHeight = 36.sp,
+                                            shadow = androidx.compose.ui.graphics.Shadow(
+                                                color = Color.Black,
+                                                blurRadius = 12f
+                                            )
+                                        ),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Metadata line
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val genres = mutableListOf<String>()
+                                    val genreIds = m.optJSONArray("genre_ids")
+                                    if (genreIds != null) {
+                                        for (gi in 0 until minOf(genreIds.length(), 2)) {
+                                            val genreMap = mapOf(
+                                                28 to "Action", 12 to "Adventure", 16 to "Animation",
+                                                35 to "Comedy", 80 to "Crime", 99 to "Documentary",
+                                                18 to "Drama", 10751 to "Family", 14 to "Fantasy",
+                                                27 to "Horror", 9648 to "Mystery", 10749 to "Romance",
+                                                878 to "Sci-Fi", 53 to "Thriller", 10752 to "War"
+                                            )
+                                            genreMap[genreIds.optInt(gi)]?.let { genres.add(it) }
+                                        }
+                                    }
+                                    Text(
+                                        text = genres.joinToString(" · ") + if (year.isNotEmpty()) " · $year" else "",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = Color.White.copy(alpha = 0.8f),
+                                            fontSize = 14.sp
+                                        )
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "HD",
+                                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontSize = 10.sp)
+                                        )
+                                    }
+                                }
+
+                                // Play and My List buttons
+                                Row(
+                                    modifier = Modifier.padding(top = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Play Button
+                                    Surface(
+                                        onClick = { onPlayClick?.invoke() },
+                                        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(4.dp)),
+                                        colors = ClickableSurfaceDefaults.colors(
+                                            containerColor = Color.White,
+                                            contentColor = Color.Black,
+                                            focusedContainerColor = Color.White,
+                                            focusedContentColor = Color.Black
+                                        ),
+                                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text("▶", color = Color.Black, fontSize = 16.sp)
+                                            Text(
+                                                "Play",
+                                                style = MaterialTheme.typography.labelLarge.copy(
+                                                    color = Color.Black,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp
+                                                )
+                                            )
+                                        }
+                                    }
+                                    
+                                    // My List Button
+                                    Surface(
+                                        onClick = { onMyListClick?.invoke() },
+                                        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(4.dp)),
+                                        colors = ClickableSurfaceDefaults.colors(
+                                            containerColor = Color.White.copy(alpha = 0.15f),
+                                            contentColor = Color.White,
+                                            focusedContainerColor = Color.White,
+                                            focusedContentColor = Color.Black
+                                        ),
+                                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text("+", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                                            Text(
+                                                "My List",
+                                                style = MaterialTheme.typography.labelLarge.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Right side: Badges area (Bottom End)
+                        AnimatedVisibility(
+                            visible = contentVisible,
+                            enter = slideInVertically(initialOffsetY = { 30 }, animationSpec = tween(800, delayMillis = 300)) + fadeIn(tween(800, delayMillis = 300)),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 32.dp, bottom = 32.dp)
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Top 10 / Popularity badge
+                                if (popularity > 100) {
+                                    Row(
+                                        modifier = Modifier
+                                            .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(text = "🔟", style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp))
+                                        Text(
+                                            text = if (mediaType == "tv") "#1 in TV Shows" else "#1 in Movies",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                        )
+                                    }
+                                }
+
+                                // Cast badge (mimicking the image)
+                                Row(
+                                    modifier = Modifier
+                                        .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(text = "★", style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontSize = 12.sp))
+                                    Text(
+                                        text = "Top Choice for You",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            color = Color.White,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        // Trailer Progress Indicator
+                        AnimatedVisibility(
+                            visible = isVideoReady,
+                            enter = fadeIn(tween(600)),
+                            exit = fadeOut(tween(400)),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(2.dp)
+                                    .clip(RoundedCornerShape(1.dp))
+                                    .background(Color.White.copy(alpha = 0.2f))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .fillMaxWidth(videoProgress.coerceIn(0f, 1f))
+                                        .background(Color(0xFFE50914))
+                                )
                             }
                         }
 
@@ -491,7 +806,7 @@ fun TvHeroBanner(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 40.dp, vertical = 12.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(24.dp))
         ) {
             AndroidView(
                 factory = { ctx ->

@@ -9,6 +9,7 @@ import { COLORS, SPACING } from '../constants/theme';
 import { useProfile } from '../context/ProfileContext';
 import { MyListService } from '../services/MyListService';
 import { getImageUrl, getBackdropUrl } from '../services/tmdb';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 
 type MyListItem = {
   id: string;
@@ -18,6 +19,63 @@ type MyListItem = {
   backdrop_path?: string | null;
   type?: 'movie' | 'tv';
 };
+
+const MyListCard = React.memo(({ item, cardWidth, posterHeight, onPress }: { 
+  item: MyListItem; 
+  cardWidth: number; 
+  posterHeight: number; 
+  onPress: () => void 
+}) => {
+  const imageUrl = getImageUrl(item.poster_path || null) || getBackdropUrl(item.backdrop_path || null) || '';
+  const isOriginal = parseInt(item.id) % 3 === 0;
+  const scale = useSharedValue(1);
+  const zIndex = useSharedValue(0);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ scale: scale.value }],
+      zIndex: zIndex.value,
+    };
+  });
+
+  const handlePressIn = () => {
+    zIndex.value = 10;
+    scale.value = withSpring(0.95, { damping: 15, stiffness: 300 });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const handlePressOut = () => {
+    zIndex.value = 0;
+    scale.value = withSpring(1, { damping: 15, stiffness: 300 });
+  };
+
+  return (
+    <Animated.View style={[styles.card, { width: cardWidth, height: posterHeight }, animatedStyle]}>
+      <Pressable
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={onPress}
+        style={StyleSheet.absoluteFill}
+      >
+        <Image
+          source={{ uri: imageUrl }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          transition={150}
+        />
+        {isOriginal && (
+          <View style={styles.netflixBadge}>
+            <Image 
+              source={require('../assets/images/netflix-n-logo.svg')} 
+              style={styles.nBadgeImage} 
+              contentFit="contain"
+            />
+          </View>
+        )}
+      </Pressable>
+    </Animated.View>
+  );
+});
 
 export default function MyListScreen() {
   const router = useRouter();
@@ -42,7 +100,7 @@ export default function MyListScreen() {
   }, [selectedProfile]);
 
   const cardWidth = (width - (SPACING.md * 2) - SPACING.sm) / 2;
-  const posterHeight = cardWidth * 1.48;
+  const posterHeight = cardWidth * 1.5;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -50,7 +108,7 @@ export default function MyListScreen() {
         options={{
           title: 'My List',
           headerShown: true,
-          headerStyle: { backgroundColor: COLORS.background },
+          headerStyle: { backgroundColor: '#000000' },
           headerTintColor: 'white',
           headerShadowVisible: false,
           headerLeft: () => (
@@ -79,30 +137,17 @@ export default function MyListScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
           columnWrapperStyle={styles.row}
-          renderItem={({ item, index }) => {
-            const imageUrl = getImageUrl(item.poster_path || null) || getBackdropUrl(item.backdrop_path || null) || '';
-            const title = item.title || item.name || 'Untitled';
+          renderItem={({ item }) => {
             const type = item.type || 'movie';
-
             return (
-              <Pressable
-                style={[styles.card, { width: cardWidth }]}
+              <MyListCard
+                item={item}
+                cardWidth={cardWidth}
+                posterHeight={posterHeight}
                 onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   router.push({ pathname: '/movie/[id]', params: { id: item.id.toString(), type } });
                 }}
-              >
-                <Image
-                  source={{ uri: imageUrl }}
-                  style={[styles.poster, { height: posterHeight }]}
-                  contentFit="cover"
-                  transition={150}
-                />
-                <View style={styles.cardMeta}>
-                  <Text style={styles.cardTitle} numberOfLines={2}>{title}</Text>
-                  <Text style={styles.cardType}>{type === 'tv' ? 'TV Show' : 'Movie'}</Text>
-                </View>
-              </Pressable>
+              />
             );
           }}
         />
@@ -114,7 +159,7 @@ export default function MyListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#000000',
   },
   backButton: {
     marginLeft: 10,
@@ -152,27 +197,20 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   card: {
-    backgroundColor: '#111111',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  poster: {
-    width: '100%',
     backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
   },
-  cardMeta: {
-    padding: 12,
-    gap: 4,
+  netflixBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    zIndex: 5,
   },
-  cardTitle: {
-    color: COLORS.text,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  cardType: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
+  nBadgeImage: {
+    width: 16,
+    height: 24,
   },
 });

@@ -34,7 +34,7 @@ export interface Profile {
   settings?: ProfileSettings;
 }
 
-const AVATAR_MAP: Record<string, any> = {
+export const AVATAR_MAP: Record<string, any> = {
   avatar1: require('../assets/avatars/avatar1.png'),
   avatar2: require('../assets/avatars/avatar2.png'),
   avatar3: require('../assets/avatars/avatar3.png'),
@@ -161,9 +161,16 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
       // Clean up previous listener
       if (unsubProfiles) unsubProfiles();
 
-      AsyncStorage.getItem(profilesCacheKey).then(async (cached) => {
-        if (!cached) return;
+      // Global safety timeout to guarantee loading states transition to false
+      fallbackTimer = setTimeout(() => {
+        console.warn('[ProfileContext] Loading safety timeout triggered, forcing isLoading to false');
+        setIsLoading(false);
+      }, 4000);
+
+      const loadCache = async () => {
         try {
+          const cached = await AsyncStorage.getItem(profilesCacheKey);
+          if (!cached) return;
           const parsed = JSON.parse(cached) as StoredProfile[];
           if (!Array.isArray(parsed) || parsed.length === 0) return;
           const cachedProfiles = parsed.map((profile) => normalizeProfile(profile));
@@ -179,23 +186,30 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
             return cachedProfiles[0] || null;
           });
         } catch (e) {
-          console.warn('[ProfileContext] Failed to restore cached profiles:', e);
+          console.warn('[ProfileContext] Failed to restore cached profiles, clearing corrupt key:', e);
+          try {
+            await AsyncStorage.removeItem(profilesCacheKey);
+          } catch (_) {}
         } finally {
           setIsLoading(false);
         }
-      });
-
-      // Offline fallback: don't leave the app in a loading state forever while waiting
-      // for Firestore if the device has no network and no cache is immediately available.
-      fallbackTimer = setTimeout(() => {
-        setIsLoading(false);
-      }, 2500);
+      };
+      
+      loadCache();
 
       const profilesCol = collection(db, 'users', activeUid, 'profiles');
       
       // Listen for realtime profile changes
       unsubProfiles = onSnapshot(profilesCol, (snapshot) => {
         if (fallbackTimer) clearTimeout(fallbackTimer);
+        
+        // Safeguard: If snapshot is from cache and it's empty, ignore it (we are offline)
+        if (snapshot.empty && snapshot.metadata.fromCache) {
+          console.log('[ProfileContext] Ignoring empty snapshot from cache (offline)');
+          setIsLoading(false);
+          return;
+        }
+
         let fetchedProfiles: Profile[] = [];
         snapshot.forEach((doc) => {
           const data = doc.data();
@@ -210,19 +224,32 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
           }));
         });
 
-        setProfiles(fetchedProfiles);
-        setSelectedProfile((current) => {
-          if (current) {
-            return fetchedProfiles.find((profile) => profile.id === current.id) || current;
-          }
-          return fetchedProfiles[0] || null;
-        });
-        AsyncStorage.setItem(profilesCacheKey, JSON.stringify(serializeProfiles(fetchedProfiles))).catch((e) => {
-          console.warn('[ProfileContext] Failed to cache profiles:', e);
-        });
+        // Safeguard: If fetchedProfiles is empty but metadata indicates cache, ignore it
+        if (fetchedProfiles.length === 0 && snapshot.metadata.fromCache) {
+          console.log('[ProfileContext] Ignoring empty fetched profiles from cache snapshot');
+          setIsLoading(false);
+          return;
+        }
 
-        // If no profiles exist, initialize with defaults
-        if (fetchedProfiles.length === 0 && isLoading) {
+        // Only update local state if fetchedProfiles has items OR we are online (!fromCache)
+        if (fetchedProfiles.length > 0 || !snapshot.metadata.fromCache) {
+          setProfiles(fetchedProfiles);
+          setSelectedProfile((current) => {
+            if (current) {
+              return fetchedProfiles.find((profile) => profile.id === current.id) || current;
+            }
+            return fetchedProfiles[0] || null;
+          });
+          
+          if (fetchedProfiles.length > 0) {
+            AsyncStorage.setItem(profilesCacheKey, JSON.stringify(serializeProfiles(fetchedProfiles))).catch((e) => {
+              console.warn('[ProfileContext] Failed to cache profiles:', e);
+            });
+          }
+        }
+
+        // If no profiles exist on the server (online check), initialize with defaults
+        if (fetchedProfiles.length === 0 && !snapshot.metadata.fromCache && isLoading) {
            DEFAULT_PROFILES.forEach(p => {
               setDoc(doc(db, 'users', activeUid, 'profiles', p.id), {
                  name: p.name,

@@ -8,7 +8,7 @@ interface PageColorContextType {
 const PageColorContext = createContext<PageColorContextType | undefined>(undefined);
 
 export function PageColorProvider({ children }: { children: ReactNode }) {
-  const [pageColor, setPageColor] = useState('#000000');
+  const [pageColor, setPageColor] = useState('#1a0505');
 
   return (
     <PageColorContext.Provider value={{ pageColor, setPageColor }}>

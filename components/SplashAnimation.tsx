@@ -1,213 +1,283 @@
-import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, Easing, Dimensions, Text } from 'react-native';
+import React, { useEffect, useMemo } from 'react';
+import { View, StyleSheet, Dimensions, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  useAnimatedProps,
+  withTiming, 
+  withSequence, 
+  withDelay, 
+  runOnJS,
+  interpolate,
+  Extrapolate,
+  Easing
+} from 'react-native-reanimated';
+import Svg, { Path, Defs, LinearGradient as SvgGradient, Stop } from 'react-native-svg';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// Timing constants (ms)
-const BUILD_DURATION = 1000;
-const HOLD_DURATION = 200;
-const ZOOM_DURATION = 1800;
-const FADE_DURATION = 400;
-const TOTAL_DURATION = BUILD_DURATION + HOLD_DURATION + ZOOM_DURATION + FADE_DURATION;
+// Timing constants (ms) matches the provided canvas code
+const DURATION = {
+  build: 1200,
+  impact: 400,
+  zoom: 1800,
+  total: 4800 // The total sequence length
+};
 
-// Logo proportions
-const LOGO_W = 120;
-const LOGO_H = 200;
-const PILLAR_W = 36;
+const THEME = {
+  bg: '#000000',
+  redCore: '#E50914',
+  redBright: '#FF1F2F',
+  redDeep: '#68040a',
+};
+
+const LOGO = {
+  w: 160,
+  h: 260,
+  p: 48 // Pillar width
+};
+
+const THREAD_COUNT = 60;
+
+const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 export function SplashAnimation({ onFinish }: { onFinish: () => void }) {
-  // All animations use native driver for 60fps on UI thread
-  const buildProg = useRef(new Animated.Value(0)).current;
-  const zoomScale = useRef(new Animated.Value(1)).current;
-  const logoOpacity = useRef(new Animated.Value(1)).current;
-  const screenFlash = useRef(new Animated.Value(0)).current;
-  const glowOpacity = useRef(new Animated.Value(0)).current;
-  const diagProg = useRef(new Animated.Value(0)).current;
+  const buildProg = useSharedValue(0);
+  const zoomProg = useSharedValue(0);
+  const flashProg = useSharedValue(0);
 
-  useEffect(() => {
-    const sequence = Animated.sequence([
-      // Phase 1: Build the N - pillars grow up, diagonal slides in
-      Animated.parallel([
-        Animated.timing(buildProg, {
-          toValue: 1,
-          duration: BUILD_DURATION,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(diagProg, {
-          toValue: 1,
-          duration: BUILD_DURATION,
-          delay: BUILD_DURATION * 0.3,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-
-      // Phase 2: Hold - brief pause with glow pulse
-      Animated.parallel([
-        Animated.timing(glowOpacity, {
-          toValue: 0.6,
-          duration: HOLD_DURATION,
-          useNativeDriver: true,
-        }),
-        Animated.delay(HOLD_DURATION),
-      ]),
-
-      // Phase 3: Zoom into the N and fade out
-      Animated.parallel([
-        Animated.timing(zoomScale, {
-          toValue: 25,
-          duration: ZOOM_DURATION,
-          easing: Easing.in(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(logoOpacity, {
-          toValue: 0,
-          duration: ZOOM_DURATION * 0.6,
-          delay: ZOOM_DURATION * 0.15,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(glowOpacity, {
-          toValue: 1,
-          duration: ZOOM_DURATION * 0.5,
-          useNativeDriver: true,
-        }),
-        Animated.sequence([
-          Animated.delay(ZOOM_DURATION * 0.7),
-          Animated.timing(screenFlash, {
-            toValue: 1,
-            duration: FADE_DURATION,
-            useNativeDriver: true,
-          }),
-        ]),
-      ]),
-    ]);
-
-    sequence.start(() => {
-      if (onFinish) onFinish();
-    });
-
-    return () => sequence.stop();
+  // Generate threads once
+  const threads = useMemo(() => {
+    return Array.from({ length: THREAD_COUNT }, () => ({
+      xOffset: (Math.random() - 0.5) * LOGO.w * 2,
+      yOffset: (Math.random() - 0.5) * LOGO.h * 1.5,
+      zStart: Math.random() * 2000,
+      speed: 15 + Math.random() * 25,
+      width: 1 + Math.random() * 3,
+      color: Math.random() > 0.85 ? '#ffffff' : THEME.redCore,
+      opacity: 0.1 + Math.random() * 0.4
+    }));
   }, []);
 
-  // Pillar height animated via scaleY (native driver compatible)
-  const pillarScale = buildProg;
+  useEffect(() => {
+    // 1. Build Phase
+    buildProg.value = withTiming(1, { 
+      duration: DURATION.build, 
+      easing: Easing.bezier(0.4, 0, 0.2, 1) 
+    });
+
+    // 2. Zoom Phase (after build and impact)
+    const zoomStart = DURATION.build + DURATION.impact;
+    zoomProg.value = withDelay(zoomStart, withTiming(1, { 
+      duration: DURATION.zoom, 
+      easing: Easing.bezier(0.7, 0, 0.84, 0) // Heavy exponential-like curve
+    }, (finished) => {
+      if (finished && onFinish) {
+        runOnJS(onFinish)();
+      }
+    }));
+
+    // 3. Final Flash
+    flashProg.value = withDelay(zoomStart + DURATION.zoom * 0.8, withTiming(1, { 
+      duration: DURATION.zoom * 0.2 
+    }));
+  }, []);
+
+  // Root container scale (dramatic zoom)
+  const rootAnimatedStyle = useAnimatedStyle(() => {
+    // Dramatic exponential zoom: scale = 1 / Math.max(0.001, 1 - Math.pow(zoomProg, 4))
+    const zoomEase = Math.pow(zoomProg.value, 4);
+    const cameraZ = Math.max(0.001, 1 - zoomEase);
+    const scale = 1 / cameraZ;
+    
+    const opacity = interpolate(
+      zoomProg.value,
+      [0, 0.2, 0.5],
+      [1, 1, 0],
+      Extrapolate.CLAMP
+    );
+
+    return {
+      transform: [{ scale }],
+      opacity,
+    };
+  });
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashProg.value * 0.2,
+  }));
 
   return (
     <View style={styles.container}>
-      <LinearGradient
-        colors={['transparent', 'rgba(0,0,0,0.9)']}
-        style={StyleSheet.absoluteFill}
-        start={{ x: 0.5, y: 0.3 }}
-        end={{ x: 0.5, y: 1 }}
-        pointerEvents="none"
-      />
+      {/* 1. Backdrop Textures */}
+      <View style={StyleSheet.absoluteFill}>
+        {/* Radial Vignette */}
+        <View style={styles.vignette} />
+        
+        {/* Vertical Grain */}
+        <View style={styles.grain} />
+        
+        {/* Bottom Shadow */}
+        <LinearGradient
+          colors={['transparent', '#000000']}
+          style={styles.bottomShadow}
+        />
+      </View>
 
-      <Animated.View
-        style={[
-          styles.logoContainer,
-          {
-            transform: [{ scale: zoomScale }],
-            opacity: logoOpacity,
-          },
-        ]}
-      >
-        <Animated.View
-          style={[
-            styles.glow,
-            { opacity: glowOpacity },
-          ]}
-        >
-          <LinearGradient
-            colors={['transparent', 'rgba(229,9,20,0.3)', 'transparent']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-          />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.pillarLeft,
-            {
-              transform: [{ scaleY: pillarScale }],
-            },
-          ]}
-        >
-          <LinearGradient
-            colors={['#b00710', '#FF1F2F', '#b00710']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-          />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.pillarRight,
-            {
-              transform: [{ scaleY: pillarScale }],
-            },
-          ]}
-        >
-          <LinearGradient
-            colors={['#b00710', '#FF1F2F', '#b00710']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-          />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.diagonal,
-            {
-              opacity: diagProg,
-              transform: [{ scaleY: diagProg }],
-            },
-          ]}
-        >
-          <LinearGradient
-            colors={['#ff3344', '#E50914', '#68040a']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          />
-        </Animated.View>
-      </Animated.View>
-
-      <Animated.View
-        style={[
-          styles.creditWrap,
-          {
-            opacity: logoOpacity,
-            transform: [{ translateY: Animated.multiply(Animated.subtract(1, buildProg), 22) }],
-          },
-        ]}
-      >
-        <View style={styles.creditBadge}>
-          <LinearGradient
-            colors={['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.03)']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-          <Text style={styles.creditEyebrow}>crafted for the big screen</Text>
-          <Text style={styles.creditName}>made by mzazimhenga</Text>
-          <View style={styles.creditAccent} />
+      {/* 2. The "N" Logo Animation */}
+      <Animated.View style={[styles.logoWrapper, rootAnimatedStyle]}>
+        <View style={styles.logoContainer}>
+          {/* Left Pillar */}
+          <Pillar side="left" buildProg={buildProg} zoomProg={zoomProg} />
+          
+          {/* Right Pillar */}
+          <Pillar side="right" buildProg={buildProg} zoomProg={zoomProg} />
+          
+          {/* Diagonal Ribbon */}
+          <DiagonalRibbon buildProg={buildProg} />
         </View>
       </Animated.View>
 
-      <Animated.View
-        style={[
-          styles.flash,
-          { opacity: screenFlash },
-        ]}
-        pointerEvents="none"
-      />
+      {/* 3. Thread Zoom Streaks */}
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        {threads.map((t, i) => (
+          <Thread key={i} thread={t} zoomProg={zoomProg} />
+        ))}
+      </View>
+
+      {/* 4. Final Flash Overlay */}
+      <Animated.View style={[styles.flash, flashStyle]} pointerEvents="none" />
+
+      {/* 5. Credits (Only visible during build) */}
+      <Credits buildProg={buildProg} zoomProg={zoomProg} />
     </View>
+  );
+}
+
+function Pillar({ side, buildProg, zoomProg }: any) {
+  const animatedStyle = useAnimatedStyle(() => {
+    const scaleY = interpolate(buildProg.value, [0, 1], [0, 1], Extrapolate.CLAMP);
+    return {
+      transform: [{ scaleY }],
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.pillar, side === 'left' ? styles.pillarLeft : styles.pillarRight, animatedStyle]}>
+      <LinearGradient
+        colors={[THEME.redDeep, THEME.redBright, THEME.redDeep]}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+      {/* Grain lines on pillar */}
+      <View style={styles.pillarGrainContainer}>
+        {[0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44].map((x) => (
+          <View key={x} style={[styles.pillarGrainLine, { left: x }]} />
+        ))}
+      </View>
+    </Animated.View>
+  );
+}
+
+function DiagonalRibbon({ buildProg }: any) {
+  const animatedProps = useAnimatedProps(() => {
+    // Ribbon starts at 0.4 and ends at 1.0 of build phase
+    const dProg = interpolate(buildProg.value, [0.4, 0.95], [0, 1], Extrapolate.CLAMP);
+    
+    const leftX = 0;
+    const topY = 0;
+    const pW = LOGO.p;
+    const targetX = (LOGO.w - LOGO.p) * dProg;
+    const targetY = LOGO.h * dProg;
+
+    // We use an SVG Path to draw the trapezoid that grows
+    const path = `M ${leftX} ${topY} L ${leftX + pW} ${topY} L ${targetX + pW} ${targetY} L ${targetX} ${targetY} Z`;
+    
+    return {
+      d: path,
+      opacity: dProg > 0 ? 1 : 0
+    };
+  });
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <Svg width={LOGO.w} height={LOGO.h} viewBox={`0 0 ${LOGO.w} ${LOGO.h}`}>
+        <Defs>
+          <SvgGradient id="diagGrad" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor="#ff3344" />
+            <Stop offset="1" stopColor="#800000" />
+          </SvgGradient>
+        </Defs>
+        <AnimatedPath animatedProps={animatedProps} fill="url(#diagGrad)" />
+      </Svg>
+    </View>
+  );
+}
+
+function Thread({ thread, zoomProg }: any) {
+  const animatedStyle = useAnimatedStyle(() => {
+    // Projection math
+    const z = (thread.zStart - zoomProg.value * 2000 * (1 + thread.speed / 5)) % 2000;
+    const actualZ = z < 0 ? z + 2000 : z;
+    const pScale = 600 / Math.max(1, actualZ);
+    const tx = SCREEN_W / 2 + thread.xOffset * pScale;
+    
+    const opacity = (zoomProg.value === 0) ? 0 : interpolate(
+      actualZ,
+      [0, 500, 2000],
+      [0, thread.opacity, 0],
+      Extrapolate.CLAMP
+    ) * (1 - zoomProg.value);
+
+    return {
+      opacity,
+      transform: [
+        { translateX: tx - (thread.width * pScale) / 2 },
+        { scaleX: pScale },
+      ] as any,
+      width: thread.width,
+      height: SCREEN_H * 2,
+      top: -SCREEN_H,
+      backgroundColor: thread.color,
+      position: 'absolute',
+    };
+  });
+
+  return <Animated.View style={animatedStyle} />;
+}
+
+function Credits({ buildProg, zoomProg }: any) {
+  const animatedStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(
+      zoomProg.value,
+      [0, 0.1],
+      [1, 0],
+      Extrapolate.CLAMP
+    );
+    const translateY = interpolate(buildProg.value, [0, 1], [20, 0], Extrapolate.CLAMP);
+    
+    return {
+      opacity: opacity * buildProg.value,
+      transform: [{ translateY }],
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.creditWrap, animatedStyle]}>
+      <View style={styles.creditBadge}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.03)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <Text style={styles.creditEyebrow}>crafted for the big screen</Text>
+        <Text style={styles.creditName}>made by mzazimhenga</Text>
+        <View style={styles.creditAccent} />
+      </View>
+    </Animated.View>
   );
 }
 
@@ -220,20 +290,78 @@ const styles = StyleSheet.create({
     zIndex: 99999,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  logoContainer: {
-    width: LOGO_W,
-    height: LOGO_H,
-    position: 'relative',
+  vignette: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'transparent',
+    // Radial gradient simulation using a large round view if needed, 
+    // but typically a dark overlay with opacity works well.
+    borderWidth: SCREEN_W / 3,
+    borderColor: 'rgba(0,0,0,0.8)',
+    borderRadius: SCREEN_W,
+    transform: [{ scale: 2 }],
   },
-  creditWrap: {
+  grain: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.04,
+    backgroundColor: 'transparent',
+    // Simulate vertical grain with thin repeating lines
+    borderLeftWidth: 1,
+    borderLeftColor: '#ffffff',
+    width: 2,
+  },
+  bottomShadow: {
     position: 'absolute',
-    top: SCREEN_H * 0.5 + LOGO_H * 0.85,
+    bottom: 0,
+    width: '100%',
+    height: '25%',
+  },
+  logoWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  logoContainer: {
+    width: LOGO.w,
+    height: LOGO.h,
+    position: 'relative',
+  },
+  pillar: {
+    position: 'absolute',
+    bottom: 0,
+    width: LOGO.p,
+    height: LOGO.h,
+    transformOrigin: 'bottom',
+    overflow: 'hidden',
+    borderRadius: 2,
+  },
+  pillarLeft: {
+    left: 0,
+  },
+  pillarRight: {
+    right: 0,
+  },
+  pillarGrainContainer: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.2,
+  },
+  pillarGrainLine: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: '#000000',
+  },
+  flash: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#ffffff',
+  },
+  creditWrap: {
+    position: 'absolute',
+    bottom: 100,
+    alignItems: 'center',
+  },
   creditBadge: {
-    minWidth: 380,
     paddingHorizontal: 32,
     paddingVertical: 18,
     borderRadius: 24,
@@ -262,48 +390,5 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 999,
     backgroundColor: '#E50914',
-  },
-  glow: {
-    position: 'absolute',
-    top: -40,
-    bottom: -40,
-    left: -60,
-    right: -60,
-    borderRadius: 80,
-  },
-  pillarLeft: {
-    position: 'absolute',
-    left: 0,
-    bottom: 0,
-    width: PILLAR_W,
-    height: LOGO_H,
-    transformOrigin: 'bottom',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  pillarRight: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: PILLAR_W,
-    height: LOGO_H,
-    transformOrigin: 'bottom',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  diagonal: {
-    position: 'absolute',
-    top: 0,
-    left: PILLAR_W * 0.15,
-    width: LOGO_W - PILLAR_W * 0.3,
-    height: LOGO_H,
-    transformOrigin: 'top',
-    transform: [{ skewX: '-22deg' }],
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  flash: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.15)',
   },
 });

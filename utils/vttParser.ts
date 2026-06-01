@@ -30,9 +30,11 @@ export function parseVtt(content: string): Subtitle[] {
 
     if (line.includes('-->')) {
       const times = line.split('-->');
+      // Strip VTT positioning metadata (e.g. "position:10% align:start") after the end timestamp
+      const endToken = times[1].trim().split(/\s+/)[0];
       currentSub = {
         start: parseTime(times[0].trim()),
-        end: parseTime(times[1].trim()),
+        end: parseTime(endToken),
         text: ''
       };
       subtitles.push(currentSub as Subtitle);

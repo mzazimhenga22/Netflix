@@ -11,6 +11,9 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.opengl.GLSurfaceView
 import android.os.Build
+import android.media.audiofx.Visualizer
+import android.os.Vibrator
+import android.os.VibrationEffect
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -60,11 +63,15 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
     private val glView: GLSurfaceView
     internal val renderer: HologramRenderer
     private var player: ExoPlayer? = null
+    private var hologramSurface: Surface? = null
 
     var videoUrl: String = ""
         set(value) {
+            if (field == value) return
             field = value
-            setupPlayer()
+            Log.d(TAG, "videoUrl set: ${value.take(80)}")
+            pendingSetup = true
+            trySetupPlayer()
         }
 
     var title: String = ""
@@ -75,6 +82,16 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
             renderer.videoFormat = if (value == "3d-top-bottom") 1 else 0
         }
 
+    @Volatile private var pendingSetup = false
+
+    var hologramType: Int = 1
+        set(value) {
+            field = value
+            renderer.hologramType = value
+        }
+
+    private var visualizer: Visualizer? = null
+    private val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
 
 
     private val sensorMgr: SensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -118,7 +135,17 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
 
         glView = GLSurfaceView(context).apply { setEGLContextClientVersion(2) }
         renderer = HologramRenderer { st ->
-            post { player?.setVideoSurface(Surface(st)) }
+            val surface = Surface(st)
+            post {
+                Log.d(TAG, "GL Surface ready — connecting to player")
+                hologramSurface?.release()
+                hologramSurface = surface
+                player?.setVideoSurface(surface)
+                // If player setup was deferred waiting for surface, do it now
+                if (pendingSetup && player == null) {
+                    trySetupPlayer()
+                }
+            }
         }
         
         // Pass segmenter down to renderer so it can process FBO frames instead of relying on MediaMetadataRetriever
@@ -186,8 +213,16 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
         detectDisplayProfile()
     }
 
-    private fun setupPlayer() {
+    private fun trySetupPlayer() {
         if (videoUrl.isEmpty()) return
+        // Defer until GL surface is ready — this is the key race condition fix.
+        // The renderer callback will call trySetupPlayer() again once hologramSurface is set.
+        if (hologramSurface == null) {
+            Log.d(TAG, "Deferring player setup — GL surface not ready yet")
+            return
+        }
+        pendingSetup = false
+        Log.d(TAG, "Setting up ExoPlayer for: ${videoUrl.take(80)}")
         player?.release()
 
         val audioAttributes = AudioAttributes.Builder()
@@ -210,20 +245,81 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
             
             setMediaItem(mediaItemBuilder.build())
             repeatMode = Player.REPEAT_MODE_ONE
+            // Surface is guaranteed ready at this point
+            setVideoSurface(hologramSurface)
             prepare()
             playWhenReady = true
             
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
+                    Log.d(TAG, "ExoPlayer state: $state")
                     dispatchStatusUpdate()
                 }
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    Log.d(TAG, "ExoPlayer isPlaying: $isPlaying")
                     dispatchStatusUpdate()
                 }
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    Log.e(TAG, "ExoPlayer error: ${error.message}", error)
+                }
             })
+            
+            // Set up kinetic haptic visualizer using audio session ID
+            setupHapticVisualizer(audioSessionId)
         }
         
         startProgress()
+    }
+
+    private fun setupHapticVisualizer(sessionId: Int) {
+        if (vibrator == null || sessionId == 0) return
+        try {
+            visualizer?.release()
+            val vis = Visualizer(sessionId)
+            vis.captureSize = Visualizer.getCaptureSizeRange()[0]
+            vis.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) = Unit
+                
+                override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                    if (hologramType != 1 || fft == null) return
+                    var bassEnergy = 0f
+                    for (i in 1..5) {
+                        if (2 * i + 1 >= fft.size) break
+                        val r = fft[2 * i].toFloat()
+                        val im = fft[2 * i + 1].toFloat()
+                        val mag = sqrt(r * r + im * im)
+                        bassEnergy += mag
+                    }
+                    bassEnergy /= 5f
+                    
+                    if (bassEnergy > 16f) {
+                        val intensity = ((bassEnergy - 16f) / 32f).coerceIn(0.1f, 1f)
+                        val duration = (40L + intensity * 60L).toLong()
+                        triggerHaptic(intensity, duration)
+                    }
+                }
+            }, Visualizer.getMaxCaptureRate() / 2, false, true)
+            vis.enabled = true
+            visualizer = vis
+            Log.d(TAG, "Bass Visualizer initialized successfully on audio session: $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to setup Visualizer: ${e.message}")
+        }
+    }
+
+    private fun triggerHaptic(intensity: Float, duration: Long) {
+        val vib = vibrator ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val amplitude = (intensity * 255f).toInt().coerceIn(1, 255)
+            try {
+                vib.vibrate(VibrationEffect.createOneShot(duration, amplitude))
+            } catch (e: Exception) {
+                // ignore
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            vib.vibrate(duration)
+        }
     }
 
     private val progressRun = object : Runnable {
@@ -301,8 +397,13 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
         cameraExec?.shutdown()
         cameraExec = null
         
+        visualizer?.release()
+        visualizer = null
+        
         player?.release()
         player = null
+        hologramSurface?.release()
+        hologramSurface = null
         
         super.onDetachedFromWindow()
     }
@@ -376,6 +477,18 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
         renderer.eyeOffsetX = gyroXFilter.update(tx)
         renderer.eyeOffsetY = gyroYFilter.update(ty)
         renderer.eyeDistance += (1.0f - renderer.eyeDistance) * 0.06f
+        updateSpatialAudioVolume()
+    }
+
+    private fun updateSpatialAudioVolume() {
+        val player = this.player ?: return
+        if (hologramType == 1) {
+            val pan = renderer.eyeOffsetX.coerceIn(-1f, 1f)
+            val focusFactor = (1.0f - abs(pan) * 0.3f).coerceIn(0f, 1f)
+            player.setVolume(focusFactor)
+        } else {
+            player.setVolume(1.0f)
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -458,6 +571,7 @@ class HologramView(context: Context) : FrameLayout(context), SensorEventListener
                     renderer.eyeOffsetX = faceXFilter.update(applyDeadZone(nx.coerceIn(-1f, 1f), 0.01f))
                     renderer.eyeOffsetY = faceYFilter.update(applyDeadZone(ny.coerceIn(-1f, 1f), 0.01f))
                     renderer.eyeDistance = faceZFilter.update(dist)
+                    updateSpatialAudioVolume()
                 } else {
                     faceLocked = false
                 }

@@ -29,12 +29,14 @@
             "topShelfWide2x": "./assets/logo.png"
           }
         }
-      ]
+      ],
+      "expo-video"
     ],
     "icon": "./assets/logo.png",
     "android": {
       "package": "com.movieflix.tv",
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "versionCode": 22
     },
     "ios": {
       "bundleIdentifier": "com.movieflix.tv"
@@ -42,14 +44,14 @@
     "newArchEnabled": true,
     "name": "Netflixtv",
     "slug": "Netflixtv",
-    "version": "1.0.9",
+    "version": "1.0.13",
     "orientation": "landscape",
     "userInterfaceStyle": "automatic",
     "extra": {
       "eas": {
-        "projectId": "654c284d-c4df-4398-acbd-f7e59d692e0d"
+        "projectId": "a0844d12-5a87-4d36-a482-ce96f158cb62"
       }
     },
-    "owner": "derrogpt"
+    "owner": "waitas"
   }
 }

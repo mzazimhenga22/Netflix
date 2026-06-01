@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, Dimensions, Text, Pressable, Platform } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import Animated, { 
@@ -10,11 +10,11 @@ import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { doc, getDoc } from 'firebase/firestore';
-import { db, auth } from '../services/firebase';
+import { auth } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
 const { width } = Dimensions.get('window');
+const WEBSITE_DOWNLOAD_URL = 'https://appsdownloads.netlify.app/#';
 
 export default function SplashScreen() {
   const router = useRouter();
@@ -24,6 +24,7 @@ export default function SplashScreen() {
   const [isDownloading, setIsDownloading] = React.useState(false);
   const [updateStatusText, setUpdateStatusText] = React.useState('');
   const [animating, setAnimating] = React.useState(true);
+  const updateAttemptedRef = useRef(false);
 
   // Background version/auth check can begin during animation, but we won't navigate till both are done
   // For simplicity and maximum impact of the 3s splash, we start the checks *after* the fast animation
@@ -36,26 +37,52 @@ export default function SplashScreen() {
 
   const startVersionGuard = async () => {
     try {
-      const configDoc = await getDoc(doc(db, 'app_config', 'versioning'));
-      if (configDoc.exists()) {
-        const data = configDoc.data();
-        const localVersion = Constants.expoConfig?.version || '1.0.0';
-        const remoteVersion = data.minRequiredVersion || '1.0.0';
-        
-        console.log(`[VersionGuard] Local: ${localVersion}, Required: ${remoteVersion}`);
+      const netflixRepo = 'mzazimhenga22/Netflix';
+      const ts = Date.now();
+      const releasesUrl = `https://api.github.com/repos/${netflixRepo}/releases?per_page=5&t=${ts}`;
+      
+      const response = await fetch(releasesUrl);
+      if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
+      
+      const releases = await response.json();
+      if (!Array.isArray(releases) || releases.length === 0) {
+        checkAuth();
+        return;
+      }
 
-        // Using simple lexicographical or split-join comparison for SemVer (safe for major/minor bumps)
-        const isOutdated = compareVersions(localVersion, remoteVersion) < 0;
+      // Find latest Phone release
+      const latestPhone = releases.find(r => String(r.tag_name).startsWith('phone-v'));
+      if (!latestPhone) {
+        checkAuth();
+        return;
+      }
 
-        if (isOutdated) {
-          setUpdateConfig(data);
-          setUpdateStatusText(`Version ${remoteVersion} is required to continue.`);
-          setShowUpdateGate(true);
-          return;
-        }
+      const remoteVersion = String(latestPhone.tag_name).replace('phone-v', '');
+      const localVersion = Constants.expoConfig?.version || '1.0.0';
+
+      console.log(`[VersionGuard] Local: ${localVersion}, Required: ${remoteVersion}`);
+
+      if (compareVersions(localVersion, remoteVersion) < 0) {
+        // Find APK asset
+        const apkAsset = latestPhone.assets?.find((a: any) => 
+          String(a.name).toLowerCase().endsWith('.apk') && 
+          !String(a.name).toLowerCase().includes('tv')
+        );
+
+        const config = {
+          minRequiredVersion: remoteVersion,
+          directDownloadUrl: apkAsset?.browser_download_url || latestPhone.html_url,
+          message: latestPhone.body || `Version ${remoteVersion} is required before continuing.`,
+          updateUrl: latestPhone.html_url
+        };
+
+        setUpdateConfig(config);
+        setUpdateStatusText(`Version ${remoteVersion} is required to continue.`);
+        setShowUpdateGate(true);
+        return;
       }
     } catch (e) {
-      console.warn('[VersionGuard] Fetch failed, bypassing for safety', e);
+      console.warn('[VersionGuard] GitHub fetch failed, bypassing for safety', e);
     }
     
     // Proceed to auth if version is current or fetch fails (fail-open for safety)
@@ -82,17 +109,19 @@ export default function SplashScreen() {
   };
 
   const handleUpdatePress = async () => {
+    const releaseUrl = updateConfig?.updateUrl || WEBSITE_DOWNLOAD_URL;
+
     if (Platform.OS !== 'android') {
       setUpdateStatusText('Opening the update page...');
-      Linking.openURL(updateConfig?.updateUrl || 'https://movieflixproxy.netlify.app');
+      Linking.openURL(releaseUrl);
       return;
     }
 
     // Direct APK Download & Install for Android
-    const updateUrl = updateConfig?.directDownloadUrl || updateConfig?.updateUrl;
+    const updateUrl = updateConfig?.directDownloadUrl;
     if (!updateUrl || !updateUrl.endsWith('.apk')) {
-      setUpdateStatusText('Update link is missing a direct APK download.');
-      Linking.openURL(updateConfig?.updateUrl || 'https://movieflixproxy.netlify.app');
+      setUpdateStatusText('Opening the download website...');
+      Linking.openURL(releaseUrl);
       return;
     }
 
@@ -130,6 +159,20 @@ export default function SplashScreen() {
     }
   };
 
+  useEffect(() => {
+    if (!showUpdateGate) {
+      updateAttemptedRef.current = false;
+      return;
+    }
+
+    if (updateAttemptedRef.current || isDownloading) {
+      return;
+    }
+
+    updateAttemptedRef.current = true;
+    handleUpdatePress();
+  }, [showUpdateGate, isDownloading, updateConfig]);
+
   const installApk = async (uri: string) => {
     try {
       const contentUri = await FileSystem.getContentUriAsync(uri);
@@ -147,7 +190,23 @@ export default function SplashScreen() {
   };
 
   const checkAuth = () => {
-    onAuthStateChanged(auth, (user) => {
+    let resolved = false;
+    
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        unsubscribe();
+        console.warn('[SplashScreen] Auth check timed out, routing to /login');
+        router.replace('/login');
+      }
+    }, 5000);
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      
       if (user) {
         // Allow all signed-in users into the app (Free Plan logic handles content locking)
         router.replace('/profiles');

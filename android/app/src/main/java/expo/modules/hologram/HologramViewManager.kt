@@ -31,6 +31,11 @@ class HologramViewManager : SimpleViewManager<HologramView>() {
         view.videoFormat = format ?: "standard"
     }
 
+    @ReactProp(name = "hologramType")
+    fun setHologramType(view: HologramView, type: String?) {
+        view.hologramType = if (type == "pyramid") 0 else 1
+    }
+
     override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
         return mutableMapOf(
             "onPlaybackStatusUpdate" to mutableMapOf("registrationName" to "onPlaybackStatusUpdate")

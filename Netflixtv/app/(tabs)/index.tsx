@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, ScrollView, Text, Alert, BackHandler, findNodeHandle } from 'react-native';
+import { StyleSheet, View, ScrollView, Text, Alert, BackHandler, findNodeHandle, InteractionManager } from 'react-native';
 import {
   fetchTrending, fetchTopRated, fetchPopular, fetchUpcoming,
   fetchSimilar, fetchDiscoverByGenre
@@ -24,6 +24,7 @@ export default function HomeScreen() {
   const { pageColor, setPageColor } = usePageColor();
   const { setHeroFocusTag } = useTvFocusBridge();
   const [loading, setLoading] = useState(true);
+  const [isScreenActive, setIsScreenActive] = useState(true);
   const [heroMovie, setHeroMovie] = useState<any>(null);
   const heroBannerRef = useRef<any>(null);
 
@@ -73,23 +74,34 @@ export default function HomeScreen() {
   const currentHeroIndex = useRef<number>(0);
   const scrollY = useRef<number>(0);
 
-  useEffect(() => { 
+  useEffect(() => {
     // Only load if trending is empty (first mount) or if selectedProfile actually changed
     // Tabs keep state, so this useEffect only runs when the component mounts or dependencies change.
     if (trending.length === 0) {
-      loadData(); 
+      InteractionManager.runAfterInteractions(() => {
+        loadData();
+      });
     }
   }, [selectedProfile]);
 
   useFocusEffect(
     useCallback(() => {
+      setIsScreenActive(true);
       const timeout = setTimeout(() => {
         const tag = findNodeHandle(heroBannerRef.current);
         setHeroFocusTag(typeof tag === 'number' ? tag : null);
       }, 0);
       return () => {
+        setIsScreenActive(false);
         clearTimeout(timeout);
         setHeroFocusTag(null);
+        // Release ExoPlayer instances when leaving tab
+        if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+        if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+        setFocusedCardStream(null);
+        currentCardId.current = null;
+        setHeroStreamUrl(undefined);
+        setHeroStreamHeaders(undefined);
       };
     }, [loading, setHeroFocusTag])
   );
@@ -130,13 +142,19 @@ export default function HomeScreen() {
     }, [])
   );
 
-  // Clean up auto cycle
+  // Clean up auto cycle and all pending timeouts
   useEffect(() => {
-    return () => stopAutoCycle();
+    return () => {
+      stopAutoCycle();
+      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+      if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+      if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
+    };
   }, []);
 
   const startAutoCycle = () => {
-    stopAutoCycle();
+    // Guard: don't create a new interval if one is already running
+    if (autoCycleInterval.current) return;
     autoCycleInterval.current = setInterval(() => {
       if (!isUserBrowsingRows.current && trending.length > 0) {
         currentHeroIndex.current = (currentHeroIndex.current + 1) % Math.min(10, trending.length);
@@ -149,13 +167,16 @@ export default function HomeScreen() {
           resolveStream(nextHero, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
         }, 1500);
       }
-    }, 30000); // 30 seconds
+    }, 180000); // 3 minutes
   };
 
 
 
   const stopAutoCycle = () => {
-    if (autoCycleInterval.current) clearInterval(autoCycleInterval.current);
+    if (autoCycleInterval.current) {
+      clearInterval(autoCycleInterval.current);
+      autoCycleInterval.current = null;
+    }
   };
 
   const resumeHeroAutoplay = useCallback(() => {
@@ -172,9 +193,9 @@ export default function HomeScreen() {
     setLoading(true);
     try {
       const maturityLevel = selectedProfile?.maturityLevel;
-    const isKids = selectedProfile?.isKids;
+      const isKids = selectedProfile?.isKids;
       const profileId = selectedProfile?.id;
-      
+
       // Primary batch — essential rows
       const [tr, trt, pop, upc] = await Promise.all([
         fetchTrending('all', maturityLevel as any),
@@ -206,6 +227,8 @@ export default function HomeScreen() {
         ...h.item,
         media_type: h.type, // Ensure type is preserved correctly
         _progress: h.duration > 0 ? h.currentTime / h.duration : 0,
+        _currentTime: h.currentTime,
+        _duration: h.duration,
         _season: h.season,
         _episode: h.episode
       }));
@@ -286,7 +309,8 @@ export default function HomeScreen() {
         tmdbId,
         mediaType as 'movie' | 'tv',
         mediaType === 'tv' ? movie.season : undefined,
-        mediaType === 'tv' ? movie.episode : undefined
+        mediaType === 'tv' ? movie.episode : undefined,
+        { title: movie.title || movie.name }
       );
 
       if (idRef.current === tmdbId && result?.url) {
@@ -306,20 +330,11 @@ export default function HomeScreen() {
     pauseHeroAutoplay();
     const movieId = String(movie.id);
 
-    // Update hero metadata with a 300ms debounce so rapid d-pad movement
-    // doesn't trigger a cascade of re-renders.
+    // Track which card is focused for focus restoration
     if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
     heroUpdateTimeout.current = setTimeout(() => {
       setPreferredMovieId(movieId);
       setPreferredRowTitle(rowTitle || null);
-      setHeroMovie(movie);
-
-
-      // Resolve hero banner stream
-      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
-      heroStreamTimeout.current = setTimeout(() => {
-        resolveStream(movie, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId);
-      }, 1500);
     }, 300);
 
     // Clear any pending card stream resolution and drop the previous stream
@@ -334,12 +349,12 @@ export default function HomeScreen() {
     cardStreamTimeout.current = setTimeout(async () => {
       if (currentCardId.current !== movieId) return; // focus moved on
       try {
-        const { resolveStreamFromCloud } = require('../../services/cloudResolver');
         const type = movie.media_type || 'movie';
         const result = await resolveStreamFromCloud(
           movieId, type as 'movie' | 'tv',
           type === 'tv' ? movie._season : undefined,
-          type === 'tv' ? movie._episode : undefined
+          type === 'tv' ? movie._episode : undefined,
+          { title: movie.title || movie.name }
         );
         // Guard again after async resolution — user may have moved focus
         if (currentCardId.current === movieId && result?.url) {
@@ -355,7 +370,7 @@ export default function HomeScreen() {
         console.log('[Home] Card stream resolve failed:', e);
       }
     }, 1200);
-  }, [pauseHeroAutoplay, resolveStream]);
+  }, [pauseHeroAutoplay]);
 
   const handleItemPress = useCallback((movie: any) => {
     const type = movie.media_type || 'movie';
@@ -370,13 +385,27 @@ export default function HomeScreen() {
     if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
     // Invalidate cached URL so the full-screen player fetches a fresh one
     invalidateCacheEntry(String(movie.id), type);
-    
-    // Append season/episode if it's a resume from history
-    let url = `/movie/${movie.id}?type=${type}`;
-    if (movie._season) url += `&season=${movie._season}`;
-    if (movie._episode) url += `&episode=${movie._episode}`;
-    
-    router.push(url as any);
+
+    // Append metadata to params for instant rendering on details page
+    const params: any = {
+      type,
+      title: movie.title || movie.name,
+      poster: movie.poster_path,
+      backdrop: movie.backdrop_path,
+      overview: movie.overview,
+      year: (movie.release_date || movie.first_air_date)?.split('-')[0],
+      rating: movie.vote_average?.toString()
+    };
+
+    if (movie._season) params.season = movie._season.toString();
+    if (movie._episode) params.episode = movie._episode.toString();
+    if (movie._currentTime) params.resumeTime = movie._currentTime.toString();
+    if (movie._duration) params.resumeDuration = movie._duration.toString();
+
+    router.push({
+      pathname: `/movie/${movie.id}`,
+      params: params
+    });
   }, [router]);
 
   const handleHeroFocus = useCallback(() => {
@@ -392,10 +421,12 @@ export default function HomeScreen() {
 
   const handleScroll = useCallback((event: any) => {
     scrollY.current = event.nativeEvent.contentOffset.y;
+    // Guard: only call resume/pause when transitioning between zones
+    // to avoid creating/destroying intervals at scroll-event rate
     if (scrollY.current <= 24) {
-      resumeHeroAutoplay();
+      if (isUserBrowsingRows.current) resumeHeroAutoplay();
     } else {
-      pauseHeroAutoplay();
+      if (!isUserBrowsingRows.current) pauseHeroAutoplay();
     }
   }, [pauseHeroAutoplay, resumeHeroAutoplay]);
 
@@ -435,86 +466,79 @@ export default function HomeScreen() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         onScroll={handleScroll}
-        scrollEventThrottle={16}
+        scrollEventThrottle={100}
         onScrollBeginDrag={pauseHeroAutoplay}
       >
-        <View style={styles.heroContainer}>
-          <NativeHeroBanner
-            ref={heroBannerRef}
-            movieData={JSON.stringify(heroMovie)}
-            streamUrl={heroStreamUrl}
-            streamHeaders={heroStreamHeaders}
-            placeholderColor={pageColor}
-            onColorExtracted={setPageColor}
-            onFocus={handleHeroFocus}
-            style={styles.hero}
-          />
-          <View style={styles.heroOverlay} pointerEvents="none">
-            <LinearGradient
-              colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.92)']}
-              style={StyleSheet.absoluteFill}
-            />
-          </View>
-        </View>
+        <NativeHeroBanner
+          ref={heroBannerRef}
+          movieData={JSON.stringify(heroMovie)}
+          streamUrl={heroStreamUrl}
+          streamHeaders={heroStreamHeaders}
+          isScreenActive={isScreenActive}
+          placeholderColor={pageColor}
+          useSkeleton={false}
+          onColorExtracted={setPageColor}
+          onFocus={handleHeroFocus}
+          onPress={() => heroMovie && handleItemPress(heroMovie)}
+          style={styles.hero}
+        />
+        {/* 1. Continue Watching */}
+        {historyItems.length > 0 && renderRow(
+          `Continue Watching for ${selectedProfile?.name || 'You'}`,
+          historyItems
+        )}
 
-        <View style={styles.rowsContainer}>
-          {/* 1. Continue Watching */}
-          {historyItems.length > 0 && renderRow(
-            `Continue Watching for ${selectedProfile?.name || 'You'}`,
-            historyItems
-          )}
+        {/* 2. Today's Top Picks */}
+        {renderRow("Today's Top Picks for You", trending)}
 
-          {/* 2. Today's Top Picks */}
-          {renderRow("Today's Top Picks for You", trending)}
+        {/* 3. Top 10 Movies Today */}
+        {renderRow('Top 10 Movies Today', top10Movies, { showRank: true })}
 
-          {/* 3. Top 10 Movies Today */}
-          {renderRow('Top 10 Movies Today', top10Movies, { showRank: true })}
+        {/* 4. Popular TV Shows */}
+        {renderRow('Popular TV Shows', popularTv)}
 
-          {/* 4. Popular TV Shows */}
-          {renderRow('Popular TV Shows', popularTv)}
+        {/* 5. Because You Watched... */}
+        {similarToLastWatched.length > 0 && renderRow(
+          `Because You Watched ${lastWatchedTitle}`,
+          similarToLastWatched
+        )}
 
-          {/* 5. Because You Watched... */}
-          {similarToLastWatched.length > 0 && renderRow(
-            `Because You Watched ${lastWatchedTitle}`,
-            similarToLastWatched
-          )}
+        {/* 6. Trending TV Shows */}
+        {renderRow('Trending Now in Shows', trendingTv)}
 
-          {/* 6. Trending TV Shows */}
-          {renderRow('Trending Now in Shows', trendingTv)}
+        {/* 7. Action & Adventure */}
+        {renderRow('Action & Adventure', actionMovies)}
 
-          {/* 7. Action & Adventure */}
-          {renderRow('Action & Adventure', actionMovies)}
+        {/* 8. Critically Acclaimed */}
+        {renderRow('Critically Acclaimed', topRated)}
 
-          {/* 8. Critically Acclaimed */}
-          {renderRow('Critically Acclaimed', topRated)}
+        {/* 9. Top 10 TV Shows Today */}
+        {renderRow('Top 10 TV Shows Today', top10Shows, { showRank: true })}
 
-          {/* 9. Top 10 TV Shows Today */}
-          {renderRow('Top 10 TV Shows Today', top10Shows, { showRank: true })}
+        {/* 10. Comedy Movies */}
+        {renderRow('Comedy Movies', comedyMovies)}
 
-          {/* 10. Comedy Movies */}
-          {renderRow('Comedy Movies', comedyMovies)}
+        {/* 11. Sci-Fi & Fantasy */}
+        {renderRow('Sci-Fi & Fantasy', sciFiMovies)}
 
-          {/* 11. Sci-Fi & Fantasy */}
-          {renderRow('Sci-Fi & Fantasy', sciFiMovies)}
+        {/* 12. New Releases */}
+        {renderRow('New Releases', upcoming)}
 
-          {/* 12. New Releases */}
-          {renderRow('New Releases', upcoming)}
+        {/* 13. Award-Winning TV Shows */}
+        {renderRow('Award-Winning TV Shows', topRatedTv)}
 
-          {/* 13. Award-Winning TV Shows */}
-          {renderRow('Award-Winning TV Shows', topRatedTv)}
+        {/* 14. Drama Movies */}
+        {renderRow('Drama Movies', dramaMovies)}
 
-          {/* 14. Drama Movies */}
-          {renderRow('Drama Movies', dramaMovies)}
+        {/* 15. Horror Movies (hidden for kids) */}
+        {renderRow('Horror Movies', horrorMovies)}
 
-          {/* 15. Horror Movies (hidden for kids) */}
-          {renderRow('Horror Movies', horrorMovies)}
+        {/* 16. Romantic Movies */}
+        {renderRow('Romantic Movies', romanceMovies)}
 
-          {/* 16. Romantic Movies */}
-          {renderRow('Romantic Movies', romanceMovies)}
+        {/* 17. Documentaries */}
+        {renderRow('Documentaries', documentaries)}
 
-          {/* 17. Documentaries */}
-          {renderRow('Documentaries', documentaries)}
-        </View>
       </ScrollView>
     </View>
   );
@@ -525,20 +549,9 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   pageGradient: { ...StyleSheet.absoluteFillObject, zIndex: 1, top: TV_TOP_NAV_TOTAL_OFFSET + 360 },
   scrollView: { flex: 1, zIndex: 2 },
-  scrollContent: { paddingBottom: 80 },
-  heroContainer: { 
-    width: '100%', 
-    height: 450, 
-    position: 'relative',
-    backgroundColor: 'transparent',
+  scrollContent: {
+    paddingTop: TV_TOP_NAV_TOTAL_OFFSET,
+    paddingBottom: 80
   },
-  hero: { width: '100%', height: '100%' },
-  heroOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 180,
-  },
-  rowsContainer: { marginTop: -20, zIndex: 10 },
+  hero: { width: '100%', height: 500, marginBottom: 40 },
 });

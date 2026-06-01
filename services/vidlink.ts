@@ -80,15 +80,16 @@ export const VIDLINK_INTERCEPTOR_JS = `
           const text = await clone.text();
           dbg('Response length: ' + text.length);
           const json = JSON.parse(text);
-          if (json && json.stream && json.stream.playlist) {
+          if (json && json.stream && (json.stream.playlist || json.stream.qualities)) {
             resolved = true;
-            dbg('SUCCESS! Playlist found: ' + json.stream.playlist.substring(0, 80));
+            const hasPlaylist = !!json.stream.playlist;
+            dbg('SUCCESS! ' + (hasPlaylist ? 'Playlist: ' + json.stream.playlist.substring(0, 80) : 'Qualities: ' + Object.keys(json.stream.qualities || {}).join(',')));
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'VIDLINK_STREAM',
               data: json
             }));
           } else {
-            dbg('No stream.playlist in response: ' + JSON.stringify(json).substring(0, 200));
+            dbg('No stream.playlist or stream.qualities in response: ' + JSON.stringify(json).substring(0, 200));
           }
         } catch(e) {
           dbg('Parse error: ' + e.message);
@@ -117,9 +118,9 @@ export const VIDLINK_INTERCEPTOR_JS = `
         dbg('XHR MATCH! /api/b/ response received');
         try {
           const json = JSON.parse(this.responseText);
-          if (json && json.stream && json.stream.playlist) {
+          if (json && json.stream && (json.stream.playlist || json.stream.qualities)) {
             resolved = true;
-            dbg('XHR SUCCESS! Playlist: ' + json.stream.playlist.substring(0, 80));
+            dbg('XHR SUCCESS! ' + (json.stream.playlist ? 'Playlist: ' + json.stream.playlist.substring(0, 80) : 'Qualities: ' + Object.keys(json.stream.qualities || {}).join(',')));
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'VIDLINK_STREAM',
               data: json
@@ -150,17 +151,45 @@ export const VIDLINK_INTERCEPTOR_JS = `
  */
 export function parseVidLinkResponse(data: any): VidLinkStream | null {
   try {
-    if (!data?.stream?.playlist) return null;
+    const stream = data?.stream;
+    if (!stream) return null;
 
-    const stream = data.stream;
-    let playlistUrl: string = stream.playlist;
+    let playlistUrl: string = '';
+    let detectedType: 'hls' | 'mp4' = 'hls';
 
-    // FIX: Replace %2F (encoded slashes) in the proxy path ONLY.
-    // Using decodeURIComponent on the full URL breaks base64/token paths.
-    // e.g. .../proxy/file2%2F5RREG7don... → .../proxy/file2/5RREG7don...
-    playlistUrl = playlistUrl.replace(/%2F/gi, '/');
-
-    console.log(`[VidLink] Playlist URL: ${playlistUrl.substring(0, 120)}...`);
+    if (stream.playlist) {
+      // Standard HLS playlist
+      playlistUrl = stream.playlist;
+      playlistUrl = playlistUrl.replace(/%2F/gi, '/');
+      detectedType = 'hls';
+      console.log(`[VidLink] HLS Playlist URL: ${playlistUrl.substring(0, 120)}...`);
+    } else if (stream.qualities && typeof stream.qualities === 'object') {
+      // MP4 file qualities — pick highest available
+      detectedType = 'mp4';
+      const qualityKeys = Object.keys(stream.qualities)
+        .map(k => parseInt(k, 10))
+        .filter(k => !isNaN(k))
+        .sort((a, b) => b - a); // Highest first
+      
+      console.log(`[VidLink] MP4 qualities available: ${qualityKeys.join(', ')}p`);
+      
+      for (const q of qualityKeys) {
+        const entry = stream.qualities[q.toString()];
+        if (entry?.url) {
+          playlistUrl = entry.url;
+          console.log(`[VidLink] Selected ${q}p MP4: ${playlistUrl.substring(0, 120)}...`);
+          break;
+        }
+      }
+      
+      if (!playlistUrl) {
+        console.error('[VidLink] ❌ No valid MP4 URL found in qualities');
+        return null;
+      }
+    } else {
+      console.error('[VidLink] ❌ No playlist or qualities found in stream');
+      return null;
+    }
 
     // Conditionally add headers based on the proxy endpoint type:
     // - file2/ paths: require Referer + Origin (hotlink protection)
@@ -171,9 +200,11 @@ export function parseVidLinkResponse(data: any): VidLinkStream | null {
       Object.assign(responseHeaders, stream.headers);
     }
     
-    // Only fall back to Referer/Origin for file2 paths that don't embed headers
-    const isFile2Proxy = /\/proxy\/file\d+\//i.test(playlistUrl);
-    if (isFile2Proxy && !responseHeaders['Referer']) {
+    // Add Referer/Origin for proxy paths that need hotlink protection headers.
+    // Known patterns: /proxy/file2/, /proxy/_v1_*, /proxy/_v2_* etc.
+    // Exception: slh-eerht/ paths must NOT have Referer (encoded in URL, proxy rejects with 404).
+    const needsReferer = /\/proxy\/(file\d+|_v\d+_)/i.test(playlistUrl);
+    if (needsReferer && !responseHeaders['Referer']) {
       responseHeaders['Referer'] = 'https://vidlink.pro/';
       responseHeaders['Origin'] = 'https://vidlink.pro';
     }
@@ -181,6 +212,11 @@ export function parseVidLinkResponse(data: any): VidLinkStream | null {
     // Always enforce a standard browser User-Agent for all proxies to avoid 403 bot blocks
     if (!responseHeaders['User-Agent']) {
       responseHeaders['User-Agent'] = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+    }
+
+    // For MP4 direct URLs, add Referer if not a proxy path
+    if (detectedType === 'mp4' && !responseHeaders['Referer']) {
+      responseHeaders['Referer'] = 'https://vidlink.pro/';
     }
 
     // Captions

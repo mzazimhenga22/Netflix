@@ -109,6 +109,39 @@ export const fetchTrending = async (type: 'movie' | 'tv' | 'all' = 'all', maturi
   }
 };
 
+export const fetchContentAdvisory = async (id: string | number | undefined, type: 'movie' | 'tv' = 'movie') => {
+  if (!id) return null;
+  try {
+    if (type === 'movie') {
+      const data = await getWithRetry<any>(`/movie/${id}/release_dates`);
+      const usRelease = data.results?.find((r: any) => r.iso_3166_1 === 'US');
+      if (usRelease && usRelease.release_dates?.length > 0) {
+        const cert = usRelease.release_dates.find((d: any) => d.certification) || usRelease.release_dates[0];
+        if (cert && cert.certification) {
+          const descriptors = cert.descriptors || [];
+          return {
+            rating: cert.certification,
+            advisoryText: descriptors.length > 0 ? `Contains ${descriptors.join(', ').toLowerCase()}` : ''
+          };
+        }
+      }
+    } else {
+      const data = await getWithRetry<any>(`/tv/${id}/content_ratings`);
+      const usRating = data.results?.find((r: any) => r.iso_3166_1 === 'US');
+      if (usRating && usRating.rating) {
+        const descriptors = usRating.descriptors || [];
+        return {
+          rating: usRating.rating,
+          advisoryText: descriptors.length > 0 ? `Contains ${descriptors.join(', ').toLowerCase()}` : ''
+        };
+      }
+    }
+  } catch (e) {
+    console.log('[TMDB] Error fetching content advisory:', e);
+  }
+  
+  return { rating: type === 'movie' ? 'PG-13' : 'TV-14', advisoryText: '' };
+};
 export const fetchPopular = async (type: 'movie' | 'tv' = 'movie', maturityLevel?: 'G' | 'PG' | 'TV-14' | 'MA') => {
   const data = await getWithRetry<any>(`/${type}/popular`, {
     params: { ...getMaturityParams(maturityLevel) }

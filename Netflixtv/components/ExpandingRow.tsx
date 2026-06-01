@@ -1,5 +1,8 @@
 import React, { forwardRef, useMemo } from 'react';
-import { requireNativeComponent, ViewProps, NativeSyntheticEvent } from 'react-native';
+import { requireNativeComponent, ViewProps, NativeSyntheticEvent, Alert } from 'react-native';
+import { router } from 'expo-router';
+import { isTitleLockedForSubscription } from '../services/contentAccess';
+import { useProfile } from '../context/ProfileContext';
 
 interface Movie {
   id: string | number;
@@ -46,24 +49,18 @@ const ExpandingRow = forwardRef<any, ExpandingRowProps>(function ExpandingRow({
   title, content, focusedStreamUrl, focusedStreamHeaders,
   showRank, preferredMovieId, focusRequestToken, onItemFocus, onItemPress, style
 }, ref) {
-  const [isFreePlan, setIsFreePlan] = React.useState(false);
-
-  React.useEffect(() => {
-    const { SubscriptionService } = require('../services/SubscriptionService');
-    const unsub = SubscriptionService.listenToSubscription((sub: any) => {
-      setIsFreePlan(sub.status !== 'active');
-    });
-    return () => unsub();
-  }, []);
+  // Use centralized subscription from ProfileContext instead of per-row listeners.
+  // Previously each ExpandingRow created its own Firestore onSnapshot — on the Home
+  // screen with 17 rows, that was 17 redundant listeners for the same document.
+  const { subscriptionStatus } = useProfile();
 
   const jsonContent = useMemo(() => {
     const processedContent = content.map(item => {
-      const hash = String(item.id).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
-      const isLocked = isFreePlan && (hash % 3 === 0);
+      const isLocked = isTitleLockedForSubscription(item.id, subscriptionStatus);
       return { ...item, isLocked };
     });
     return JSON.stringify(processedContent);
-  }, [content, isFreePlan]);
+  }, [content, subscriptionStatus]);
 
   const handleFocus = (event: NativeSyntheticEvent<ItemEvent>) => {
     if (onItemFocus) {
@@ -80,10 +77,16 @@ const ExpandingRow = forwardRef<any, ExpandingRowProps>(function ExpandingRow({
     try {
       const movie = JSON.parse(event.nativeEvent.movie);
       if (movie.isLocked) {
-        const { Alert } = require('react-native');
         Alert.alert(
           'Upgrade Required',
-          'This content is locked on the Free Plan. Scan the QR code on the main screen to upgrade.'
+          'This content is locked on the Free Plan. Upgrade your subscription to unlock all titles.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: '⬆ Upgrade Now',
+              onPress: () => router.push('/upgrade' as any),
+            },
+          ]
         );
         return;
       }

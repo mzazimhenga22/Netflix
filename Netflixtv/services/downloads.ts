@@ -124,7 +124,7 @@ export const getDownloadLink = async (
   year?: string
 ): Promise<{ url: string; headers: Record<string, string> } | null> => {
   try {
-    const result = await resolveStreamFromCloud(id, type, season, episode);
+    const result = await resolveStreamFromCloud(id, type, season, episode, { title: title });
     if (result?.url) {
       return { url: result.url, headers: result.headers || {} };
     }

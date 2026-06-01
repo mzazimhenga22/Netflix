@@ -16,13 +16,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import android.util.Base64
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.security.MessageDigest
 
 class TvNativeModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
     companion object {
         private const val TAG = "TvNative"
         private const val TMDB_API_KEY = "8baba8ab6b8bbe247645bcae7df63d0d"
-        private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14; SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        // Real desktop Chrome UA — SmartTV/Android UAs get CDN-poisoned (220884 garbage)
+        private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        private var NET22_COOKIES = "user_token=31deeb6effad57af95225c8473a0fb83; t_hash_t=4b8a56e529d55c3a924142a370bd63d6%3A%3A9824f100144d301f2cde6bedd66d2c7b%3A%3A1777974213%3A%3Aek%3A%3Ap"
+        private var NET52_COOKIES = "user_token=31deeb6effad57af95225c8473a0fb83; t_hash_t=4b8a56e529d55c3a924142a370bd63d6%3A%3A9824f100144d301f2cde6bedd66d2c7b%3A%3A1777974213%3A%3Aek%3A%3Ap"
+        // Known poison CDN identifiers — if these appear in M3U8 responses, the CDN has fingerprinted us
+        // Note: .jpg extensions are normal CDN obfuscation for real video segments
+        private val POISON_MARKERS = listOf("/files/220884/")
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -33,6 +42,128 @@ class TvNativeModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         .followRedirects(true).followSslRedirects(true).build()
 
     override fun getName(): String = "TvNativeModule"
+
+    @ReactMethod
+    fun setNetMirrorCookies(net22Cookie: String, net52Cookie: String, promise: Promise) {
+        if (net22Cookie.isNotBlank()) NET22_COOKIES = net22Cookie
+        if (net52Cookie.isNotBlank()) NET52_COOKIES = net52Cookie
+        Log.d(TAG, "NetMirror cookies updated dynamically from Javascript")
+        promise.resolve(true)
+    }
+
+    /**
+     * Self-healing cookie refresh: Opens hidden WebViews to net22.cc and net52.cc,
+     * lets the site establish a session, then extracts cookies from Android's CookieManager.
+     * This is the PERMANENT solution — no manual capture needed.
+     */
+    @ReactMethod
+    fun refreshNetMirrorCookies(promise: Promise) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        mainHandler.post {
+            try {
+                Log.d(TAG, "🔄 Starting self-healing cookie refresh...")
+                val cookieManager = android.webkit.CookieManager.getInstance()
+                cookieManager.setAcceptCookie(true)
+                
+                // Clear old cookies for these domains
+                cookieManager.removeAllCookies(null)
+                
+                var net22Done = false
+                var net52Done = false
+                val results = mutableMapOf<String, String>()
+
+                fun checkComplete() {
+                    if (net22Done && net52Done) {
+                        Log.d(TAG, "🔄 Both domains refreshed")
+                        if (results["net22"]?.isNotBlank() == true) {
+                            NET22_COOKIES = results["net22"]!!
+                            Log.d(TAG, "✅ Net22 cookies refreshed: ${NET22_COOKIES.take(50)}...")
+                        }
+                        if (results["net52"]?.isNotBlank() == true) {
+                            NET52_COOKIES = results["net52"]!!
+                            Log.d(TAG, "✅ Net52 cookies refreshed: ${NET52_COOKIES.take(50)}...")
+                        }
+                        
+                        val result = WritableNativeMap().apply {
+                            putString("net22Cookie", results["net22"] ?: "")
+                            putString("net52Cookie", results["net52"] ?: "")
+                            putBoolean("success", results.values.any { it.isNotBlank() })
+                        }
+                        promise.resolve(result)
+                    }
+                }
+
+                fun loadSiteAndExtract(domain: String, key: String) {
+                    val webView = WebView(reactApplicationContext)
+                    webView.settings.javaScriptEnabled = true
+                    webView.settings.domStorageEnabled = true
+                    webView.settings.userAgentString = USER_AGENT
+                    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
+                    webView.webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            // Wait a moment for any JS-set cookies
+                            mainHandler.postDelayed({
+                                val rawCookies = cookieManager.getCookie("https://$domain") ?: ""
+                                Log.d(TAG, "🔄 [$domain] Raw cookies: ${rawCookies.take(80)}...")
+                                
+                                // Filter to only the important session cookies
+                                val parts = rawCookies.split(";").map { it.trim() }
+                                val important = parts.filter { p ->
+                                    p.startsWith("user_token=") || p.startsWith("t_hash_t=") || p.startsWith("t_hash=")
+                                }
+                                results[key] = important.joinToString("; ")
+                                
+                                // Cleanup
+                                view?.destroy()
+                                
+                                if (key == "net22") net22Done = true else net52Done = true
+                                checkComplete()
+                            }, 3000) // 3s wait for cookies to settle
+                        }
+                    }
+
+                    Log.d(TAG, "🔄 Loading https://$domain/home ...")
+                    webView.loadUrl("https://$domain/home")
+                    
+                    // Safety timeout
+                    mainHandler.postDelayed({
+                        if (key == "net22" && !net22Done) {
+                            net22Done = true
+                            val rawCookies = cookieManager.getCookie("https://$domain") ?: ""
+                            val parts = rawCookies.split(";").map { it.trim() }
+                            val important = parts.filter { p ->
+                                p.startsWith("user_token=") || p.startsWith("t_hash_t=") || p.startsWith("t_hash=")
+                            }
+                            results[key] = important.joinToString("; ")
+                            webView.destroy()
+                            checkComplete()
+                        }
+                        if (key == "net52" && !net52Done) {
+                            net52Done = true
+                            val rawCookies = cookieManager.getCookie("https://$domain") ?: ""
+                            val parts = rawCookies.split(";").map { it.trim() }
+                            val important = parts.filter { p ->
+                                p.startsWith("user_token=") || p.startsWith("t_hash_t=") || p.startsWith("t_hash=")
+                            }
+                            results[key] = important.joinToString("; ")
+                            webView.destroy()
+                            checkComplete()
+                        }
+                    }, 15000) // 15s max per domain
+                }
+
+                // Launch both in parallel
+                loadSiteAndExtract("net22.cc", "net22")
+                loadSiteAndExtract("net52.cc", "net52")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Cookie refresh failed: ${e.message}")
+                promise.reject("COOKIE_REFRESH_FAILED", e.message)
+            }
+        }
+    }
 
     // ========== VidSrc Direct Stream Resolution (Native WebView) ==========
 
@@ -827,6 +958,591 @@ class TvNativeModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         }
     }
 
+    private fun urlEncode(value: String): String =
+        URLEncoder.encode(value, "UTF-8")
+
+    private fun md5(value: String): String {
+        val bytes = MessageDigest.getInstance("MD5").digest(value.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun netMirrorRequest(url: String, cookie: String, referer: String = "https://net52.cc/home"): String {
+        Log.d(TAG, "HTTP REQ: $url")
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Referer", referer)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("sec-ch-ua", "\"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not.A/Brand\";v=\"8\"")
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", "\"Windows\"")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
+            .apply { if (cookie.isNotBlank()) header("Cookie", cookie) }
+            .build()
+        client.newCall(request).execute().use { response ->
+            Log.d(TAG, "HTTP RES [${response.code}] for $url")
+            val body = response.body?.string() ?: ""
+            if (body.length < 500) {
+                Log.d(TAG, "HTTP BODY: $body")
+            } else {
+                Log.d(TAG, "HTTP BODY: ${body.take(500)}... (total ${body.length} chars)")
+            }
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code} for $url")
+            return body
+        }
+    }
+
+    private fun netMirrorNoRedirect(url: String, cookie: String, referer: String = "https://net52.cc/home"): Response {
+        val noRedirectClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Referer", referer)
+            .header("Cookie", cookie)
+            .header("Accept", "*/*")
+            .header("sec-ch-ua", "\"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not.A/Brand\";v=\"8\"")
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", "\"Windows\"")
+            .build()
+        return noRedirectClient.newCall(request).execute()
+    }
+
+    /**
+     * Fetches an M3U8 from the CDN with cross-origin headers.
+     * The CDN (freecdn2/freecdn4) fingerprints requests differently than net52.cc,
+     * so we need specific Sec-Fetch-Site: cross-site and Origin headers.
+     */
+    private fun fetchCdnM3u8(url: String, originDomain: String = "https://net52.cc"): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Origin", originDomain)
+            .header("Referer", "$originDomain/")
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("sec-ch-ua", "\"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not.A/Brand\";v=\"8\"")
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", "\"Windows\"")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "cross-site")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("CDN HTTP ${response.code}")
+            return response.body?.string() ?: ""
+        }
+    }
+
+    /**
+     * Check if an M3U8 body is poisoned by the CDN (contains known garbage markers).
+     */
+    private fun isPoisonedM3u8(body: String): Boolean {
+        return POISON_MARKERS.any { marker -> body.contains(marker, ignoreCase = true) }
+    }
+
+    private fun getTmdbInfoForNet22(tmdbId: String, type: String): JSONObject {
+        val mediaType = if (type == "tv") "tv" else "movie"
+        val body = netMirrorRequest(
+            "https://api.themoviedb.org/3/$mediaType/$tmdbId?api_key=$TMDB_API_KEY",
+            cookie = "",
+            referer = "https://www.themoviedb.org/"
+        )
+        val json = JSONObject(body)
+        val title = json.optString("title").ifEmpty { json.optString("name") }
+            .ifEmpty { json.optString("original_title") }
+            .ifEmpty { json.optString("original_name") }
+        
+        val date = json.optString("release_date").ifEmpty { json.optString("first_air_date") }
+        val year = if (date.length >= 4) date.substring(0, 4) else ""
+        
+        return JSONObject().apply {
+            put("title", title)
+            put("year", year)
+        }
+    }
+
+    private fun getTmdbEpisodeIdForNet22(tmdbId: String, season: Int, episode: Int): Pair<String, String>? {
+        if (season <= 0 || episode <= 0) return null
+        val body = netMirrorRequest(
+            "https://api.themoviedb.org/3/tv/$tmdbId/season/$season?api_key=$TMDB_API_KEY",
+            cookie = "",
+            referer = "https://www.themoviedb.org/"
+        )
+        val episodes = JSONObject(body).optJSONArray("episodes") ?: return null
+        for (i in 0 until episodes.length()) {
+            val item = episodes.getJSONObject(i)
+            if (item.optInt("episode_number") == episode) {
+                return Pair(item.optLong("id").toString(), item.optString("name"))
+            }
+        }
+        return null
+    }
+
+    @ReactMethod
+    fun resolveNet22(tmdbId: String, type: String, season: Int, episode: Int, promise: Promise) {
+        scope.launch {
+            try {
+                if (NET22_COOKIES.isBlank()) {
+                    promise.reject("NET22_COOKIES_MISSING", "Net22 cookies are not embedded")
+                    return@launch
+                }
+
+                Log.d(TAG, "Net22 resolving: TMDB $tmdbId ($type)")
+
+                val tm = (System.currentTimeMillis() / 1000L).toString()
+                val cookie = NET22_COOKIES
+
+                // Step 1: Get title from TMDB
+                val tmdbInfo = getTmdbInfoForNet22(tmdbId, type)
+                val searchTitle = tmdbInfo.getString("title")
+                val searchYear = tmdbInfo.getString("year")
+                if (searchTitle.isBlank()) throw Exception("No TMDB title")
+
+                Log.d(TAG, "Net22 searching: \"$searchTitle\" ($searchYear)")
+
+                // Step 2: Search via root search.php (returns numeric IDs)
+                val searchBody = netMirrorRequest(
+                    "https://net22.cc/search.php?s=${urlEncode(searchTitle)}&t=$tm",
+                    cookie,
+                    "https://net22.cc/home"
+                )
+                val searchJson = JSONObject(searchBody)
+                val results = searchJson.optJSONArray("searchResult")
+                    ?: throw Exception("Net22: No search results for \"$searchTitle\"")
+                if (results.length() == 0) throw Exception("Net22: Empty search results")
+
+                // Smart match: prefer title with matching year
+                var bestResult = results.getJSONObject(0)
+                if (searchYear.isNotBlank()) {
+                    for (i in 0 until results.length()) {
+                        val item = results.getJSONObject(i)
+                        val itemTitle = item.optString("t", "")
+                        if (itemTitle.contains(searchYear)) {
+                            bestResult = item
+                            break
+                        }
+                    }
+                }
+
+                var rootId = bestResult.optString("id")
+                val contentTitle = bestResult.optString("t", searchTitle)
+                if (rootId.isBlank()) throw Exception("Net22: No content ID from search")
+
+                Log.d(TAG, "Net22 found: id=$rootId title=\"$contentTitle\"")
+
+                // If TV show, we need the specific episode ID. Root API handles this via post.php
+                if (type == "tv" && episode > 0) {
+                    val postBody = netMirrorRequest(
+                        "https://net22.cc/post.php?id=$rootId&t=$tm",
+                        cookie,
+                        "https://net22.cc/home"
+                    )
+                    val postJson = JSONObject(postBody)
+                    val episodes = postJson.optJSONArray("episodes") ?: JSONArray()
+                    var epId = ""
+                    for (i in 0 until episodes.length()) {
+                        val ep = episodes.getJSONObject(i)
+                        if (ep.optString("s") == "S$season" && ep.optString("ep") == episode.toString()) {
+                            epId = ep.optString("id")
+                            break
+                        }
+                    }
+                    if (epId.isNotBlank()) {
+                        rootId = epId
+                        Log.d(TAG, "Net22 matched TV episode ID: $rootId")
+                    } else {
+                        throw Exception("Net22: Episode S${season}E${episode} not found")
+                    }
+                } else {
+                    // For movies, just register view
+                    try {
+                        netMirrorRequest(
+                            "https://net22.cc/post.php?id=$rootId&t=$tm",
+                            cookie,
+                            "https://net22.cc/home"
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Net22 post.php skipped: ${e.message}")
+                    }
+                }
+
+                // Step 4: Get playlist from root playlist.php
+                val playlistBody = netMirrorRequest(
+                    "https://net22.cc/playlist.php?id=$rootId&tm=$tm",
+                    cookie,
+                    "https://net22.cc/home"
+                )
+                val playlist = JSONArray(playlistBody)
+                if (playlist.length() == 0) throw Exception("Net22: Empty playlist")
+                val item = playlist.getJSONObject(0)
+
+                val sources = item.optJSONArray("sources") ?: throw Exception("Net22: No sources")
+                if (sources.length() == 0) throw Exception("Net22: Empty sources")
+
+                val file = sources.getJSONObject(0).optString("file")
+                if (file.isBlank()) throw Exception("Net22: No master playlist file")
+
+                // Build full master URL (root API returns /hls/ instead of /pv/)
+                var masterUrl = when {
+                    file.startsWith("http") -> file
+                    else -> "https://net22.cc$file"
+                }
+
+                // Extract hToken from raw file path if present
+                val tokenRegex22 = """[?&](in=[^&\s"']+)""".toRegex()
+                val tokenMatch22 = tokenRegex22.find(file)
+                val hToken = tokenMatch22?.groupValues?.get(1) ?: ""
+
+                // Validate: Fetch the master M3U8 and check for CDN poisoning
+                Log.d(TAG, "Net22 validating master: ${masterUrl.take(100)}")
+                val masterBody = try {
+                    if (masterUrl.contains("cdn")) fetchCdnM3u8(masterUrl, "https://net22.cc")
+                    else netMirrorRequest(masterUrl, cookie, "https://net22.cc/")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Net22 master fetch failed: ${e.message}")
+                    "" // Continue — player might still resolve it
+                }
+
+                var resolvedUrl = masterUrl
+
+                if (masterBody.isNotBlank()) {
+                    // 1. Fix dead CDN domains (nm-cdn → freecdn)
+                    var rewrittenBody = masterBody.replace("""nm-cdn(\d+)?\.top""".toRegex()) { match ->
+                        val p1 = match.groups[1]?.value
+                        if (p1 != null) "freecdn$p1.top" else "freecdn1.top"
+                    }
+
+                    // 2. Fix broken empty-hostname URIs (https:///files/ → https://{cdn}/files/)
+                    if (rewrittenBody.contains("https:///")) {
+                        rewrittenBody = rewrittenBody.replace("https:///", "https://s21.freecdn4.top/")
+                        Log.d(TAG, "Net22: Fixed empty-hostname URIs")
+                    }
+
+                    // 3. Replace placeholder auth tokens with real hToken
+                    if (hToken.isNotBlank() && hToken.startsWith("in=")) {
+                        rewrittenBody = rewrittenBody.replace("""in=unknown[^&\s"'\r\n]*""".toRegex(), hToken)
+                    }
+
+                    // 4. Unpoison: replace 220884 with real content ID
+                    val audioIdMatch22 = """/files/([A-Z0-9]{10,}|\d{5,})/a/""".toRegex().find(rewrittenBody)
+                    val realFileId = audioIdMatch22?.groupValues?.get(1) ?: rootId
+                    if (rewrittenBody.contains("/files/220884/") && realFileId.isNotBlank()) {
+                        Log.d(TAG, "Net22 unpoisoning: replacing 220884 with $realFileId")
+                        rewrittenBody = rewrittenBody.replace("/files/220884/", "/files/$realFileId/")
+                    }
+
+                    if (isPoisonedM3u8(rewrittenBody)) {
+                        throw Exception("Net22: CDN returned poisoned M3U8 and unpoisoning failed")
+                    }
+
+                    // Apply synthetic HLS proxying same path as audio
+                    rewrittenBody = buildSyntheticHls(rewrittenBody, realFileId)
+
+                    // 5. Build data URI
+                    val base64Bytes = Base64.encode(rewrittenBody.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    resolvedUrl = "data:application/x-mpegURL;base64,${String(base64Bytes, Charsets.UTF_8)}"
+
+                    Log.d(TAG, "Net22 manifest rewritten and encoded to data URI (${rewrittenBody.length} bytes)")
+                }
+
+                // Captions
+                val captions = WritableNativeArray()
+                val tracks = item.optJSONArray("tracks") ?: JSONArray()
+                for (i in 0 until tracks.length()) {
+                    val track = tracks.getJSONObject(i)
+                    if (track.optString("kind") != "captions") continue
+                    val captionUrl = track.optString("file")
+                    captions.pushMap(WritableNativeMap().apply {
+                        putString("id", track.optString("language", "en"))
+                        putString("url", captionUrl)
+                        putString("language", track.optString("label", track.optString("language", "English")))
+                        putString("type", if (captionUrl.endsWith(".vtt")) "vtt" else "srt")
+                    })
+                }
+
+                val headers = WritableNativeMap().apply {
+                    putString("User-Agent", USER_AGENT)
+                    putString("Referer", "https://net22.cc/")
+                    putString("Origin", "https://net22.cc")
+                    putString("Cookie", cookie)
+                }
+
+                val result = WritableNativeMap().apply {
+                    putString("url", resolvedUrl)
+                    putMap("headers", headers)
+                    putArray("captions", captions)
+                    putArray("markers", WritableNativeArray())
+                    putString("sourceId", "net22")
+                    putDouble("expiresAt", (System.currentTimeMillis() + 3 * 60 * 60 * 1000).toDouble())
+                    putString("title", contentTitle)
+                }
+
+                Log.d(TAG, "Net22 resolved: ${resolvedUrl.take(100)}")
+                promise.resolve(result)
+            } catch (e: Exception) {
+                Log.e(TAG, "Net22 failed: ${e.message}")
+                promise.reject("NET22_FAILED", e.message)
+            }
+        }
+    }
+
+    // ========== Net52 /pv/ Stream Resolution (Disney+/Prime Video) ==========
+
+    @ReactMethod
+    fun resolveNet52(tmdbId: String, type: String, season: Int, episode: Int, promise: Promise) {
+        scope.launch {
+            try {
+                if (NET52_COOKIES.isBlank()) {
+                    promise.reject("NET52_COOKIES_MISSING", "Net52 cookies are not embedded")
+                    return@launch
+                }
+
+                Log.d(TAG, "Net52 resolving: TMDB $tmdbId ($type)")
+
+                // Step 1: Get title from TMDB
+                val tmdbInfo = getTmdbInfoForNet22(tmdbId, type)
+                val searchTitle = tmdbInfo.getString("title")
+                val searchYear = tmdbInfo.getString("year")
+                if (searchTitle.isBlank()) throw Exception("No TMDB title")
+
+                val tm = (System.currentTimeMillis() / 1000L).toString()
+                val cookie = NET52_COOKIES
+
+                // --- DUAL API SEARCH: Root API (Netflix) vs /pv/ API (Disney/Prime) ---
+                var searchBody = ""
+                var searchJson = JSONObject()
+                var results: JSONArray? = null
+                var isRootApi = true
+
+                // 1. Try Root API first (Netflix titles)
+                try {
+                    searchBody = netMirrorRequest(
+                        "https://net52.cc/search.php?s=${urlEncode(searchTitle)}&t=$tm",
+                        cookie,
+                        "https://net52.cc/home"
+                    )
+                    searchJson = JSONObject(searchBody)
+                    results = searchJson.optJSONArray("searchResult")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Net52 root search failed, trying /pv/: ${e.message}")
+                }
+
+                // 2. If no results on Root, try /pv/ API (Disney/Prime titles)
+                if (results == null || results.length() == 0) {
+                    isRootApi = false
+                    searchBody = netMirrorRequest(
+                        "https://net52.cc/pv/search.php?s=${urlEncode(searchTitle)}&t=$tm",
+                        cookie,
+                        "https://net52.cc/search"
+                    )
+                    searchJson = JSONObject(searchBody)
+                    results = searchJson.optJSONArray("searchResult")
+                        ?: throw Exception("Net52: No search results in either Root or /pv/ API for \"$searchTitle\"")
+                    if (results.length() == 0) throw Exception("Net52: Empty search results in both APIs")
+                }
+
+                Log.d(TAG, "Net52 searching: \"$searchTitle\" ($searchYear). API: ${if(isRootApi) "Root" else "/pv/"}")
+
+                // Smart match: prefer title with matching year
+                var bestResult = results.getJSONObject(0)
+                if (searchYear.isNotBlank()) {
+                    for (i in 0 until results.length()) {
+                        val item = results.getJSONObject(i)
+                        val itemTitle = item.optString("t", "")
+                        if (itemTitle.contains(searchYear)) {
+                            bestResult = item
+                            break
+                        }
+                    }
+                }
+
+                var resolvedId = bestResult.optString("id")
+                val contentTitle = bestResult.optString("t", searchTitle)
+                if (resolvedId.isBlank()) throw Exception("Net52: No content ID from search")
+
+                Log.d(TAG, "Net52 found: id=$resolvedId title=\"$contentTitle\" (Root API: $isRootApi)")
+
+                // Step 3: Call post.php and handle TV episodes
+                if (isRootApi) {
+                    // Root API episode matching
+                    if (type == "tv" && episode > 0) {
+                        val postBody = netMirrorRequest("https://net52.cc/post.php?id=$resolvedId&t=$tm", cookie, "https://net52.cc/home")
+                        val episodes = JSONObject(postBody).optJSONArray("episodes") ?: JSONArray()
+                        var epId = ""
+                        for (i in 0 until episodes.length()) {
+                            val ep = episodes.getJSONObject(i)
+                            if (ep.optString("s") == "S$season" && ep.optString("ep") == episode.toString()) {
+                                epId = ep.optString("id")
+                                break
+                            }
+                        }
+                        if (epId.isNotBlank()) resolvedId = epId else throw Exception("Net52: Episode not found")
+                    } else {
+                        try { netMirrorRequest("https://net52.cc/post.php?id=$resolvedId&t=$tm", cookie, "https://net52.cc/home") } catch (e: Exception) {}
+                    }
+                } else {
+                    // /pv/ API register view
+                    try { netMirrorRequest("https://net52.cc/pv/post.php?id=${urlEncode(resolvedId)}&t=$tm", cookie, "https://net52.cc/search") } catch (e: Exception) {}
+                }
+
+                // Step 4: Get playlist
+                val playlistUrl = if (isRootApi) "https://net52.cc/playlist.php?id=$resolvedId&tm=$tm" 
+                                  else "https://net52.cc/pv/playlist.php?id=${urlEncode(resolvedId)}&tm=$tm"
+                val referer = if (isRootApi) "https://net52.cc/home" else "https://net52.cc/search"
+                
+                val playlistBody = netMirrorRequest(playlistUrl, cookie, referer)
+                val playlist = JSONArray(playlistBody)
+                if (playlist.length() == 0) throw Exception("Net52: Empty playlist")
+
+                var item = playlist.getJSONObject(0)
+                if (!isRootApi && type == "tv" && episode > 0) {
+                    // /pv/ API episode matching from playlist
+                    for (i in 0 until playlist.length()) {
+                        val epItem = playlist.getJSONObject(i)
+                        val epTitle = epItem.optString("t", "")
+                        if (epTitle.contains("Episode $episode", ignoreCase = true) ||
+                            epTitle.contains("E$episode", ignoreCase = true) ||
+                            epTitle.startsWith("$episode ") ||
+                            (playlist.length() >= episode && i == episode - 1 && !epTitle.contains("Episode"))) {
+                            item = epItem
+                            break
+                        }
+                    }
+                }
+
+                val sources = item.optJSONArray("sources") ?: throw Exception("Net52: No sources")
+                if (sources.length() == 0) throw Exception("Net52: Empty sources")
+
+                val file = sources.getJSONObject(0).optString("file")
+                if (file.isBlank()) throw Exception("Net52: No master playlist file")
+
+                // Build full master URL
+                val masterUrl = when {
+                    file.startsWith("http") -> file
+                    isRootApi -> "https://net52.cc$file"
+                    file.startsWith("/pv/") -> "https://net52.cc$file"
+                    file.startsWith("/") -> "https://net52.cc/pv$file"
+                    else -> "https://net52.cc/pv/$file"
+                }
+
+                // Extract hToken from raw file path if present (playlist returns it directly)
+                val tokenRegex = """[?&](in=[^&\s"']+)""".toRegex()
+                val tokenMatch = tokenRegex.find(file)
+                val hToken = tokenMatch?.groupValues?.get(1) ?: ""
+
+                // Validate: Fetch the master M3U8 and check for CDN poisoning or dead CDNs
+                Log.d(TAG, "Net52 validating master: ${masterUrl.take(100)}")
+                val masterBody = try {
+                    if (masterUrl.contains("cdn")) fetchCdnM3u8(masterUrl, "https://net52.cc")
+                    else netMirrorRequest(masterUrl, cookie, "https://net52.cc/")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Net52 master fetch failed: ${e.message}")
+                    "" // Continue — player might still resolve it
+                }
+
+                var resolvedUrl = masterUrl
+
+                if (masterBody.isNotBlank()) {
+                    // 1. Fix dead CDN domains
+                    var rewrittenBody = masterBody.replace("""nm-cdn(\d+)?\.top""".toRegex()) { match ->
+                        val p1 = match.groups[1]?.value
+                        if (p1 != null) "freecdn$p1.top" else "freecdn1.top"
+                    }
+
+                    // 2. Extract fallback hostname
+                    var fallbackHostname = ""
+                    for (sIdx in 0 until sources.length()) {
+                        val sFile = sources.getJSONObject(sIdx).optString("file")
+                        val normalized = if (sFile.startsWith("http")) sFile else "https://net52.cc$sFile"
+                        val match = """https?://([^/]+)""".toRegex().find(normalized)
+                        if (match != null) {
+                            val host = match.groupValues[1]
+                            if (!host.contains("net22.cc") && !host.contains("net52.cc") && !host.contains("netfree.cc")) {
+                                fallbackHostname = host
+                                break
+                            }
+                        }
+                    }
+                    if (fallbackHostname.isBlank()) {
+                        fallbackHostname = "s21.freecdn4.top"
+                    }
+
+                    // 3. Fix empty-hostname URIs
+                    if (rewrittenBody.contains("https:///")) {
+                        rewrittenBody = rewrittenBody.replace("https:///", "https://$fallbackHostname/")
+                    }
+
+                    // 4. Replace placeholder auth tokens with real hToken
+                    if (hToken.isNotBlank() && hToken.startsWith("in=")) {
+                        rewrittenBody = rewrittenBody.replace("""in=unknown[^&\s"'\r\n]*""".toRegex(), hToken)
+                    }
+
+                    // 5. Unpoison: replace 220884 with real content ID
+                    val audioIdMatch = """/files/([A-Z0-9]{10,})/a/""".toRegex().find(rewrittenBody)
+                    val realFileId = audioIdMatch?.groupValues?.get(1) ?: resolvedId
+                    if (realFileId.isNotBlank()) {
+                        Log.d(TAG, "Net52 unpoisoning: replacing 220884 with $realFileId")
+                        rewrittenBody = rewrittenBody.replace("/files/220884/", "/files/$realFileId/")
+                    }
+
+                    if (isPoisonedM3u8(rewrittenBody)) {
+                        throw Exception("Net52: CDN returned poisoned M3U8 and unpoisoning failed")
+                    }
+
+                    // Apply synthetic HLS proxying same path as audio
+                    rewrittenBody = buildSyntheticHls(rewrittenBody, realFileId)
+
+                    // 6. Build data URI
+                    val base64Bytes = Base64.encode(rewrittenBody.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    resolvedUrl = "data:application/x-mpegURL;base64,${String(base64Bytes, Charsets.UTF_8)}"
+                    
+                    Log.d(TAG, "Net52 manifest rewritten and encoded to data URI successfully!")
+                }
+
+                // Captions
+                val captions = WritableNativeArray()
+                val tracks = item.optJSONArray("tracks") ?: JSONArray()
+                for (i in 0 until tracks.length()) {
+                    val track = tracks.getJSONObject(i)
+                    if (track.optString("kind") != "captions") continue
+                    val captionUrl = track.optString("file")
+                    captions.pushMap(WritableNativeMap().apply {
+                        putString("id", track.optString("language", "en"))
+                        putString("url", captionUrl)
+                        putString("language", track.optString("label", track.optString("language", "English")))
+                        putString("type", if (captionUrl.endsWith(".vtt")) "vtt" else "srt")
+                    })
+                }
+
+                val headers = WritableNativeMap().apply {
+                    putString("User-Agent", USER_AGENT)
+                    putString("Referer", "https://net52.cc/")
+                    putString("Origin", "https://net52.cc")
+                    putString("Cookie", cookie)
+                }
+
+                val result = WritableNativeMap().apply {
+                    putString("url", resolvedUrl)
+                    putMap("headers", headers)
+                    putArray("captions", captions)
+                    putArray("markers", WritableNativeArray())
+                    putString("sourceId", "net52")
+                    putDouble("expiresAt", (System.currentTimeMillis() + 3 * 60 * 60 * 1000).toDouble())
+                    putString("title", contentTitle)
+                }
+
+                Log.d(TAG, "Net52 resolved: ${resolvedUrl.take(100)}")
+                promise.resolve(result)
+            } catch (e: Exception) {
+                Log.e(TAG, "Net52 failed: ${e.message}")
+                promise.reject("NET52_FAILED", e.message)
+            }
+        }
+    }
+
     @ReactMethod
     fun resolveSuperEmbed(tmdbId: String, type: String, season: Int, episode: Int, promise: Promise) {
         val embedUrl = if (type == "tv" && season > 0 && episode > 0)
@@ -1009,6 +1725,95 @@ class TvNativeModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
             } catch (_: Exception) {}
         }
         return null
+    }
+
+    private fun buildSyntheticHls(masterBody: String, rootId: String): String {
+        try {
+            // 1. Find audio URI in the master manifest
+            val audioUriRegex = """URI="([^"]*/a/\d+/[^\s"]+\.m3u8[^"]*)"""".toRegex(RegexOption.IGNORE_CASE)
+            val audioUriMatch = audioUriRegex.find(masterBody) ?: return masterBody
+            val audioUri = audioUriMatch.groupValues[1]
+            Log.d(TAG, "[SyntheticHLS] Found audio URI: $audioUri")
+
+            // Parse host and real ID from audio URI
+            val audioUrl = java.net.URL(audioUri)
+            val audioHost = audioUrl.host
+            
+            val fileIdRegex = """/files/([^/]+)/""".toRegex()
+            val fileIdMatch = fileIdRegex.find(audioUrl.path)
+            val realFileId = fileIdMatch?.groupValues?.get(1) ?: rootId
+            Log.d(TAG, "[SyntheticHLS] Audio host: $audioHost, Real File ID: $realFileId")
+
+            // 2. Fetch the audio playlist
+            Log.d(TAG, "[SyntheticHLS] Fetching audio playlist: $audioUri")
+            val audioPlaylistText = netMirrorRequest(audioUri, cookie = "", referer = "https://net22.cc/")
+            if (!audioPlaylistText.contains("#EXTINF")) {
+                Log.w(TAG, "[SyntheticHLS] Audio playlist does not contain #EXTINF")
+                return masterBody
+            }
+
+            // Parse target duration and segments
+            val lines = audioPlaylistText.split("\n")
+            val targetDurationLine = lines.find { it.contains("#EXT-X-TARGETDURATION:") } ?: "#EXT-X-TARGETDURATION:10"
+            
+            val segments = mutableListOf<Pair<String, String>>()
+            var currentDuration = ""
+            for (line in lines) {
+                val trimmed = line.trim()
+                if (trimmed.startsWith("#EXTINF:")) {
+                    currentDuration = trimmed
+                } else if (trimmed.isNotBlank() && !trimmed.startsWith("#")) {
+                    segments.add(Pair(currentDuration, trimmed))
+                }
+            }
+
+            if (segments.isEmpty()) {
+                Log.w(TAG, "[SyntheticHLS] No segments found in audio playlist")
+                return masterBody
+            }
+
+            // 3. Rebuild the master manifest
+            val masterLines = masterBody.split("\n")
+            val newMasterLines = mutableListOf<String>()
+
+            for (masterLine in masterLines) {
+                val trimmedLine = masterLine.trim()
+                if (trimmedLine.isNotBlank() && !trimmedLine.startsWith("#") && (trimmedLine.contains(".m3u8") || trimmedLine.contains("/files/"))) {
+                    // Extract quality
+                    val qualityRegex = """/files/[^/]+/([0-9a-zA-Z]+p)/""".toRegex()
+                    val qualityMatch = qualityRegex.find(trimmedLine) ?: """/([0-9a-zA-Z]+p)\.m3u8""".toRegex().find(trimmedLine)
+                    val quality = qualityMatch?.groupValues?.get(1) ?: "720p"
+
+                    Log.d(TAG, "[SyntheticHLS] Building synthetic variant for quality: $quality")
+
+                    // Build synthetic variant playlist
+                    val syntheticTextBuilder = StringBuilder()
+                    syntheticTextBuilder.append("#EXTM3U\n")
+                    syntheticTextBuilder.append("#EXT-X-VERSION:3\n")
+                    syntheticTextBuilder.append(targetDurationLine).append("\n")
+                    syntheticTextBuilder.append("#EXT-X-MEDIA-SEQUENCE:0\n")
+                    for (seg in segments) {
+                        val videoSegName = seg.second.replace(".js", ".jpg")
+                        val segUrl = "https://$audioHost/files/$realFileId/$quality/$videoSegName"
+                        syntheticTextBuilder.append(seg.first).append("\n")
+                        syntheticTextBuilder.append(segUrl).append("\n")
+                    }
+                    syntheticTextBuilder.append("#EXT-X-ENDLIST\n")
+
+                    // Base64 encode
+                    val base64Bytes = Base64.encode(syntheticTextBuilder.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    val dataUri = "data:application/x-mpegURL;base64,${String(base64Bytes, Charsets.UTF_8)}"
+                    newMasterLines.add(dataUri)
+                } else {
+                    newMasterLines.add(masterLine)
+                }
+            }
+
+            return newMasterLines.joinToString("\n")
+        } catch (e: Exception) {
+            Log.e(TAG, "[SyntheticHLS] Error generating synthetic HLS: ${e.message}", e)
+            return masterBody
+        }
     }
 
     override fun onCatalystInstanceDestroy() { super.onCatalystInstanceDestroy(); scope.cancel() }

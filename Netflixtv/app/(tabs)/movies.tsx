@@ -19,6 +19,7 @@ export default function MoviesScreen() {
   const { pageColor, setPageColor } = usePageColor();
   const { setHeroFocusTag } = useTvFocusBridge();
   const [loading, setLoading] = useState(true);
+  const [isScreenActive, setIsScreenActive] = useState(true);
   const [heroMovie, setHeroMovie] = useState<any>(null);
   const heroBannerRef = useRef<any>(null);
   // Stream state
@@ -39,21 +40,39 @@ export default function MoviesScreen() {
   const currentHeroId = useRef<string | null>(null);
   const currentCardId = useRef<string | null>(null);
 
-  useEffect(() => { 
+  useEffect(() => {
     if (popular.length === 0) {
-      loadData(); 
+      loadData();
     }
   }, [selectedProfile]);
 
+  // Clean up all pending timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+      if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+      if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
+    };
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
+      setIsScreenActive(true);
       const timeout = setTimeout(() => {
         const tag = findNodeHandle(heroBannerRef.current);
         setHeroFocusTag(typeof tag === 'number' ? tag : null);
       }, 0);
       return () => {
+        setIsScreenActive(false);
         clearTimeout(timeout);
         setHeroFocusTag(null);
+        // Release ExoPlayer instances when leaving tab
+        if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
+        if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
+        setFocusedCardStream(null);
+        currentCardId.current = null;
+        setHeroStreamUrl(undefined);
+        setHeroStreamHeaders(undefined);
       };
     }, [loading, setHeroFocusTag])
   );
@@ -84,7 +103,7 @@ export default function MoviesScreen() {
     // Do NOT pre-clear — keep current video playing while new stream resolves.
     idRef.current = tmdbId;
     try {
-      const result = await resolveStreamFromCloud(tmdbId, 'movie');
+      const result = await resolveStreamFromCloud(tmdbId, 'movie', undefined, undefined, { title: movie.title || movie.name });
       if (idRef.current === tmdbId && result?.url) {
         setUrl(result.url);
         setHeaders(result.headers && Object.keys(result.headers).length > 0 ? JSON.stringify(result.headers) : undefined);
@@ -94,21 +113,15 @@ export default function MoviesScreen() {
 
   const handleItemFocus = useCallback((movie: any) => {
     const movieId = String(movie.id);
-    if (heroUpdateTimeout.current) clearTimeout(heroUpdateTimeout.current);
-    heroUpdateTimeout.current = setTimeout(() => {
-      setHeroMovie(movie);
 
-      if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
-      heroStreamTimeout.current = setTimeout(() => resolveStream(movie, setHeroStreamUrl, setHeroStreamHeaders, currentHeroId), 1500);
-    }, 300);
-    // Scoped card stream — clear old, then resolve only if focus stays
+    // Card stream — clear old, then resolve only if focus stays
     if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
     currentCardId.current = movieId;
     setFocusedCardStream(null);
     cardStreamTimeout.current = setTimeout(async () => {
       if (currentCardId.current !== movieId) return;
       try {
-        const result = await resolveStreamFromCloud(movieId, 'movie');
+        const result = await resolveStreamFromCloud(movieId, 'movie', undefined, undefined, { title: movie.title || movie.name });
         if (currentCardId.current === movieId && result?.url) {
           setFocusedCardStream({
             id: movieId, url: result.url,
@@ -117,7 +130,7 @@ export default function MoviesScreen() {
         }
       } catch (e) { console.log('[Movies] Card stream resolve failed:', e); }
     }, 1200);
-  }, [resolveStream]);
+  }, []);
 
   const handleHeroFocus = useCallback(() => {
     if (heroMovie) {
@@ -134,7 +147,20 @@ export default function MoviesScreen() {
     if (heroStreamTimeout.current) clearTimeout(heroStreamTimeout.current);
     if (cardStreamTimeout.current) clearTimeout(cardStreamTimeout.current);
     invalidateCacheEntry(String(movie.id), 'movie');
-    router.push(`/movie/${movie.id}?type=movie` as any);
+
+    // Pass metadata for instant rendering on details page
+    router.push({
+      pathname: `/movie/${movie.id}`,
+      params: {
+        type: 'movie',
+        title: movie.title || movie.name,
+        poster: movie.poster_path,
+        backdrop: movie.backdrop_path,
+        overview: movie.overview,
+        year: (movie.release_date || movie.first_air_date)?.split('-')[0],
+        rating: movie.vote_average?.toString()
+      }
+    });
   }, [router]);
 
   if (loading) return <View style={[styles.loadingContainer, { backgroundColor: pageColor }]}><LoadingSpinner size={92} label="Loading movies" /></View>;
@@ -142,44 +168,37 @@ export default function MoviesScreen() {
   return (
     <View style={styles.container}>
 
-      <ScrollView 
-        style={styles.scrollView} 
+      <ScrollView
+        style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
       >
-        <View style={styles.heroContainer}>
-          <NativeHeroBanner 
-            ref={heroBannerRef}
-            movieData={JSON.stringify(heroMovie)} 
-            streamUrl={heroStreamUrl}
-            streamHeaders={heroStreamHeaders}
-            placeholderColor={pageColor}
-            onColorExtracted={setPageColor} 
-            onFocus={handleHeroFocus}
-            style={styles.hero} 
-          />
-          <View style={styles.heroOverlay} pointerEvents="none">
-            <LinearGradient
-              colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.92)']}
-              style={StyleSheet.absoluteFill}
+        <NativeHeroBanner
+          ref={heroBannerRef}
+          movieData={JSON.stringify(heroMovie)}
+          streamUrl={heroStreamUrl}
+          streamHeaders={heroStreamHeaders}
+          isScreenActive={isScreenActive}
+          placeholderColor={pageColor}
+          useSkeleton={false}
+          onColorExtracted={setPageColor}
+          onFocus={handleHeroFocus}
+          onPress={() => heroMovie && handleItemPress(heroMovie)}
+          style={styles.hero}
+        />
+        {[['Popular Movies', popular], ['Highest Rated', topRated], ['Action & Adventure', action], ['Laugh-Out-Loud', comedy]].map(([title, content]: any) => {
+          const isActive = focusedCardStream !== null && content.some((m: any) => String(m.id) === focusedCardStream!.id);
+          return (
+            <ExpandingRow
+              key={title}
+              title={title}
+              content={content}
+              focusedStreamUrl={isActive ? focusedCardStream!.url : undefined}
+              focusedStreamHeaders={isActive ? focusedCardStream!.headers : undefined}
+              onItemFocus={handleItemFocus}
+              onItemPress={handleItemPress}
             />
-          </View>
-        </View>
-        <View style={styles.rowsContainer}>
-          {[['Popular Movies', popular], ['Highest Rated', topRated], ['Action & Adventure', action], ['Laugh-Out-Loud', comedy]].map(([title, content]: any) => {
-            const isActive = focusedCardStream !== null && content.some((m: any) => String(m.id) === focusedCardStream!.id);
-            return (
-              <ExpandingRow
-                key={title}
-                title={title}
-                content={content}
-                focusedStreamUrl={isActive ? focusedCardStream!.url : undefined}
-                focusedStreamHeaders={isActive ? focusedCardStream!.headers : undefined}
-                onItemFocus={handleItemFocus}
-                onItemPress={handleItemPress}
-              />
-            );
-          })}
-        </View>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -190,20 +209,9 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   pageGradient: { ...StyleSheet.absoluteFillObject, zIndex: 1, top: TV_TOP_NAV_TOTAL_OFFSET + 360 },
   scrollView: { flex: 1, zIndex: 2 },
-  scrollContent: { paddingBottom: 80 },
-  heroContainer: { 
-    width: '100%', 
-    height: 450, 
-    position: 'relative',
-    backgroundColor: '#000',
+  scrollContent: {
+    paddingTop: TV_TOP_NAV_TOTAL_OFFSET,
+    paddingBottom: 80
   },
-  hero: { width: '100%', height: '100%' },
-  heroOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 180,
-  },
-  rowsContainer: { marginTop: 0, zIndex: 10 },
+  hero: { width: '100%', height: 500, marginBottom: 40 },
 });

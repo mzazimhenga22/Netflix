@@ -174,9 +174,9 @@ export default function ProfilesScreen() {
         <Animated.View entering={FadeIn.duration(1200)} style={styles.billboardContainer}>
           {featured ? (
             <>
-              <Image source={{ uri: getImageUrl(featured.poster_path) || getBackdropUrl(featured.backdrop_path) }} style={styles.billboardImage} />
+              <Image source={{ uri: getBackdropUrl(featured.backdrop_path) || getImageUrl(featured.poster_path) }} style={styles.billboardImage} />
               <LinearGradient
-                colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.8)', '#000']}
+                colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.75)', '#000']}
                 style={styles.gradient}
               />
               
@@ -387,11 +387,31 @@ const styles = StyleSheet.create({
   profilesRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 20, paddingHorizontal: 20 },
   profileWrapper: { width: PROFILE_SIZE },
   profileCard: { alignItems: 'center', gap: 8 },
-  avatar: { width: PROFILE_SIZE, height: PROFILE_SIZE, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  profileName: { color: 'white', fontSize: 14, fontWeight: '500', opacity: 0.9 },
+  avatar: { 
+    width: PROFILE_SIZE, 
+    height: PROFILE_SIZE, 
+    borderRadius: 14, 
+    borderWidth: 1.5, 
+    borderColor: 'rgba(255,255,255,0.15)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 5
+  },
+  profileName: { color: 'white', fontSize: 14, fontWeight: '600', opacity: 0.95, marginTop: 4 },
   lockIcon: { marginTop: -4 },
   addProfileCard: { alignItems: 'center', gap: 8 },
-  addBox: { width: PROFILE_SIZE, height: PROFILE_SIZE, borderRadius: 10, backgroundColor: '#141414', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  addBox: { 
+    width: PROFILE_SIZE, 
+    height: PROFILE_SIZE, 
+    borderRadius: 14, 
+    backgroundColor: 'rgba(255,255,255,0.03)', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    borderWidth: 1.5, 
+    borderColor: 'rgba(255,255,255,0.15)',
+    borderStyle: 'dashed'
+  },
   pencilOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',

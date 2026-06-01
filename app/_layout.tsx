@@ -9,8 +9,26 @@ import {
   StyleSheet,
   useWindowDimensions,
   View,
-  NativeModules
+  NativeModules,
+  Platform,
+  UIManager
 } from 'react-native';
+
+// Patch UIManager.getViewManagerConfig to fix Fabric "topSelect cannot be both direct and bubbling" crash on Android
+if (Platform.OS === 'android') {
+  const originalGetViewManagerConfig = UIManager.getViewManagerConfig;
+  UIManager.getViewManagerConfig = function (name) {
+    const config = originalGetViewManagerConfig.call(UIManager, name);
+    if (config && config.directEventTypes && config.directEventTypes.topSelect) {
+      if (!config.bubblingEventTypes) {
+        config.bubblingEventTypes = {};
+      }
+      config.bubblingEventTypes.topSelect = config.directEventTypes.topSelect;
+      delete config.directEventTypes.topSelect;
+    }
+    return config;
+  };
+}
 import Animated, { 
   useSharedValue, 
   withSequence, 
@@ -145,12 +163,10 @@ function triggerNativeProfileTransition(profile: any, layout: any) {
   const tabAvatarSize = 24;
   const tabAvatarVerticalOffset = 14;
 
-  // Target the actual "My Netflix" avatar tab.
-  // The previous values assumed a 4-tab layout, so the floating avatar
-  // faded toward the center instead of landing in the far-right slot.
-  const myNetflixTabCenterX = width * ((tabCount - 0.5) / tabCount);
+  // Target the separate My Netflix circular button on the far right.
+  const myNetflixTabCenterX = width - 48;
   const targetX = myNetflixTabCenterX - (targetSize / 2);
-  const targetY = height - tabBarHeight + tabAvatarVerticalOffset - ((targetSize - tabAvatarSize) / 2);
+  const targetY = height - 48 - (targetSize / 2); // Center vertically in the 64dp bar at bottom: ~32-48dp from bottom depending on OS inset
 
   ProfileTransitionModule.startFloatingAnimation({
     startX: layout.x,

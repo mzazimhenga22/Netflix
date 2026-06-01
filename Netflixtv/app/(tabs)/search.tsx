@@ -7,6 +7,7 @@ import {
   FlatList, 
   ScrollView,
   Pressable,
+  Alert,
   useWindowDimensions,
   findNodeHandle
 } from 'react-native';
@@ -19,12 +20,17 @@ import TvPosterCard from '../../components/TvPosterCard';
 import TvKeyboard from '../../components/TvKeyboard';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { useTvFocusBridge } from '../../context/TvFocusBridgeContext';
+import { usePageColor } from '../../context/PageColorContext';
+import { TV_TOP_NAV_TOTAL_OFFSET } from './_layout';
+import { LinearGradient } from 'expo-linear-gradient';
+import { isTitleLockedForSubscription } from '../../services/contentAccess';
 
 export default function SearchScreen() {
   const { width } = useWindowDimensions();
   const router = useRouter();
   const { setHeroFocusTag } = useTvFocusBridge();
   const { selectedProfile } = useProfile();
+  const { pageColor } = usePageColor();
   const maturityLevel = selectedProfile?.maturityLevel;
   const isKids = selectedProfile?.isKids;
 
@@ -34,13 +40,13 @@ export default function SearchScreen() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeGenre, setActiveGenre] = useState<string | null>(null);
-  const [isFreePlan, setIsFreePlan] = useState(false);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<any>({ status: 'loading' });
   const firstGenreRef = React.useRef<any>(null);
 
   React.useEffect(() => {
     const { SubscriptionService } = require('../../services/SubscriptionService');
     const unsub = SubscriptionService.listenToSubscription((sub: any) => {
-      setIsFreePlan(sub.status !== 'active');
+      setSubscriptionStatus(sub);
     });
     return () => unsub();
   }, []);
@@ -154,6 +160,10 @@ export default function SearchScreen() {
 
   return (
     <View style={styles.container}>
+      <LinearGradient
+        colors={[`${pageColor}33`, `${pageColor}11`, '#000000']}
+        style={StyleSheet.absoluteFill}
+      />
       <View style={styles.content}>
         {/* Left Sidebar — Scrollable */}
         <View style={styles.sidebar}>
@@ -239,8 +249,7 @@ export default function SearchScreen() {
               numColumns={Math.max(2, Math.floor(((width * 0.7) - 120) / 225))}
               contentContainerStyle={styles.listContent}
               renderItem={({ item }) => {
-                const hash = String(item.id).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
-                const isLocked = isFreePlan && (hash % 3 === 0);
+                const isLocked = isTitleLockedForSubscription(item.id, subscriptionStatus);
                 
                 const numCols = Math.max(2, Math.floor(((width * 0.7) - 120) / 225));
                 const itemWidth = ((width * 0.7) - 120 - (25 * (numCols - 1))) / numCols;
@@ -256,14 +265,31 @@ export default function SearchScreen() {
                       isLocked={isLocked}
                       onPress={() => {
                         if (isLocked) {
-                          const { Alert } = require('react-native');
                           Alert.alert(
                             'Upgrade Required',
-                            'This content is locked on the Free Plan. Scan the QR code on the main screen to upgrade.'
+                            'This content is locked on the Free Plan. Upgrade your subscription to unlock all titles.',
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: '⬆ Upgrade Now',
+                                onPress: () => router.push('/upgrade' as any),
+                              },
+                            ]
                           );
                           return;
                         }
-                        router.push({ pathname: `/movie/${item.id}`, params: { type: item.media_type || 'movie' } });
+                        router.push({ 
+                          pathname: `/movie/${item.id}`, 
+                          params: { 
+                            type: item.media_type || 'movie',
+                            title: item.title || item.name,
+                            poster: item.poster_path,
+                            backdrop: item.backdrop_path,
+                            overview: item.overview,
+                            year: (item.release_date || item.first_air_date)?.split('-')[0],
+                            rating: item.vote_average?.toString()
+                          } 
+                        });
                       }}
                     />
                   </View>
@@ -287,8 +313,8 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
-    paddingTop: 100, // Matching top nav
+    backgroundColor: 'transparent',
+    paddingTop: TV_TOP_NAV_TOTAL_OFFSET, // Matching top nav
   },
   content: {
     flex: 1,
@@ -297,7 +323,7 @@ const styles = StyleSheet.create({
   sidebar: {
     width: '30%',
     paddingTop: 20,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
     borderRightWidth: 1,
     borderRightColor: 'rgba(255,255,255,0.05)',
   },
@@ -382,7 +408,7 @@ const styles = StyleSheet.create({
   mainContent: {
     flex: 1,
     paddingHorizontal: 60,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
   },
   resultsTitle: {
     color: 'white',

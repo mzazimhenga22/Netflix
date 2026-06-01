@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, StyleSheet, Text, ScrollView, Image, Pressable, FlatList } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { COLORS, SPACING } from '../../constants/theme';
 import { fetchNewAndHot, getBackdropUrl, fetchTrending } from '../../services/tmdb';
 import { NetflixLoader } from '../../components/NetflixLoader';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
-import Animated, { useSharedValue, useAnimatedStyle, withSpring, withSequence } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring, withSequence, useAnimatedScrollHandler, interpolate } from 'react-native-reanimated';
+import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '../_layout';
 import { db, auth } from '../../services/firebase';
@@ -22,6 +24,16 @@ export default function NewAndHotScreen() {
   const [everyoneWatching, setEveryoneWatching] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'coming' | 'everyone'>('coming');
+
+  const scrollY = useSharedValue(0);
+  const scrollHandler = useAnimatedScrollHandler((event) => {
+    scrollY.value = event.contentOffset.y;
+  });
+
+  const headerBlurStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(scrollY.value, [0, 80], [0, 1], 'clamp');
+    return { opacity };
+  });
 
   useFocusEffect(
     useCallback(() => {
@@ -62,6 +74,9 @@ export default function NewAndHotScreen() {
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.safeHeader} edges={['top']}>
+        <Animated.View style={[StyleSheet.absoluteFill, headerBlurStyle]}>
+          <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
+        </Animated.View>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>New & Hot</Text>
           <View style={styles.headerIcons}>
@@ -103,7 +118,7 @@ export default function NewAndHotScreen() {
       </SafeAreaView>
 
       <View style={styles.content}>
-        <FlatList
+        <Animated.FlatList
           data={activeData}
           keyExtractor={(item) => item.id.toString()}
           renderItem={({ item }) => (
@@ -123,6 +138,8 @@ export default function NewAndHotScreen() {
           )}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
+          onScroll={scrollHandler}
+          scrollEventThrottle={16}
         />
       </View>
     </View>
@@ -242,7 +259,11 @@ const NewAndHotItem = ({ item, mode, onInfoPress }: { item: any, mode: 'coming' 
           />
           {parseInt(item.id, 10) % 2 === 0 && (
             <View style={styles.netflixBadge}>
-              <Text style={styles.nLogo}>N</Text>
+              <ExpoImage 
+                source={require('../../assets/images/netflix-n-logo.svg')} 
+                style={styles.nLogoImage} 
+                contentFit="contain"
+              />
             </View>
           )}
         </Pressable>
@@ -325,25 +346,30 @@ const styles = StyleSheet.create({
   filterPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderRadius: 20,
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     marginRight: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.24)',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 1.5,
+    elevation: 2,
   },
   filterPillActive: {
-    backgroundColor: 'transparent',
-    borderColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: 'white',
+    borderColor: 'white',
   },
   filterText: {
-    color: 'rgba(255,255,255,0.72)',
+    color: 'rgba(255, 255, 255, 0.8)',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   filterTextActive: {
-    color: 'white',
+    color: 'black',
   },
   content: {
     flex: 1,
@@ -441,12 +467,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 5,
   },
-  nLogo: {
-    color: '#E50914',
-    fontSize: 20,
-    fontWeight: '900',
-    textShadowColor: 'black',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+  nLogoImage: {
+    width: 14,
+    height: 22,
   }
 });

@@ -33,14 +33,35 @@ export const fetchTrending = async (type: 'movie' | 'tv' | 'all' = 'all', isKids
   return data.results;
 };
 
-export const fetchPopular = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean) => {
+export const fetchPopular = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean, minRuntime?: number, maxRuntime?: number) => {
+  if (minRuntime !== undefined || maxRuntime !== undefined) {
+    const params: any = {
+      sort_by: 'popularity.desc',
+      ...getKidsParams(isKids)
+    };
+    if (minRuntime !== undefined) params['with_runtime.gte'] = minRuntime;
+    if (maxRuntime !== undefined) params['with_runtime.lte'] = maxRuntime;
+    const { data } = await tmdb.get(`/discover/${type}`, { params });
+    return data.results;
+  }
   const { data } = await tmdb.get(`/${type}/popular`, {
     params: { ...getKidsParams(isKids) }
   });
   return data.results;
 };
 
-export const fetchTopRated = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean) => {
+export const fetchTopRated = async (type: 'movie' | 'tv' = 'movie', isKids?: boolean, minRuntime?: number, maxRuntime?: number) => {
+  if (minRuntime !== undefined || maxRuntime !== undefined) {
+    const params: any = {
+      sort_by: 'vote_average.desc',
+      'vote_count.gte': 150, // Minimum vote threshold to ensure quality
+      ...getKidsParams(isKids)
+    };
+    if (minRuntime !== undefined) params['with_runtime.gte'] = minRuntime;
+    if (maxRuntime !== undefined) params['with_runtime.lte'] = maxRuntime;
+    const { data } = await tmdb.get(`/discover/${type}`, { params });
+    return data.results;
+  }
   const { data } = await tmdb.get(`/${type}/top_rated`, {
     params: { ...getKidsParams(isKids) }
   });
@@ -105,14 +126,16 @@ export const searchMulti = async (query: string, isKids?: boolean) => {
   return data.results.filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv');
 };
 
-export const fetchDiscoverByGenre = async (type: 'movie' | 'tv', genreId: number, isKids?: boolean) => {
-  const { data } = await tmdb.get(`/discover/${type}`, {
-    params: {
-      with_genres: genreId,
-      sort_by: 'popularity.desc',
-      ...getKidsParams(isKids)
-    },
-  });
+export const fetchDiscoverByGenre = async (type: 'movie' | 'tv', genreId: number, isKids?: boolean, minRuntime?: number, maxRuntime?: number) => {
+  const params: any = {
+    with_genres: genreId,
+    sort_by: 'popularity.desc',
+    ...getKidsParams(isKids)
+  };
+  if (minRuntime !== undefined) params['with_runtime.gte'] = minRuntime;
+  if (maxRuntime !== undefined) params['with_runtime.lte'] = maxRuntime;
+
+  const { data } = await tmdb.get(`/discover/${type}`, { params });
   return data.results;
 };
 

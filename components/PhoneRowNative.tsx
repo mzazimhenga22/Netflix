@@ -17,7 +17,7 @@ interface PhoneRowNativeProps extends ViewProps {
   onLongPress?: (event: { nativeEvent: { id: string; mediaType: string } }) => void;
 }
 
-export const PhoneRowNativeComponent = requireNativeComponent<PhoneRowNativeProps>('PhoneRowView');
+export const PhoneRowNativeComponent = (global as any).PhoneRowView || ((global as any).PhoneRowView = requireNativeComponent<PhoneRowNativeProps>('PhoneRowView'));
 
 export const PhoneRowNative = (props: Omit<PhoneRowNativeProps, 'onSelect' | 'onLongPress'> & { onSelect?: (id: string, type: string) => void; onLongPress?: (id: string, type: string) => void }) => {
   const router = useRouter();

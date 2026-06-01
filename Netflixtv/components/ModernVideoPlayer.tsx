@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, Dimensions, ScrollView, Modal, Image, useTVEventHandler } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Dimensions, ScrollView, Modal, Image, useTVEventHandler, BackHandler } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -11,7 +11,11 @@ import Animated, {
   FadeInDown,
   withSpring,
   SlideInRight,
-  SlideOutRight
+  SlideOutRight,
+  SlideInLeft,
+  SlideOutLeft,
+  FadeOut,
+  FadeIn
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
@@ -20,11 +24,11 @@ import * as Brightness from 'expo-brightness';
 import { useKeepAwake } from 'expo-keep-awake';
 import { COLORS } from '../constants/theme';
 import { parseVtt, Subtitle } from '../utils/vttParser';
-import { getImageUrl, fetchMovieImages } from '../services/tmdb';
+import { getImageUrl, fetchMovieImages, fetchContentAdvisory } from '../services/tmdb';
 import LoadingSpinner from './LoadingSpinner';
-import Svg, { Path, Defs, LinearGradient, Stop } from 'react-native-svg';
+import Svg, { Path, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 // Cloud resolver — replaces broken WebView/NativeModule resolution on TV
-import { resolveStreamFromCloud, invalidateCacheEntry } from '../services/cloudResolver';
+import { resolveStreamFromCloud, invalidateCacheEntry, checkStreamHealthOnCloud } from '../services/cloudResolver';
 import { TrailerResolver, TrailerStream } from './TrailerResolver';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { VidLinkStream, VidLinkSkipMarker } from '../services/vidlink';
@@ -72,6 +76,7 @@ interface ModernPlayerProps {
   primaryId?: string;
   backdropUrl?: string;
   initialTime?: number;
+  isBackgroundMode?: boolean;
 }
 
 const NetflixNLogo = ({ width = 24, height = 44 }) => (
@@ -128,7 +133,19 @@ const NetflixNLogo = ({ width = 24, height = 44 }) => (
 );
 
 // Optimization: Sub-components wrapped in React.memo to prevent unnecessary re-renders
-const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchError, backdropUrl, animatedLoadingStyle, resolvingStatus, loadingPercent }: any) => {
+const AnimatedLoadingOverlay = React.memo(({ 
+  status, 
+  internalVideoUrl, 
+  fetchError, 
+  backdropUrl, 
+  animatedLoadingStyle, 
+  resolvingStatus, 
+  loadingPercent,
+  title,
+  contentType,
+  seasonNum,
+  episodeNum
+}: any) => {
   return (
     <Animated.View 
       style={[styles.centeredOverlay, animatedLoadingStyle]}
@@ -149,7 +166,18 @@ const AnimatedLoadingOverlay = React.memo(({ status, internalVideoUrl, fetchErro
         <>
           <LoadingSpinner size={76} progress={loadingPercent} tone="light" />
           {!internalVideoUrl ? (
-            <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>{resolvingStatus || 'Resolving Stream...'}</Text>
+            <>
+              <Text style={[styles.loadingStatusText, { marginTop: 30, fontSize: 24, fontWeight: '700', color: 'white', textAlign: 'center', paddingHorizontal: 40 }]}>
+                {contentType === 'tv' && episodeNum
+                  ? `Getting ${title || 'your show'} ${seasonNum ? `Season ${seasonNum}, ` : ''}Episode ${episodeNum} ready...`
+                  : `Getting ${title || 'your movie'} ready...`}
+              </Text>
+              <Text style={[styles.loadingStatusText, { marginTop: 10, fontSize: 16, color: 'rgba(255,255,255,0.6)', textAlign: 'center', paddingHorizontal: 40 }]}>
+                {resolvingStatus === 'Finding best stream...' || resolvingStatus === 'Resolving stream...'
+                  ? 'Finding the best high-speed stream...'
+                  : resolvingStatus}
+              </Text>
+            </>
           ) : (
             <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>Buffering...</Text>
           )}
@@ -179,8 +207,14 @@ const AnimatedErrorOverlay = React.memo(({ status, fetchError, isRateLimited, is
             : "Please try again later.")}
       </Text>
       <View style={styles.errorActions}>
-        <Pressable style={styles.retryBtn} onPress={onClose}>
-          <Text style={styles.retryText}>Go Back</Text>
+        <Pressable 
+          style={({ focused }) => [styles.retryBtn, focused && styles.retryBtnFocused]} 
+          onPress={onClose}
+          hasTVPreferredFocus={true}
+        >
+          {({ focused }) => (
+            <Text style={[styles.retryText, focused && { color: 'white' }]}>Go Back</Text>
+          )}
         </Pressable>
       </View>
     </View>
@@ -204,7 +238,8 @@ export function ModernVideoPlayer({
   seasonNum,
   primaryId,
   backdropUrl,
-  initialTime
+  initialTime,
+  isBackgroundMode = false
 }: ModernPlayerProps) {
   useKeepAwake(); // Keep screen from sleeping during playback
 
@@ -233,8 +268,21 @@ export function ModernVideoPlayer({
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [loadingPercent, setLoadingPercent] = useState(7);
   const [isBuffering, setIsBuffering] = useState(false);
+  const userPausedRef = useRef(false); // Tracks intentional user pause — prevents auto-play during buffering
   const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Netflix-style scrubbing state
+  const [isTvScrubbing, setIsTvScrubbing] = useState(false);
+  const [scrubTime, setScrubTime] = useState(0);
+  const scrubTimeRef = useRef(0);
+  const scrubCommitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastProgressTimeRef = useRef(0);
+  const lastPlaybackAdvanceAtRef = useRef(0);
+  const lastObservedPlaybackTimeRef = useRef(0);
+  const localResumeKickAtRef = useRef(0);
+  const stallRecoveryAttemptedAtRef = useRef(0);
+  // Content Advisory
+  const [contentAdvisory, setContentAdvisory] = useState<{rating: string, advisoryText: string} | null>(null);
+  const [showAdvisory, setShowAdvisory] = useState(false);
   // jsVidLinkEnabled and isTryingVidSrc removed — cloud resolver handles all fallback logic
 
   // Auto-recovery: when HLS proxy tokens expire mid-playback, re-resolve and resume
@@ -243,6 +291,30 @@ export function ModernVideoPlayer({
   const [isAutoRecovering, setIsAutoRecovering] = useState(false);
   const recoveryPositionRef = useRef(0);
   const MAX_AUTO_RETRIES = 5; // More retries for low-network resilience
+  const streamExpiryAtRef = useRef<number | null>(null);
+  // Standby stream: pre-resolved URL ready for instant swap on error
+  const standbyStreamRef = useRef<any>(null);
+  const standbyResolvedAtRef = useRef<number>(0);
+  const STANDBY_MAX_AGE_MS = 300_000; // Standby is valid for 5 mins
+  const STALL_BUFFERING_MS = 4_000;
+  const STALL_PLAY_KICK_MS = 8_000;
+  const STALL_RECOVERY_MS = 12_000;  // Detect stalls faster (was 18s)
+  const STALL_RECOVERY_COOLDOWN_MS = 30_000; // Retry sooner (was 45s)
+
+  // ── Seamless Token Renewal (Dual-Player Pipelining) ──────────────────
+  // Lightweight approach optimized for old TVs: NO second video player.
+  // Instead, we pre-resolve a fresh stream URL in the background and
+  // hot-swap the source on the existing player while ExoPlayer's 120s
+  // forward buffer keeps the video playing seamlessly.
+  const handoffTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const handoffSwapTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isHandoffInProgressRef = useRef(false);
+  const handoffResolvedUrlRef = useRef<any>(null);
+  // How many seconds before token expiry to start the background resolve
+  const HANDOFF_LEAD_TIME_MS = 90_000; // 90s — gives cloud function plenty of time
+  // Minimum time between handoff attempts to avoid hammering the server
+  const HANDOFF_COOLDOWN_MS = 120_000; // 2 minutes
+  const lastHandoffAtRef = useRef(0);
 
   const { selectedProfile } = useProfile();
   
@@ -302,8 +374,8 @@ export function ModernVideoPlayer({
     // error out on brief connectivity drops.
     try {
       player.bufferOptions = {
-        preferredForwardBufferDuration: 60,  // Buffer 60s ahead
-        minBufferForPlayback: 3,             // Need 3s buffered to start/resume
+        preferredForwardBufferDuration: 120, // Buffer 120s ahead (survive token swaps)
+        minBufferForPlayback: 2,             // Need 2s buffered to start/resume
         prioritizeTimeOverSizeThreshold: true,
       };
     } catch (e) {
@@ -317,6 +389,7 @@ export function ModernVideoPlayer({
     setInternalVideoUrl(result.url);
     setInternalHeaders(result.headers || {});
     setSkipMarkers(result.markers || []);
+    streamExpiryAtRef.current = typeof result.expiresAt === 'number' ? result.expiresAt : null;
     
     const mappedTracks = (result.captions || []).map((c: any) => ({
       file: c.url,
@@ -341,6 +414,8 @@ export function ModernVideoPlayer({
     // via statusChange once it has actually loaded the stream. Premature status
     // caused the loading overlay to fade before playback started.
   }, [preferredTrackLabel]);
+
+  // Removed attemptProactiveRefresh. We now only pre-warm the standby stream and swap on error.
 
   // Internal Fetching Logic — uses Cloud Function instead of WebView/NativeModule
   useEffect(() => {
@@ -391,6 +466,10 @@ export function ModernVideoPlayer({
       progressPercentage.value = 0;
       setIsBuffering(false);
       autoRetryCountRef.current = 0;
+      lastObservedPlaybackTimeRef.current = 0;
+      lastPlaybackAdvanceAtRef.current = 0;
+      localResumeKickAtRef.current = 0;
+      stallRecoveryAttemptedAtRef.current = 0;
       autoNextFiredRef.current = false;
       showUpNextRef.current = false;
       showSkipIntroRef.current = false;
@@ -409,7 +488,8 @@ export function ModernVideoPlayer({
           tmdbId!,
           contentType || 'movie',
           seasonNum,
-          episodeNum
+          episodeNum,
+          { forceRefresh: true, title: title }
         );
         
         if (cancelled || fetchId !== fetchIdRef.current) return;
@@ -436,6 +516,22 @@ export function ModernVideoPlayer({
 
     return () => { cancelled = true; };
   }, [tmdbId, episodeNum, seasonNum, videoUrl, title, contentType, handleStreamResult]);
+
+  // Fetch Content Advisory
+  useEffect(() => {
+    let advisoryTimeout: NodeJS.Timeout;
+    if (tmdbId) {
+      fetchContentAdvisory(tmdbId, contentType).then(data => {
+        if (data) {
+          setContentAdvisory(data);
+          setShowAdvisory(true);
+          // Hide it after 6 seconds (like Netflix)
+          advisoryTimeout = setTimeout(() => setShowAdvisory(false), 6000);
+        }
+      });
+    }
+    return () => clearTimeout(advisoryTimeout);
+  }, [tmdbId, contentType]);
 
   // Fetch Logo
   useEffect(() => {
@@ -481,7 +577,10 @@ export function ModernVideoPlayer({
 
             // Small delay to let the decoder/TV stabilize before triggering play
             setTimeout(() => {
-              try { player.play(); } catch (e) {}
+              // Don't auto-play if user explicitly paused
+              if (!userPausedRef.current) {
+                try { player.play(); } catch (e) {}
+              }
             }, 250);
           }
         } catch (e) {
@@ -507,16 +606,22 @@ export function ModernVideoPlayer({
       });
     }, 450);
 
-    return () => clearInterval(interval);
-  }, [internalVideoUrl, status]);
+    return () => {
+      // Cleanup happens via useEffect return above
+    };
+  }, [player, isBackgroundMode]); // Re-run effect when background mode changes
 
   // Init Brightness
   useEffect(() => {
     (async () => {
-      const { status } = await Brightness.requestPermissionsAsync();
-      if (status === 'granted') {
-        const current = await Brightness.getBrightnessAsync();
-        setBrightnessLevel(current);
+      try {
+        const { status } = await Brightness.requestPermissionsAsync();
+        if (status === 'granted') {
+          const current = await Brightness.getBrightnessAsync();
+          setBrightnessLevel(current);
+        }
+      } catch (e) {
+        console.warn("Brightness init failed (expected on TV):", e);
       }
     })();
   }, []);
@@ -542,19 +647,88 @@ export function ModernVideoPlayer({
     loadSubtitles();
   }, [selectedTrackIndex, internalTracks]);
 
+  // Show/hide controls like a modern Netflix player:
+  // - During playback: show progress bar + bottom row on interaction, auto-hide after 5s
+  // - On pause: show everything (progress bar + full details) and keep visible
+  // - Full details (top metadata, center logo/ratings) ONLY show when paused
+  const resetHideTimer = useCallback((forceFullControls = false, delayedFull = false) => {
+    if (isBackgroundMode) return; // Never show controls in background mode
+
+    if (hideTimeout.current) clearTimeout(hideTimeout.current);
+    if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
+    
+    // Always show the bottom bar (progress + controls)
+    setIsControlsVisible(true);
+    controlsOpacity.value = withTiming(1, { duration: 300, easing: Easing.out(Easing.quad) });
+
+    if (forceFullControls) {
+      if (delayedFull) {
+        // Paused state (Initial): hide full details first, show progress bar cluster
+        setIsFullControlsVisible(false);
+        fullControlsOpacity.value = withTiming(0, { duration: 250 });
+        
+        // Schedule full details (Title, Logo, Ratings) after 5 seconds of pause
+        fullControlsTimeout.current = setTimeout(() => {
+          setIsFullControlsVisible(true);
+          fullControlsOpacity.value = withTiming(1, { duration: 900, easing: Easing.out(Easing.cubic) });
+        }, 5000);
+      } else {
+        // Pause state (Explicit/Delayed): show everything immediately
+        setIsFullControlsVisible(true);
+        fullControlsOpacity.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.quad) });
+      }
+    } else {
+      // Playing state: hide full details, only show progress bar
+      fullControlsOpacity.value = withTiming(0, { duration: 250 }, (finished) => {
+        if (finished) runOnJS(setIsFullControlsVisible)(false);
+      });
+
+      // Auto-hide progress bar after 5s during playback
+      if (!isLocked) {
+        hideTimeout.current = setTimeout(() => {
+          controlsOpacity.value = withTiming(0, { duration: 600, easing: Easing.in(Easing.quad) }, (finished) => {
+            if (finished) runOnJS(setIsControlsVisible)(false);
+          });
+        }, 5000);
+      }
+    }
+  }, [isLocked, isBackgroundMode]);
+
+  // Enforce background mode constraints
+  useEffect(() => {
+    if (isBackgroundMode) {
+      setIsControlsVisible(false);
+      setIsFullControlsVisible(false);
+      controlsOpacity.value = withTiming(0);
+      fullControlsOpacity.value = withTiming(0);
+      setShowAdvisory(false);
+      setShowSkipIntro(false);
+      setShowUpNext(false);
+    } else {
+      // When exiting background mode, show controls briefly
+      resetHideTimer();
+    }
+  }, [isBackgroundMode, controlsOpacity, fullControlsOpacity, resetHideTimer]);
+
   // Safe Player methods
   const handlePlayPause = useCallback(() => {
+    if (isBackgroundMode) return;
     try {
       if (player) {
-         if (isPlaying) player.pause();
-         else player.play();
+         if (isPlaying) {
+           userPausedRef.current = true;
+           player.pause();
+         } else {
+           userPausedRef.current = false;
+           player.play();
+         }
          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
     } catch (e) {
       console.warn("[Player] ⚠️ handlePlayPause safe-guarded:", e);
     }
     resetHideTimer();
-  }, [player, isPlaying]);
+  }, [player, isPlaying, resetHideTimer, isBackgroundMode]);
 
   const skip = useCallback((seconds: number) => {
     try {
@@ -566,9 +740,61 @@ export function ModernVideoPlayer({
       console.warn("[Player] ⚠️ skip safe-guarded:", e);
     }
     resetHideTimer();
-  }, [player]);
+  }, [player, resetHideTimer]);
+
+  // Netflix-style TV scrubbing: accumulate seek position, commit on select or timeout
+  const startTvScrub = useCallback(() => {
+    if (isBackgroundMode) return;
+    if (!isTvScrubbing) {
+      setIsTvScrubbing(true);
+      scrubTimeRef.current = currentPlaybackTimeRef.current;
+      setScrubTime(currentPlaybackTimeRef.current);
+      isScrubbing.current = true;
+      // Pause during scrub for Netflix feel
+      try { if (player && player.playing) player.pause(); } catch (e) {}
+    }
+  }, [isTvScrubbing, player, isBackgroundMode]);
+
+  const commitTvScrub = useCallback(() => {
+    if (scrubCommitTimerRef.current) {
+      clearTimeout(scrubCommitTimerRef.current);
+      scrubCommitTimerRef.current = null;
+    }
+    if (!isTvScrubbing) return;
+    const seekTo = scrubTimeRef.current;
+    setIsTvScrubbing(false);
+    isScrubbing.current = false;
+    try {
+      if (player) {
+        player.currentTime = seekTo;
+        // Only resume if user hadn't intentionally paused before scrubbing
+        if (!userPausedRef.current) {
+          setTimeout(() => { try { player.play(); } catch (e) {} }, 300);
+        }
+      }
+    } catch (e) {
+      console.warn('[Player] Scrub commit failed:', e);
+    }
+    console.log(`[Player] Scrub committed to ${Math.floor(seekTo)}s`);
+  }, [isTvScrubbing, player]);
+
+  const updateTvScrub = useCallback((delta: number) => {
+    const dur = duration > 0 ? duration : 1;
+    const newTime = Math.max(0, Math.min(dur - 1, scrubTimeRef.current + delta));
+    scrubTimeRef.current = newTime;
+    setScrubTime(newTime);
+    // Update progress bar visual in real-time
+    progressPercentage.value = Math.min(100, Math.max(0, (newTime / dur) * 100));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // Auto-commit after 2s of no input (Netflix behavior)
+    if (scrubCommitTimerRef.current) clearTimeout(scrubCommitTimerRef.current);
+    scrubCommitTimerRef.current = setTimeout(() => commitTvScrub(), 2000);
+  }, [duration, commitTvScrub]);
 
   const safePlay = () => {
+    // Never auto-play if user intentionally paused
+    if (userPausedRef.current) return;
     try { if (player) player.play(); } catch (e) {}
   };
 
@@ -637,8 +863,8 @@ export function ModernVideoPlayer({
       currentPlaybackTimeRef.current = current;
     }
 
-    // Save progress every 3 minutes (180 seconds)
-    if (Math.abs(current - lastSaveTimeRef.current) >= 180) {
+    // Save progress every 30 seconds to prevent data loss on crash
+    if (Math.abs(current - lastSaveTimeRef.current) >= 30) {
       lastSaveTimeRef.current = current;
       if (itemData || title) {
         WatchHistoryService.saveProgress(
@@ -719,7 +945,8 @@ export function ModernVideoPlayer({
           }
         }
       }
-  }, [duration, contentType, itemData, title, tmdbId, backdropUrl, selectedProfile?.id, seasonNum, episodeNum, skipMarkers]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duration, contentType, itemData, title, tmdbId, backdropUrl, selectedProfile?.id, seasonNum, episodeNum, JSON.stringify(skipMarkers), onNextEpisode]);
 
   // NOTE: Duplicate source-update effect removed — the effect at lines 294-316
   // already handles internalVideoUrl changes, and line 206's effect syncs
@@ -736,12 +963,12 @@ export function ModernVideoPlayer({
     }
     lockOrientation();
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+      ScreenOrientation.unlockAsync().catch(() => {});
     };
   }, []);
 
   // Auto-recovery: re-resolve stream when HLS token expires mid-playback
-  const attemptAutoRecovery = useCallback(async () => {
+  const attemptAutoRecovery = useCallback(async (delay = 0) => {
     if (isAutoRecoveringRef.current) return;
     if (autoRetryCountRef.current >= MAX_AUTO_RETRIES) {
       console.log(`[Player] ❌ Max auto-retries (${MAX_AUTO_RETRIES}) reached, giving up`);
@@ -753,7 +980,15 @@ export function ModernVideoPlayer({
     isAutoRecoveringRef.current = true;
     setIsAutoRecovering(true);
     autoRetryCountRef.current += 1;
+
+    if (delay > 0) {
+      setResolvingStatus(`Reconnecting...`);
+      setStatus('loading');
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
     recoveryPositionRef.current = currentPlaybackTimeRef.current;
+    pendingResumeTimeRef.current = currentPlaybackTimeRef.current;
 
     console.log(`[Player] 🔄 Auto-recovery attempt ${autoRetryCountRef.current}/${MAX_AUTO_RETRIES} — resuming from ${Math.floor(recoveryPositionRef.current)}s`);
     setResolvingStatus(`Reconnecting... (attempt ${autoRetryCountRef.current})`);
@@ -761,37 +996,52 @@ export function ModernVideoPlayer({
     setFetchError(false);
 
     try {
-      // Force fresh resolution — the old URL's token likely expired
+      // FAST PATH: Check if handoff engine or standby has a pre-resolved stream
+      // Priority: handoff result > standby cache (handoff is always fresher)
+      const handoffResult = handoffResolvedUrlRef.current;
+      const standby = handoffResult?.url ? handoffResult : standbyStreamRef.current;
+      const standbyAge = handoffResult?.url 
+        ? 0 // Handoff result is always fresh
+        : (Date.now() - standbyResolvedAtRef.current);
+      
+      if (standby?.url && standbyAge < STANDBY_MAX_AGE_MS) {
+        console.log(`[Player] ⚡ Using ${handoffResult?.url ? 'handoff' : 'standby'} stream (${Math.floor(standbyAge / 1000)}s old): ${standby.sourceId}`);
+        standbyStreamRef.current = null; // Consumed
+        handoffResolvedUrlRef.current = null; // Consumed
+        isHandoffInProgressRef.current = false;
+        currentUrlRef.current = '';
+        handleStreamResult(standby);
+
+        setTimeout(() => {
+          isAutoRecoveringRef.current = false;
+          setIsAutoRecovering(false);
+        }, 800); // Fast seek — standby URL is already resolved
+        return;
+      }
+
+      // SLOW PATH: No standby — resolve fresh from cloud
+      // Skip health check — if ExoPlayer errored, the stream IS dead.
+      // Health check was wasting 5-15s of recovery time.
+      console.log('[Player] No standby available — resolving fresh stream from cloud...');
       invalidateCacheEntry(tmdbId, contentType || 'movie', seasonNum, episodeNum);
 
       const result = await resolveStreamFromCloud(
         tmdbId,
         contentType || 'movie',
         seasonNum,
-        episodeNum
+        episodeNum,
+        { forceRefresh: true, title: title }
       );
 
       if (result?.url) {
         console.log(`[Player] ✅ Recovery resolved via ${result.sourceId}: ${result.url.substring(0, 80)}...`);
-        // Update URL which triggers the player source-update effect
-        currentUrlRef.current = ''; // Force re-replace
+        currentUrlRef.current = '';
         handleStreamResult(result);
 
-        // Seek back to where the user was — delay must be longer than the
-        // source-update effect's 250ms play() to avoid a race condition
         setTimeout(() => {
-          try {
-            if (player && recoveryPositionRef.current > 5) {
-              player.currentTime = recoveryPositionRef.current;
-              console.log(`[Player] ⏩ Seeked to ${Math.floor(recoveryPositionRef.current)}s after recovery`);
-            }
-            player?.play();
-          } catch (e) {
-            console.warn('[Player] Recovery seek failed:', e);
-          }
           isAutoRecoveringRef.current = false;
           setIsAutoRecovering(false);
-        }, 2500);
+        }, 1200); // Faster than before (was 2500ms)
       } else {
         console.error('[Player] ❌ Recovery resolver returned no stream');
         setFetchError(true);
@@ -807,6 +1057,142 @@ export function ModernVideoPlayer({
       setIsAutoRecovering(false);
     }
   }, [tmdbId, contentType, seasonNum, episodeNum, title, player, handleStreamResult]);
+
+  // ── Seamless Token Renewal Engine ─────────────────────────────────────
+  // When we know the exact token expiry (from URL parameters), we schedule
+  // a background resolve 90s before it dies. The fresh URL is then hot-swapped
+  // into the existing player using replace(). ExoPlayer's 120s forward buffer
+  // bridges the transition with zero visible interruption.
+  //
+  // For streams with unknown expiry, we rely on the reactive Auto-Recovery
+  // system (error → re-resolve → resume at same position).
+  //
+  // This is TV-optimized: NO second video player is ever created, so there's
+  // zero extra GPU/memory cost on old TV hardware.
+  useEffect(() => {
+    // Clean up any previous timer
+    if (handoffTimerRef.current) {
+      clearTimeout(handoffTimerRef.current);
+      handoffTimerRef.current = null;
+    }
+
+    if (!hasPlaybackStarted || !tmdbId || videoUrl) return;
+
+    const expiresAt = streamExpiryAtRef.current;
+    if (!expiresAt) {
+      // No known expiry — rely on reactive auto-recovery (no cloud cost)
+      console.log('[Handoff] No token expiry detected — reactive recovery only');
+      return;
+    }
+
+    const now = Date.now();
+    const msUntilExpiry = expiresAt - now;
+
+    // If token already expired or expires in < 30s, don't bother scheduling
+    if (msUntilExpiry < 30_000) {
+      console.log(`[Handoff] Token expires in ${Math.floor(msUntilExpiry / 1000)}s — too late for handoff, relying on auto-recovery`);
+      return;
+    }
+
+    // Schedule background resolve HANDOFF_LEAD_TIME_MS before expiry
+    const delayMs = Math.max(0, msUntilExpiry - HANDOFF_LEAD_TIME_MS);
+    console.log(`[Handoff] Token expires in ${Math.floor(msUntilExpiry / 1000)}s — scheduling background resolve in ${Math.floor(delayMs / 1000)}s`);
+
+    handoffTimerRef.current = setTimeout(async () => {
+      // Guard: don't overlap with auto-recovery or another handoff
+      if (isAutoRecoveringRef.current || isHandoffInProgressRef.current) {
+        console.log('[Handoff] Skipping — recovery/handoff already in progress');
+        return;
+      }
+
+      // Cooldown check
+      if (Date.now() - lastHandoffAtRef.current < HANDOFF_COOLDOWN_MS) {
+        console.log('[Handoff] Skipping — cooldown period active');
+        return;
+      }
+
+      isHandoffInProgressRef.current = true;
+      lastHandoffAtRef.current = Date.now();
+      console.log('[Handoff] 🔄 Pre-resolving fresh stream in background...');
+
+      try {
+        invalidateCacheEntry(tmdbId!, contentType || 'movie', seasonNum, episodeNum);
+        const result = await resolveStreamFromCloud(
+          tmdbId!,
+          contentType || 'movie',
+          seasonNum,
+          episodeNum,
+          { forceRefresh: true, title: title }
+        );
+
+        if (result?.url) {
+          console.log(`[Handoff] ✅ Fresh stream resolved: ${result.sourceId}`);
+          // Store it as standby for instant use
+          standbyStreamRef.current = result;
+          standbyResolvedAtRef.current = Date.now();
+          handoffResolvedUrlRef.current = result;
+
+          // Now schedule the actual source swap right before expiry.
+          // We want to swap ~15s before the token dies, giving ExoPlayer
+          // time to negotiate the new HLS manifest while the old buffer plays.
+          const swapDelay = Math.max(0, (expiresAt - Date.now()) - 15_000);
+          
+          if (swapDelay > 0) {
+            console.log(`[Handoff] Scheduling seamless swap in ${Math.floor(swapDelay / 1000)}s`);
+            handoffSwapTimerRef.current = setTimeout(() => {
+              if (!handoffResolvedUrlRef.current?.url) return;
+              if (isAutoRecoveringRef.current) return;
+
+              const freshResult = handoffResolvedUrlRef.current;
+              handoffResolvedUrlRef.current = null;
+              
+              // Record current position for safety
+              const currentPos = currentPlaybackTimeRef.current;
+              console.log(`[Handoff] ⚡ Executing seamless swap at ${Math.floor(currentPos)}s`);
+
+              // Queue the resume position so the timeUpdate handler
+              // re-seeks after the new source loads
+              pendingResumeTimeRef.current = currentPos;
+
+              // Update stream metadata (headers, captions, markers, expiry)
+              // This triggers the source-update effect which calls player.replace()
+              currentUrlRef.current = ''; // Force re-apply
+              handleStreamResult(freshResult);
+
+              console.log('[Handoff] ✅ Seamless swap complete — buffer bridging active');
+              isHandoffInProgressRef.current = false;
+            }, swapDelay);
+          } else {
+            // Swap immediately — we're cutting it close
+            const currentPos = currentPlaybackTimeRef.current;
+            console.log(`[Handoff] ⚡ Immediate swap at ${Math.floor(currentPos)}s (expiry imminent)`);
+            pendingResumeTimeRef.current = currentPos;
+            currentUrlRef.current = '';
+            handleStreamResult(result);
+            handoffResolvedUrlRef.current = null;
+            isHandoffInProgressRef.current = false;
+          }
+        } else {
+          console.warn('[Handoff] ❌ Background resolve returned no stream — will rely on auto-recovery');
+          isHandoffInProgressRef.current = false;
+        }
+      } catch (e: any) {
+        console.warn(`[Handoff] ❌ Background resolve failed: ${e.message} — will rely on auto-recovery`);
+        isHandoffInProgressRef.current = false;
+      }
+    }, delayMs);
+
+    return () => {
+      if (handoffTimerRef.current) {
+        clearTimeout(handoffTimerRef.current);
+        handoffTimerRef.current = null;
+      }
+      if (handoffSwapTimerRef.current) {
+        clearTimeout(handoffSwapTimerRef.current);
+        handoffSwapTimerRef.current = null;
+      }
+    };
+  }, [hasPlaybackStarted, internalVideoUrl, tmdbId, videoUrl, contentType, seasonNum, episodeNum, handleStreamResult]);
 
   // Event Listeners — consolidated progress tracking into timeUpdate
   useEffect(() => {
@@ -843,7 +1229,7 @@ export function ModernVideoPlayer({
           console.log(`[Player] ⚠️ Stream error at ${playedSec}s — attempting auto-recovery (attempt ${autoRetryCountRef.current + 1}/${MAX_AUTO_RETRIES})`);
           // Longer delay on low-network errors to allow connectivity to recover
           const retryDelay = playedSec < 5 ? 3000 : 2000;
-          setTimeout(() => attemptAutoRecovery(), retryDelay);
+          attemptAutoRecovery(retryDelay);
         }
       }),
       player.addListener('timeUpdate', (payload: any) => {
@@ -851,6 +1237,10 @@ export function ModernVideoPlayer({
         const current = payload.currentTime || 0;
         const playerDur = player.duration || 0;
         lastProgressTimeRef.current = Date.now();
+        if (current > lastObservedPlaybackTimeRef.current + 0.2) {
+          lastObservedPlaybackTimeRef.current = current;
+          lastPlaybackAdvanceAtRef.current = lastProgressTimeRef.current;
+        }
 
         // Resume only after the player has actually started and duration is known.
         // Seeking too early on weak networks can stall HLS startup and trip playback errors.
@@ -877,6 +1267,9 @@ export function ModernVideoPlayer({
           if (!hasPlaybackStarted) {
             setHasPlaybackStarted(true);
           }
+          if (lastPlaybackAdvanceAtRef.current === 0) {
+            lastPlaybackAdvanceAtRef.current = Date.now();
+          }
           setIsBuffering(false);
         }
 
@@ -894,13 +1287,17 @@ export function ModernVideoPlayer({
         setIsPlaying(payload.isPlaying);
         // If player stops playing unexpectedly (not user-initiated), might be buffering
         if (!payload.isPlaying && player.status === 'readyToPlay' && currentPlaybackTimeRef.current > 0) {
-          // Give it a moment — could just be a brief stall
-          setTimeout(() => {
-            if (!player.playing && player.status === 'readyToPlay') {
-              setIsBuffering(true);
-            }
-          }, 1500);
+          // Only treat as buffering if user didn't intentionally pause
+          if (!userPausedRef.current) {
+            // Give it a moment — could just be a brief stall
+            setTimeout(() => {
+              if (!player.playing && player.status === 'readyToPlay' && !userPausedRef.current) {
+                setIsBuffering(true);
+              }
+            }, 1500);
+          }
         } else if (payload.isPlaying) {
+          lastPlaybackAdvanceAtRef.current = Date.now();
           setIsBuffering(false);
         }
       })
@@ -932,6 +1329,51 @@ export function ModernVideoPlayer({
     };
   }, [player, handleProgressUpdate, attemptAutoRecovery]);
 
+  useEffect(() => {
+    if (!player) return;
+
+    const timer = setInterval(() => {
+      const playbackPosition = currentPlaybackTimeRef.current;
+      if (
+        player.status !== 'readyToPlay' ||
+        playbackPosition <= 0 ||
+        isAutoRecoveringRef.current
+      ) {
+        return;
+      }
+
+      const now = Date.now();
+      const msSinceAdvance = now - lastPlaybackAdvanceAtRef.current;
+
+      if (msSinceAdvance > STALL_BUFFERING_MS && !userPausedRef.current) {
+        setIsBuffering(true);
+      }
+
+      if (
+        msSinceAdvance > STALL_PLAY_KICK_MS &&
+        now - localResumeKickAtRef.current > STALL_RECOVERY_COOLDOWN_MS &&
+        !userPausedRef.current
+      ) {
+        localResumeKickAtRef.current = now;
+        console.log(`[Player] Stall detected at ${Math.floor(playbackPosition)}s; retrying local play()`);
+        try { player.play(); } catch (_) {}
+      }
+
+      if (
+        msSinceAdvance > STALL_RECOVERY_MS &&
+        now - stallRecoveryAttemptedAtRef.current > STALL_RECOVERY_COOLDOWN_MS
+      ) {
+        stallRecoveryAttemptedAtRef.current = now;
+        console.log(
+          `[Player] Playback stalled for ${Math.floor(msSinceAdvance / 1000)}s at ${Math.floor(playbackPosition)}s; forcing stream recovery`
+        );
+        attemptAutoRecovery();
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [player, attemptAutoRecovery, internalVideoUrl]);
+
   // Loading Screen Crossfade Animation
   useEffect(() => {
     const isLoading = status === 'loading' || status === 'idle' || !internalVideoUrl || internalVideoUrl === '';
@@ -944,39 +1386,23 @@ export function ModernVideoPlayer({
     }
   }, [status, internalVideoUrl, hasPlaybackStarted, fetchError]);
 
-  // Show/hide controls like a modern Netflix player:
-  // - During playback: show progress bar + bottom row on interaction, auto-hide after 5s
-  // - On pause: show everything (progress bar + full details) and keep visible
-  // - Full details (top metadata, center logo/ratings) ONLY show when paused
-  const resetHideTimer = useCallback((forceFullControls = false) => {
-    if (hideTimeout.current) clearTimeout(hideTimeout.current);
-    if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
-    
-    // Always show the bottom bar (progress + controls)
-    setIsControlsVisible(true);
-    controlsOpacity.value = withTiming(1, { duration: 200 });
-
-    if (forceFullControls) {
-      // Pause state: show full details immediately, stay visible
-      setIsFullControlsVisible(true);
-      fullControlsOpacity.value = withTiming(1, { duration: 300 });
-      // No auto-hide when paused — controls stay until user resumes
-    } else {
-      // Playing state: hide full details, only show progress bar
-      fullControlsOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
-        if (finished) runOnJS(setIsFullControlsVisible)(false);
-      });
-
-      // Auto-hide progress bar after 5s during playback
-      if (!isLocked) {
-        hideTimeout.current = setTimeout(() => {
-          controlsOpacity.value = withTiming(0, { duration: 500 }, (finished) => {
-            if (finished) runOnJS(setIsControlsVisible)(false);
-          });
-        }, 5000);
+  // Hardware Back Button Handler for TV/Android
+  useEffect(() => {
+    const backAction = () => {
+      // If a modal is open, let its onRequestClose handle it
+      if (showSubtitlePicker || showEpisodePicker) {
+        return false; // let default behavior handle it (which triggers onRequestClose)
       }
-    }
-  }, [isLocked]);
+      
+      // Close the player and go back to details screen
+      onClose();
+      return true;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+
+    return () => backHandler.remove();
+  }, [showSubtitlePicker, showEpisodePicker, onClose]);
 
   // When paused, show full controls. When playing, start auto-hide timer.
   useEffect(() => {
@@ -984,8 +1410,8 @@ export function ModernVideoPlayer({
       // Resumed playback — start auto-hide timer (progress bar only)
       resetHideTimer(false);
     } else {
-      // Paused — show everything and keep visible
-      resetHideTimer(true);
+      // Paused — show minimal controls first, delay full details by 5s
+      resetHideTimer(true, true);
     }
     return () => {
       if (hideTimeout.current) clearTimeout(hideTimeout.current);
@@ -994,25 +1420,25 @@ export function ModernVideoPlayer({
   }, [isPlaying, isLocked, resetHideTimer]);
 
   const toggleControls = useCallback(() => {
-    if (controlsOpacity.value > 0) {
-      // Hide all controls immediately
+    if (isControlsVisible) {
+      // Hide all controls with smooth fade
       if (hideTimeout.current) clearTimeout(hideTimeout.current);
       if (fullControlsTimeout.current) clearTimeout(fullControlsTimeout.current);
       
-      controlsOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
+      controlsOpacity.value = withTiming(0, { duration: 300, easing: Easing.in(Easing.quad) }, (finished) => {
         if (finished) runOnJS(setIsControlsVisible)(false);
       });
-      fullControlsOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
+      fullControlsOpacity.value = withTiming(0, { duration: 250 }, (finished) => {
         if (finished) runOnJS(setIsFullControlsVisible)(false);
       });
     } else {
       // Show controls — full details only if paused
       resetHideTimer(!isPlaying);
     }
-  }, [resetHideTimer, isPlaying]);
+  }, [resetHideTimer, isPlaying, isControlsVisible]);
 
   // TV Remote Event Handler for direct D-Pad interactions when controls are hidden
-  // TV Remote D-Pad handler — modern player behavior
+  // TV Remote D-Pad handler — Netflix-style player behavior with scrub seeking
   useTVEventHandler((evt) => {
     if (!evt) return;
     
@@ -1022,33 +1448,51 @@ export function ModernVideoPlayer({
     }
 
     if (evt.eventType === 'select' || evt.eventType === 'playPause') {
+      // If actively scrubbing, commit the scrub position
+      if (isTvScrubbing) {
+        commitTvScrub();
+        return;
+      }
+
       if (!isControlsVisible) {
-        // First press: show controls (full details only if paused)
-        resetHideTimer(!isPlaying);
+        // First press: Pause video automatically and show minimal controls
+        userPausedRef.current = true;
+        if (isPlaying) {
+          try { if (player) player.pause(); } catch (e) {}
+        }
+        setIsBuffering(false); // Clear buffering overlay on intentional pause
+        resetHideTimer(true, true);
       } else {
         // Controls visible: toggle play/pause
         handlePlayPause();
-        // playingChange listener will handle showing/hiding via useEffect
+        if (isPlaying) {
+          // User is pausing — clear buffering state
+          setIsBuffering(false);
+        }
       }
     } else if (evt.eventType === 'left') {
       if (!isControlsVisible) {
         resetHideTimer(!isPlaying);
       } else if (isProgressBarFocused) {
-        skip(-10);
-        resetHideTimer(!isPlaying);
+        // Netflix-style scrub: start scrub mode, accumulate seek
+        startTvScrub();
+        updateTvScrub(-10);
+        resetHideTimer(true); // Keep controls visible during scrub
       }
     } else if (evt.eventType === 'right') {
       if (!isControlsVisible) {
         resetHideTimer(!isPlaying);
       } else if (isProgressBarFocused) {
-        skip(10);
-        resetHideTimer(!isPlaying);
+        // Netflix-style scrub: start scrub mode, accumulate seek
+        startTvScrub();
+        updateTvScrub(10);
+        resetHideTimer(true); // Keep controls visible during scrub
       }
     } else if (evt.eventType === 'up') {
       // Show or refresh controls
       resetHideTimer(!isPlaying);
     } else if (evt.eventType === 'down') {
-      if (isControlsVisible && isPlaying) {
+      if (isControlsVisible && isPlaying && !isTvScrubbing) {
         // Dismiss controls immediately during playback
         toggleControls();
       } else {
@@ -1086,9 +1530,12 @@ export function ModernVideoPlayer({
   }, []);
 
   return (
-    <GestureHandlerRootView style={styles.container}>
-      <View style={styles.container}>
-        {/* Stream resolution is handled by Cloud Function — no WebViews needed */}
+    <GestureHandlerRootView style={styles.container} pointerEvents={isBackgroundMode ? "none" : "auto"}>
+      <Animated.View style={StyleSheet.absoluteFill}>
+        {/* Ambient Loading Colors */}
+        {(status === 'loading' || isHandoffInProgressRef.current) && !isBackgroundMode && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
+        )}
 
         <VideoView
           ref={videoViewRef}
@@ -1106,229 +1553,287 @@ export function ModernVideoPlayer({
           </View>
         ) : null}
 
-        {/* TV Native Controls Wrapper (Always focused/Pressable) */}
-        <Pressable 
-          style={StyleSheet.absoluteFill} 
+        {/* Tap-capture Layer: Pressable behind everything to catch taps in empty areas */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
           onPress={toggleControls}
+        />
+        {/* Controls Layer: box-none so taps pass through to the Pressable above, but child buttons stay interactive */}
+        <View
+          style={StyleSheet.absoluteFill}
+          pointerEvents="box-none"
         >
-           {/* Controls only appear from remote button presses (useTVEventHandler) */}
-        </Pressable>
+          {/* Buffering/Loading Overlay */}
+          {!isBackgroundMode && <AnimatedLoadingOverlay 
+            status={status} 
+            internalVideoUrl={internalVideoUrl} 
+            fetchError={fetchError} 
+            backdropUrl={backdropUrl} 
+            animatedLoadingStyle={animatedLoadingStyle} 
+            resolvingStatus={resolvingStatus}
+            loadingPercent={loadingPercent}
+            title={title}
+            contentType={contentType}
+            seasonNum={seasonNum}
+            episodeNum={episodeNum}
+          />}
 
-        {/* Buffering/Loading Overlay */}
-        <AnimatedLoadingOverlay 
-          status={status} 
-          internalVideoUrl={internalVideoUrl} 
-          fetchError={fetchError} 
-          backdropUrl={backdropUrl} 
-          animatedLoadingStyle={animatedLoadingStyle} 
-          resolvingStatus={resolvingStatus}
-          loadingPercent={loadingPercent}
-        />
+          {/* Mid-playback buffering spinner (network stall) */}
+          {isBuffering && status === 'readyToPlay' && !fetchError && (
+            <View style={styles.bufferingOverlay} pointerEvents="none">
+              <LoadingSpinner size={52} tone="light" />
+              <Text style={styles.bufferingText}>Buffering...</Text>
+            </View>
+          )}
 
-        {/* Mid-playback buffering spinner (network stall) */}
-        {isBuffering && status === 'readyToPlay' && !fetchError && (
-          <View style={styles.bufferingOverlay} pointerEvents="none">
-            <LoadingSpinner size={52} tone="light" />
-            <Text style={styles.bufferingText}>Buffering...</Text>
-          </View>
-        )}
+          {/* Error Overlay */}
+          <AnimatedErrorOverlay 
+            status={status} 
+            fetchError={fetchError} 
+            isRateLimited={false}
+            isRecovering={isAutoRecovering}
+            onClose={onClose} 
+          />
 
-        {/* Error Overlay */}
-        <AnimatedErrorOverlay 
-          status={status} 
-          fetchError={fetchError} 
-          isRateLimited={false}
-          isRecovering={isAutoRecovering}
-          onClose={onClose} 
-        />
+          {isControlsVisible && status !== 'error' && (
+            <Animated.View 
+              style={[StyleSheet.absoluteFill, animatedControlsStyle]}
+              pointerEvents="box-none"
+            >
+              {/* Cinematic Bottom Gradient (No more full screen dim) */}
+              <Svg height="100%" width="100%" style={StyleSheet.absoluteFill} pointerEvents="none">
+                <Defs>
+                  <LinearGradient id="bottomGrad" x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0" stopColor="black" stopOpacity="0" />
+                    <Stop offset="0.5" stopColor="black" stopOpacity="0.1" />
+                    <Stop offset="0.8" stopColor="black" stopOpacity="0.6" />
+                    <Stop offset="1" stopColor="black" stopOpacity="0.9" />
+                  </LinearGradient>
+                </Defs>
+                <Rect x="0" y="0" width="100%" height="100%" fill="url(#bottomGrad)" />
+              </Svg>
 
-        {isControlsVisible && status !== 'error' && (
-          <Animated.View 
-            style={[styles.overlay, animatedControlsStyle]}
-            pointerEvents="box-none"
-          >
-            {/* Top Row and Center grouped natively for proper fading */}
-            <Animated.View style={[StyleSheet.absoluteFill, animatedFullControlsStyle]} pointerEvents={isFullControlsVisible ? "box-none" : "none"}>
-              {/* Top Row: Navigation and Metadata */}
-              <View style={styles.topRowTv}>
-                 <View style={styles.topControlsTv}>
-                    <View style={styles.topNavIconsTv}>
-                      <Pressable 
-                        onPress={onClose} 
-                        style={({ focused }) => [styles.iconBtnTv, focused && styles.focusedBtnTv]}
-                      >
-                        <Ionicons name="arrow-back" size={32} color="white" />
-                      </Pressable>
-                      <Pressable 
-                        onPress={() => skip(-10)} 
-                        style={({ focused }) => [styles.iconBtnTv, focused && styles.focusedBtnTv]}
-                      >
-                        <Ionicons name="refresh" size={32} color="white" />
-                      </Pressable>
-                      <Pressable 
-                        onPress={() => onNextEpisode?.()} 
-                        style={({ focused }) => [styles.iconBtnTv, focused && styles.focusedBtnTv]}
-                      >
-                        <Ionicons name="play-skip-forward" size={32} color="white" />
-                      </Pressable>
-                    </View>
-                    <Text style={styles.optionsLabelTv}>OPTIONS</Text>
+              {/* 1. Full Screen Metadata & Branding (Hidden during active playback) */}
+              <Animated.View 
+                style={[StyleSheet.absoluteFill, animatedFullControlsStyle, { padding: 50 }]} 
+                pointerEvents={isFullControlsVisible ? "box-none" : "none"}
+              >
+                 {/* Top Left: Back, Replay, Forward + OPTIONS label */}
+                 <View style={{ marginBottom: 20 }}>
+                   <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                     <Pressable 
+                       onPress={onClose} 
+                       style={({ focused }) => [styles.iconBtnTv, { width: 46, height: 46 }, focused && styles.focusedBtnTv]}
+                     >
+                       <Ionicons name="arrow-back" size={26} color="white" />
+                     </Pressable>
+                     <Pressable 
+                       onPress={() => skip(-10)} 
+                       style={({ focused }) => [styles.iconBtnTv, { width: 46, height: 46 }, focused && styles.focusedBtnTv]}
+                     >
+                       <Ionicons name="refresh" size={26} color="white" />
+                     </Pressable>
+                     <Pressable 
+                       onPress={() => skip(10)} 
+                       style={({ focused }) => [styles.iconBtnTv, { width: 46, height: 46 }, focused && styles.focusedBtnTv]}
+                     >
+                       <Ionicons name="play-forward" size={26} color="white" />
+                     </Pressable>
+                   </View>
+                   <Text style={styles.optionsLabelTv}>OPTIONS</Text>
                  </View>
 
-                 <View style={styles.metadataTv}>
-                    <Text style={styles.metadataTitleTv}>{title}</Text>
+                 {/* Top-Right: Title + Episode info */}
+                 <View style={styles.topRightInfoTv}>
+                    <Text style={styles.topRightTitleTv} numberOfLines={1}>{title}</Text>
                     {contentType === 'tv' && (
-                       <Text style={styles.metadataDetailsTv}>{`S${seasonNum || 1}: E${episodeNum}${itemData?.name ? ` "${itemData.name}"` : ''}`}</Text>
+                       <Text style={styles.topRightEpisodeTv}>
+                         {`S${seasonNum || 1}: E${episodeNum || '?'}${itemData?.name ? ` "${itemData.name}"` : ''}`}
+                       </Text>
                     )}
                  </View>
-              </View>
 
-              {/* Center Left: Logo and Ratings */}
-              <View style={styles.centerLeftOverlay}>
-                 <View style={styles.nSeriesRow}>
-                    <NetflixNLogo />
-                    <Text style={styles.seriesText}>SERIES</Text>
+                 {/* Mid-Left: Branding + Logo + Ratings */}
+                 <View style={{ maxWidth: '45%', marginTop: 40 }}>
+                    {contentType === 'tv' && (
+                      <View style={[styles.nSeriesRow, { marginBottom: 8 }]}>
+                         <NetflixNLogo width={18} height={32} />
+                         <Text style={styles.seriesText}>SERIES</Text>
+                      </View>
+                    )}
+                    
+                    {logoUrl ? (
+                      <Image source={{ uri: logoUrl }} style={[styles.tvLogo, { marginBottom: 28 }]} resizeMode="contain" />
+                    ) : (
+                      <Text style={[styles.logoTextTv, { marginBottom: 28 }]}>{title}</Text>
+                    )}
+
+                    <View style={styles.ratingRowTv}>
+                       <Pressable style={({ focused }) => [styles.ratingBtnTv, focused && styles.focusedRatingBtnTv]}>
+                         {({ focused }) => (
+                           <>
+                             <MaterialCommunityIcons name="thumb-down-outline" size={24} color={focused ? "black" : "white"} />
+                             <Text style={[styles.ratingBtnTextTv, focused && { color: 'black' }]}>Not for me</Text>
+                           </>
+                         )}
+                       </Pressable>
+                       <Pressable style={({ focused }) => [styles.ratingBtnTv, focused && styles.focusedRatingBtnTv]}>
+                         {({ focused }) => (
+                           <>
+                             <MaterialCommunityIcons name="thumb-up-outline" size={24} color={focused ? "black" : "white"} />
+                             <Text style={[styles.ratingBtnTextTv, focused && { color: 'black' }]}>I like this</Text>
+                           </>
+                         )}
+                       </Pressable>
+                       <Pressable 
+                         style={({ focused }) => [
+                           styles.ratingBtnTv, 
+                           focused && styles.focusedRatingBtnTv,
+                           { backgroundColor: focused ? 'white' : 'rgba(255,255,255,0.2)' }
+                         ]}
+                       >
+                         {({ focused }) => (
+                           <>
+                             <MaterialCommunityIcons name="thumb-up" size={24} color={focused ? "black" : "white"} />
+                             <Text style={[styles.ratingBtnTextTv, { color: focused ? 'black' : 'white' }]}>Love this!</Text>
+                           </>
+                         )}
+                       </Pressable>
+                    </View>
+                    <Text style={styles.helperTextTv}>Enjoying this? Rating helps us know if we should recommend more like this.</Text>
                  </View>
-                 
-                 {logoUrl ? (
-                   <Image source={{ uri: logoUrl }} style={styles.tvLogo} resizeMode="contain" />
-                 ) : (
-                   <Text style={styles.logoTextTv}>{title}</Text>
-                 )}
+              </Animated.View>
 
-                 <View style={styles.ratingRowTv}>
-                    <Pressable style={({ focused }) => [styles.ratingBtnTv, focused && styles.focusedRatingBtnTv]}>
-                      <MaterialCommunityIcons name="thumb-down-outline" size={26} color="white" />
-                      <Text style={styles.ratingBtnTextTv}>Not for me</Text>
-                    </Pressable>
-                    <Pressable style={({ focused }) => [styles.ratingBtnTv, focused && styles.focusedRatingBtnTv]}>
-                      <MaterialCommunityIcons name="thumb-up-outline" size={26} color="white" />
-                      <Text style={styles.ratingBtnTextTv}>I like this</Text>
-                    </Pressable>
+              {/* 2. Bottom Bar: Progress, Seek and Subtitles (Always reachable when controls are visible) */}
+              <View style={[styles.bottomBarTv, { bottom: 50, left: 50, right: 50 }]}>
+
+                 <View style={styles.playbackRowTv}>
                     <Pressable 
+                      onPress={handlePlayPause}
+                      style={({ focused }) => [styles.largePlayBtnTv, focused && styles.focusedBtnTv]}
+                      hasTVPreferredFocus={true}
+                    >
+                      <Ionicons name={isPlaying ? "pause" : "play"} size={32} color="white" />
+                    </Pressable>
+
+                    <Text style={[
+                      styles.timeTextTv, 
+                      isTvScrubbing && styles.timeTextTvScrubbing
+                    ]}>
+                      {formatTime(isTvScrubbing ? scrubTime : currentTime)}
+                    </Text>
+
+                    <Pressable
+                      onPress={() => {
+                        if (isTvScrubbing) {
+                          commitTvScrub();
+                        } else {
+                          resetHideTimer(!isPlaying);
+                        }
+                      }}
+                      onFocus={() => {
+                        setIsProgressBarFocused(true);
+                        resetHideTimer(true);
+                      }}
+                      onBlur={() => {
+                        setIsProgressBarFocused(false);
+                        // Cancel any pending scrub on blur
+                        if (isTvScrubbing) {
+                          commitTvScrub();
+                        }
+                      }}
                       style={({ focused }) => [
-                        styles.ratingBtnTv, 
-                        focused && styles.focusedRatingBtnTv,
-                        { backgroundColor: focused ? 'white' : 'rgba(255,255,255,0.2)' }
+                        styles.progressBarContainerTv,
+                        focused && styles.progressBarContainerTvFocused,
+                        isTvScrubbing && styles.progressBarContainerTvScrubbing,
                       ]}
-                      hasTVPreferredFocus={true} 
+                    >
+                      <View
+                        style={[
+                          styles.progressTrackTv,
+                          isProgressBarFocused && styles.progressTrackTvFocused,
+                          isTvScrubbing && styles.progressTrackTvScrubbing,
+                        ]}
+                      >
+                        <Animated.View style={[styles.progressFillTv, animatedProgressStyle]} />
+                      </View>
+                      <Animated.View
+                        style={[
+                          styles.progressThumbTv,
+                          isProgressBarFocused && styles.progressThumbTvFocused,
+                          isTvScrubbing && styles.progressThumbTvScrubbing,
+                          animatedProgressThumbStyle,
+                        ]}
+                      />
+                      {/* Scrub time preview bubble */}
+                      {isTvScrubbing && (
+                        <View style={[styles.scrubPreviewBubble, { left: `${Math.min(95, Math.max(5, (scrubTime / (duration || 1)) * 100))}%` }]}>
+                          <Text style={styles.scrubPreviewText}>{formatTime(scrubTime)}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+
+                    <Text style={styles.timeTextTv}>{formatTime(duration - (isTvScrubbing ? scrubTime : currentTime))}</Text>
+                 </View>
+
+                 <View style={styles.bottomControlsRowTv}>
+                    <Pressable 
+                      onPress={() => setShowSubtitlePicker(true)}
+                      style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
                     >
                       {({ focused }) => (
                         <>
-                          <MaterialCommunityIcons name="thumb-up" size={26} color={focused ? "black" : "white"} />
-                          <Text style={[styles.ratingBtnTextTv, { color: focused ? 'black' : 'white' }]}>Love this!</Text>
+                          <Ionicons name="checkmark" size={18} color={focused ? "black" : "white"} style={{ marginRight: 6 }} />
+                          <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>English [Original]</Text>
+                        </>
+                      )}
+                    </Pressable>
+                    <Pressable 
+                      onPress={() => setShowSubtitlePicker(true)}
+                      style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
+                    >
+                      {({ focused }) => (
+                        <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>English [Original] with Subtitles</Text>
+                      )}
+                    </Pressable>
+                    <Pressable 
+                      onPress={() => setShowSubtitlePicker(true)}
+                      style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
+                    >
+                      {({ focused }) => (
+                        <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>Other...</Text>
+                      )}
+                    </Pressable>
+                    <Pressable 
+                      onPress={() => setShowSubtitlePicker(true)}
+                      style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
+                    >
+                      {({ focused }) => (
+                        <Ionicons name="settings-outline" size={24} color={focused ? "black" : "white"} />
+                      )}
+                    </Pressable>
+                    <Pressable 
+                      onPress={() => {
+                        const newSpeed = playbackSpeed === 1 ? 1.25 : playbackSpeed === 1.25 ? 1.5 : playbackSpeed === 1.5 ? 2 : 1;
+                        setPlaybackSpeed(newSpeed);
+                        if (player) {
+                          try { player.playbackRate = newSpeed; } catch (e) {}
+                        }
+                      }}
+                      style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
+                    >
+                      {({ focused }) => (
+                        <>
+                          <Feather name="fast-forward" size={18} color={focused ? "black" : "white"} style={{ marginRight: 6 }} />
+                          <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>{playbackSpeed}x</Text>
                         </>
                       )}
                     </Pressable>
                  </View>
-
-                 <Text style={styles.helperTextTv}>
-                   Enjoying this? Rating helps us know if we should recommend more like this.
-                 </Text>
-               </View>
-             </Animated.View>
-
-            {/* Bottom Bar: Progress and Seek */}
-            <View style={styles.bottomBarTv}>
-               <View style={styles.playbackRowTv}>
-                  <Pressable 
-                    onPress={handlePlayPause}
-                    style={({ focused }) => [styles.largePlayBtnTv, focused && styles.focusedBtnTv]}
-                  >
-                    <Ionicons name={isPlaying ? "pause" : "play"} size={32} color="white" />
-                  </Pressable>
-
-                  <Text style={styles.timeTextTv}>{formatTime(currentTime)}</Text>
-
-                  <Pressable
-                    onPress={() => resetHideTimer(!isPlaying)}
-                    onFocus={() => {
-                      setIsProgressBarFocused(true);
-                      resetHideTimer(true);
-                    }}
-                    onBlur={() => setIsProgressBarFocused(false)}
-                    style={({ focused }) => [
-                      styles.progressBarContainerTv,
-                      focused && styles.progressBarContainerTvFocused,
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.progressTrackTv,
-                        isProgressBarFocused && styles.progressTrackTvFocused,
-                      ]}
-                    >
-                      <Animated.View style={[styles.progressFillTv, animatedProgressStyle]} />
-                    </View>
-                    <Animated.View
-                      style={[
-                        styles.progressThumbTv,
-                        isProgressBarFocused && styles.progressThumbTvFocused,
-                        animatedProgressThumbStyle,
-                      ]}
-                    />
-                  </Pressable>
-
-                  <Text style={styles.timeTextTv}>{formatTime(duration)}</Text>
-               </View>
-
-               <View style={styles.bottomControlsRowTv}>
-                  <Pressable 
-                    onPress={() => setShowSubtitlePicker(true)}
-                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
-                  >
-                    {({ focused }) => (
-                      <>
-                        <Ionicons name="checkmark" size={18} color={focused ? "black" : "white"} style={{ marginRight: 6 }} />
-                        <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>English [Original]</Text>
-                      </>
-                    )}
-                  </Pressable>
-                  <Pressable 
-                    onPress={() => setShowSubtitlePicker(true)}
-                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
-                  >
-                    {({ focused }) => (
-                      <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>English [Original] with Subtitles</Text>
-                    )}
-                  </Pressable>
-                  <Pressable 
-                    onPress={() => setShowSubtitlePicker(true)}
-                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
-                  >
-                    {({ focused }) => (
-                      <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>Other...</Text>
-                    )}
-                  </Pressable>
-                  <Pressable 
-                    onPress={() => setShowSubtitlePicker(true)}
-                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
-                  >
-                    {({ focused }) => (
-                      <Ionicons name="settings-outline" size={24} color={focused ? "black" : "white"} />
-                    )}
-                  </Pressable>
-                  <Pressable 
-                    onPress={() => {
-                      const newSpeed = playbackSpeed === 1 ? 1.25 : playbackSpeed === 1.25 ? 1.5 : playbackSpeed === 1.5 ? 2 : 1;
-                      setPlaybackSpeed(newSpeed);
-                      if (player) {
-                        try { player.playbackRate = newSpeed; } catch (e) {}
-                      }
-                    }}
-                    style={({ focused }) => [styles.bottomControlBtnTv, focused && styles.focusedControlBtnTv]}
-                  >
-                    {({ focused }) => (
-                      <>
-                        <Feather name="fast-forward" size={18} color={focused ? "black" : "white"} style={{ marginRight: 6 }} />
-                        <Text style={[styles.bottomControlTextTv, focused && { color: 'black' }]}>{playbackSpeed}x</Text>
-                      </>
-                    )}
-                  </Pressable>
-               </View>
-            </View>
-          </Animated.View>
-        )}
+              </View>
+            </Animated.View>
+          )}
+        </View>
 
         {showSkipIntro && !showUpNext && (
           <Animated.View entering={FadeInDown} exiting={SlideOutRight} style={styles.skipIntroContainerTv}>
@@ -1340,7 +1845,9 @@ export function ModernVideoPlayer({
               showSkipIntroRef.current = false;
               setShowSkipIntro(false);
             }}>
-              <Text style={styles.skipIntroTextTv}>Skip Intro</Text>
+              {({ focused }) => (
+                <Text style={[styles.skipIntroTextTv, focused && { color: 'black' }]}>Skip Intro</Text>
+              )}
             </Pressable>
           </Animated.View>
         )}
@@ -1367,6 +1874,25 @@ export function ModernVideoPlayer({
               <Ionicons name="play" size={24} color="black" />
               <Text style={styles.upNextBtnText}>Play Now</Text>
             </Pressable>
+          </Animated.View>
+        )}
+
+        {/* Content Advisory Overlay (Netflix Style) */}
+        {showAdvisory && contentAdvisory && (
+          <Animated.View 
+            entering={SlideInLeft.duration(600).easing(Easing.out(Easing.exp))} 
+            exiting={FadeOut.duration(500)} 
+            style={styles.advisoryContainerTv}
+            pointerEvents="none"
+          >
+            <View style={styles.advisoryRatingBadge}>
+              <Text style={styles.advisoryRatingText}>{contentAdvisory.rating}</Text>
+            </View>
+            {contentAdvisory.advisoryText ? (
+              <Text style={styles.advisoryDetailsText} numberOfLines={2}>
+                {contentAdvisory.advisoryText}
+              </Text>
+            ) : null}
           </Animated.View>
         )}
 
@@ -1456,7 +1982,7 @@ export function ModernVideoPlayer({
              </View>
           </View>
         </Modal>
-      </View>
+      </Animated.View>
     </GestureHandlerRootView>
   );
 }
@@ -1468,14 +1994,14 @@ const styles = StyleSheet.create({
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.35)',
   },
   centeredOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.85)',
-    zIndex: 100,
+    zIndex: 110,
   },
   subtitleContainer: {
     position: 'absolute',
@@ -1535,10 +2061,31 @@ const styles = StyleSheet.create({
     transform: [{ scale: 1.1 }],
   },
   optionsLabelTv: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 16,
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 14,
     fontWeight: 'bold',
-    letterSpacing: 2,
+    letterSpacing: 3,
+    marginTop: 6,
+    marginLeft: 4,
+  },
+  topRightInfoTv: {
+    position: 'absolute',
+    top: 50,
+    right: 50,
+    alignItems: 'flex-end',
+  },
+  topRightTitleTv: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '700',
+    opacity: 0.9,
+    maxWidth: 300,
+  },
+  topRightEpisodeTv: {
+    color: 'white',
+    fontSize: 26,
+    fontWeight: 'bold',
+    marginTop: 4,
   },
   metadataTv: {
     alignItems: 'flex-end',
@@ -1555,13 +2102,19 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginTop: 4,
   },
+  helperTextTv: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 17,
+    lineHeight: 26,
+    marginTop: 16,
+    fontWeight: '500',
+    maxWidth: 500,
+  },
   
   centerLeftOverlay: {
-    position: 'absolute',
-    top: '35%',
-    left: 80,
-    maxWidth: '60%',
+    width: '100%',
     gap: 15,
+    marginBottom: 0,
   },
   nSeriesRow: {
     flexDirection: 'row',
@@ -1581,8 +2134,8 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
   },
   tvLogo: {
-    width: 400,
-    height: 140,
+    width: 300,
+    height: 100,
   },
   logoTextTv: {
     color: 'white',
@@ -1613,20 +2166,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
   },
-  helperTextTv: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 18,
-    lineHeight: 28,
-    marginTop: 10,
-    fontWeight: '500',
-  },
   
   bottomBarTv: {
     position: 'absolute',
     bottom: 40,
     left: 80,
     right: 80,
-    gap: 20,
+    gap: 0,
   },
   playbackRowTv: {
     flexDirection: 'row',
@@ -1694,6 +2240,48 @@ const styles = StyleSheet.create({
     marginTop: -9,
     shadowOpacity: 0.4,
     shadowRadius: 6,
+  },
+  progressTrackTvScrubbing: {
+    height: 8,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+  },
+  progressThumbTvScrubbing: {
+    width: 24,
+    height: 24,
+    marginTop: -12,
+    borderWidth: 3,
+    shadowRadius: 8,
+    shadowOpacity: 0.6,
+  },
+  progressBarContainerTvScrubbing: {
+    transform: [{ scaleY: 1 }],
+  },
+  timeTextTvScrubbing: {
+    color: '#E50914',
+    transform: [{ scale: 1.1 }],
+  },
+  scrubPreviewBubble: {
+    position: 'absolute',
+    bottom: 35,
+    backgroundColor: 'rgba(20,20,20,0.85)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#E50914',
+    transform: [{ translateX: '-50%' }],
+    shadowColor: '#E50914',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  scrubPreviewText: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+    fontVariant: ['tabular-nums'],
   },
   
   bottomControlsRowTv: {
@@ -1789,6 +2377,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
     paddingVertical: 15,
     borderRadius: 10,
+  },
+  retryBtnFocused: {
+    backgroundColor: '#E50914',
+    transform: [{ scale: 1.08 }],
   },
   retryText: {
     color: 'black',
@@ -1896,5 +2488,44 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 14,
     letterSpacing: 0.5,
+  },
+  
+  // Content Advisory Styles
+  advisoryContainerTv: {
+    position: 'absolute',
+    top: 50,
+    left: 0,
+    backgroundColor: 'rgba(20,20,20,0.85)',
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+    paddingLeft: 40,
+    paddingRight: 20,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    zIndex: 90,
+    maxWidth: 400,
+    borderLeftWidth: 4,
+    borderLeftColor: '#E50914',
+  },
+  advisoryRatingBadge: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  advisoryRatingText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  advisoryDetailsText: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 16,
+    fontWeight: '500',
+    flexShrink: 1,
   },
 });

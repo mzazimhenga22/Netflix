@@ -152,7 +152,7 @@ class PhoneRowViewManager : SimpleViewManager<FrameLayout>() {
                     event.putString("mediaType", type)
                     context.getJSModule(RCTEventEmitter::class.java).receiveEvent(
                         view.id,
-                        "topSelect",
+                        "topItemSelect",
                         event
                     )
                 },
@@ -172,7 +172,7 @@ class PhoneRowViewManager : SimpleViewManager<FrameLayout>() {
 
     override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
         return mutableMapOf(
-            "topSelect" to mutableMapOf("registrationName" to "onSelect"),
+            "topItemSelect" to mutableMapOf("registrationName" to "onSelect"),
             "topLongPress" to mutableMapOf("registrationName" to "onLongPress")
         )
     }

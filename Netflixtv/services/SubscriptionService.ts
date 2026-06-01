@@ -1,5 +1,6 @@
 import { db, auth } from './firebase';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface SubscriptionStatus {
   status: 'active' | 'past_due' | 'none' | 'error' | 'loading';
@@ -25,7 +26,9 @@ export const SubscriptionService = {
       try {
         const snap = await getDoc(doc(db, 'users', uid, 'subscription', 'details'));
         if (snap.exists()) {
-          return { ...(snap.data() as SubscriptionStatus), status: snap.data().status || 'active' };
+          const data = { ...(snap.data() as SubscriptionStatus), status: snap.data().status || 'none' };
+          AsyncStorage.setItem(`sub_status_${uid}`, JSON.stringify(data)).catch(() => {});
+          return data;
         }
         return { status: 'none' };
       } catch (e: any) {
@@ -40,6 +43,14 @@ export const SubscriptionService = {
           await new Promise(resolve => setTimeout(resolve, delay));
           return fetchSub(attempt + 1);
         }
+        
+        try {
+          const cached = await AsyncStorage.getItem(`sub_status_${uid}`);
+          if (cached) {
+            console.log('[SubscriptionService] Returning cached subscription offline');
+            return JSON.parse(cached) as SubscriptionStatus;
+          }
+        } catch (_) {}
         
         return { 
           status: 'error', 
@@ -58,8 +69,16 @@ export const SubscriptionService = {
       return () => {};
     }
 
-    // Initial loading state
-    callback({ status: 'loading' });
+    // Load cached subscription status first so UI is responsive offline
+    AsyncStorage.getItem(`sub_status_${uid}`).then(cached => {
+      if (cached) {
+        callback(JSON.parse(cached) as SubscriptionStatus);
+      } else {
+        callback({ status: 'loading' });
+      }
+    }).catch(() => {
+      callback({ status: 'loading' });
+    });
 
     // Timeout to prevent infinite loading on broken networks
     const timeout = setTimeout(() => {
@@ -74,18 +93,21 @@ export const SubscriptionService = {
         // Clear timeout once we get ANY non-error result from Firestore
         clearTimeout(timeout);
         
-        if ((snap as any).exists()) {
-          callback({ ...(snap.data() as SubscriptionStatus), status: snap.data().status || 'active' });
+        const snapData = snap.data();
+        if (snap.exists() && snapData) {
+          const data = { ...(snapData as SubscriptionStatus), status: snapData.status || 'none' };
+          AsyncStorage.setItem(`sub_status_${uid}`, JSON.stringify(data)).catch(() => {});
+          callback(data);
         } else {
-          // IMPORTANT: If snap doesn't exist but is from cache, it might just be 
-          // that the cache hasn't synced yet. We WAIT for server confirmation 
-          // unless the server itself says the document is missing.
-          if (!(snap as any).metadata.fromCache) {
-            callback({ status: 'none' });
-          } else {
-            // Document missing from cache, stay in loading/error until server confirms
-            callback({ status: 'loading' });
+          // Document doesn't exist — user is on the free plan.
+          // Whether from cache or server, treat as 'none' (restricted) to
+          // prevent free users bypassing the lock while waiting for server sync.
+          // BUT: If the snapshot is empty and comes from cache (offline), do NOT downgrade!
+          if (snap.metadata.fromCache) {
+            console.log('[SubscriptionService] Ignoring empty subscription snapshot from cache (offline)');
+            return;
           }
+          callback({ status: 'none' });
         }
       },
       (error) => {

@@ -1,13 +1,9 @@
 import axios from 'axios';
 import { Buffer } from 'buffer';
+import { getAllMirrorUrls } from './netmirrorDomains';
 
-const NETMIRROR_MIRRORS = [
-  'https://netfree.cc',
-  'https://net23.cc',
-  'https://net22.cc',
-  'https://net24.cc',
-  'https://netmirror.vip'
-];
+// Mirror list is now dynamically built via netmirrorDomains.ts
+// Discovered live domains go first, then known gateways as fallbacks
 const generateSessionToken = () => {
   // Generate a random 32-character hex string (MD5-like) to bypass shared user token rate limits
   return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
@@ -109,6 +105,8 @@ export const fetchNetMirrorStream = async (
       let searchRes = null;
       let usedBase = '';
       
+      // Dynamically get mirror list with discovered domains first
+      const NETMIRROR_MIRRORS = await getAllMirrorUrls();
       for (const base of NETMIRROR_MIRRORS) {
         try {
           console.log(`[NetMirror] 🔍 Trying mirror search: ${base}${searchPath}`);
@@ -276,7 +274,7 @@ export const fetchNetMirrorStream = async (
               for (const src of playlistData.sources) {
                 const originalUrl = normalizeUrl(src.file);
                 const match = originalUrl.match(/^https?:\/\/([^/]+)/);
-                if (match && !match[1].includes('net22.cc') && !match[1].includes('netfree.cc')) {
+                if (match && !match[1].match(/^net\d+\.cc$/) && !match[1].includes('netfree.cc') && !match[1].includes('netmirror.vip')) {
                   fallbackHostname = match[1];
                   break;
                 }

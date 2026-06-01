@@ -1,7 +1,7 @@
 import axios from 'axios';
+import { getNetMirrorDomains } from './netmirrorDomains';
 
-const NETMIRROR_BASE = 'https://net22.cc';
-const NETMIRROR_PLAY = 'https://net52.cc';
+// Domains are now resolved dynamically via netmirrorDomains.ts
 const USER_TOKEN = '233123f803cf02184bf6c67e149cdd50';
 
 export interface NetMirrorSource {
@@ -45,6 +45,12 @@ const extractCookies = (setCookieHeader: string | string[] | undefined): string 
 export const fetchNetMirrorStream = async (title: string, episode?: number, primaryId?: string, year?: string): Promise<NetMirrorResponse | null> => {
   const platforms: OTTType[] = ['nf', 'pv', 'hs'];
   const timestamp = Math.floor(Date.now() / 1000);
+
+  // Dynamically discover the live domains
+  const { net22Domain, net52Domain } = await getNetMirrorDomains();
+  const NETMIRROR_BASE = `https://${net22Domain}`;
+  const NETMIRROR_PLAY = `https://${net52Domain}`;
+  console.log(`[NetMirror] 🌐 Using domains: base=${net22Domain}, play=${net52Domain}`);
 
   // Aggressive cleaning: Remove S1E1, Season 1, Episode 1, etc.
   let cleanTitle = title

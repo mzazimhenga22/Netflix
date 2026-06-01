@@ -55,13 +55,12 @@
 
     <!-- Header -->
     <g transform="translate(20, 60)">
-      <text x="0" y="10" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="20">For Saurabh Saini</text>
+      <text x="0" y="10" fill="white" font-family="Inter, sans-serif" font-weight="800" font-size="20">For You</text>
       <g transform="translate(240, -8)">
-         <rect x="0" y="0" width="20" height="15" rx="2" stroke="white" stroke-width="1.5" fill="none"/>
-         <path d="M0 12C2 12 4 14 4 16" stroke="white" stroke-width="1.5" fill="none"/>
-         <path d="M35 0V11M35 11L31 7M35 11L39 7M30 14H40" stroke="white" stroke-width="1.5" fill="none"/>
-         <circle cx="65" cy="8" r="6" stroke="white" stroke-width="1.8"/>
-         <line x1="70" y1="13" x2="74" y2="17" stroke="white" stroke-width="1.8"/>
+         <rect x="0" y="0" width="22" height="18" rx="3" stroke="white" stroke-width="1.8" fill="none"/>
+         <path d="M0 14C2 14 4 16 4 18" stroke="white" stroke-width="1.8" fill="none"/>
+         <circle cx="65" cy="8" r="7" stroke="white" stroke-width="1.8"/>
+         <line x1="70" y1="13" x2="75" y2="18" stroke="white" stroke-width="1.8"/>
       </g>
     </g>
 
@@ -85,7 +84,7 @@
     <!-- Hero Poster -->
     <g transform="translate(20, 155)">
        <g clip-path="url(#hero-clip)">
-          <image xlink:href="https://image.tmdb.org/t/p/w500/vGfL3h790rA87XF395bLzN2M8S9.jpg" width="335" height="400" preserveAspectRatio="xMidYMid slice"/>
+          <image xlink:href="https://image.tmdb.org/t/p/w500/9P9S6v7X9Y9O0J8vY9I0K9L8M7N.jpg" width="335" height="400" preserveAspectRatio="xMidYMid slice"/>
           <linearGradient id="hero-mask-v2" x1="0" y1="0" x2="0" y2="1">
              <stop offset="60%" stop-color="black" stop-opacity="0"/>
              <stop offset="100%" stop-color="black" stop-opacity="0.9"/>
@@ -93,9 +92,8 @@
           <rect width="335" height="400" fill="url(#hero-mask-v2)"/>
           
           <g transform="translate(167.5, 300)" text-anchor="middle" filter="url(#text-shadow)">
-             <text x="0" y="0" fill="white" font-family="serif" font-weight="900" font-size="24" letter-spacing="1">ANWESHIPPIN</text>
-             <text x="0" y="28" fill="white" font-family="serif" font-weight="900" font-size="24" letter-spacing="1">KANDETHUM</text>
-             <text x="0" y="55" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="10" opacity="0.8">Understated • Dark • Drama • Detectives</text>
+             <text x="0" y="0" fill="white" font-family="Inter, sans-serif" font-weight="900" font-size="32" letter-spacing="2">WEDNESDAY</text>
+             <text x="0" y="32" fill="white" font-family="Inter, sans-serif" font-weight="600" font-size="11" opacity="0.8">Quirky • Dark • Teen • Mystery</text>
           </g>
 
           <g transform="translate(12, 355)">

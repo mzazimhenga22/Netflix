@@ -227,7 +227,6 @@ const DynamicTitleCardComponent = ({ item, variant = 'poster', tiltX, tiltY, ind
           source={{ uri: item.imageUrl }} 
           style={styles.image} 
           contentFit="cover"
-          sharedTransitionTag={`movie-image-${item.id}`}
         />
 
         {isOriginal && (

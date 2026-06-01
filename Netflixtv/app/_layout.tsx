@@ -23,6 +23,7 @@ import { PageColorProvider, usePageColor } from '../context/PageColorContext';
 // Hide native splash immediately — we use our own animated one
 SplashScreen.preventAutoHideAsync();
 const { width, height } = Dimensions.get('window');
+const WEBSITE_DOWNLOAD_URL = 'https://appsdownloads.netlify.app/#';
 
 import { auth } from '../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -30,10 +31,12 @@ import { SubscriptionService, SubscriptionStatus } from '../services/Subscriptio
 import { Text, ActivityIndicator } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import Constants from 'expo-constants';
+import * as Linking from 'expo-linking';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { CookieService } from '../services/CookieService';
 
 
 function RootLayoutContent() {
@@ -47,6 +50,7 @@ function RootLayoutContent() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [updateStatusText, setUpdateStatusText] = useState('');
+  const updateAttemptedRef = useRef(false);
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
   const [payHeroUrl, setPayHeroUrl] = useState<string | null>(null);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
@@ -103,20 +107,48 @@ function RootLayoutContent() {
 
   const checkVersionGate = useCallback(async () => {
     try {
-      const configDoc = await getDoc(doc(db, 'app_config', 'versioning'));
-      if (!configDoc.exists()) return;
+      const netflixRepo = 'mzazimhenga22/Netflix';
+      const ts = Date.now();
+      // Use per_page=20 so TV releases aren't pushed out by phone/other releases
+      const releasesUrl = `https://api.github.com/repos/${netflixRepo}/releases?per_page=20&t=${ts}`;
+      
+      const response = await fetch(releasesUrl);
+      if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
+      
+      const releases = await response.json();
+      if (!Array.isArray(releases) || releases.length === 0) return;
 
-      const data = configDoc.data();
+      // Find latest TV release (tag format: "tv-v.X.Y.Z" or "tv-vX.Y.Z")
+      const latestTv = releases.find(r => String(r.tag_name).startsWith('tv-v'));
+      if (!latestTv) return;
+
+      // Strip the "tv-v" prefix and any leading dots/dashes to get clean semver
+      // Handles both "tv-v1.0.11" and "tv-v.1.0.11" formats
+      const remoteVersion = String(latestTv.tag_name).replace(/^tv-v[.\-]?/, '');
       const localVersion = Constants.expoConfig?.version || '1.0.0';
-      const remoteVersion = data.minRequiredVersion || '1.0.0';
+
+      console.log(`[TV Update] Local: ${localVersion}, Remote: ${remoteVersion}`);
 
       if (compareVersions(localVersion, remoteVersion) < 0) {
-        setUpdateConfig(data);
+        // Find APK asset
+        const apkAsset = latestTv.assets?.find((a: any) => 
+          String(a.name).toLowerCase().endsWith('.apk') && 
+          String(a.name).toLowerCase().includes('tv')
+        );
+
+        const config = {
+          minRequiredVersion: remoteVersion,
+          directDownloadUrl: apkAsset?.browser_download_url || latestTv.html_url,
+          message: latestTv.body || `A new update (v${remoteVersion}) is available with performance improvements and bug fixes.`,
+          updateUrl: latestTv.html_url
+        };
+
+        setUpdateConfig(config);
         setUpdateStatusText(`Version ${remoteVersion} is required to continue.`);
         setShowUpdateGate(true);
       }
     } catch (error) {
-      console.warn('[TV VersionGate] Fetch failed, bypassing for safety', error);
+      console.warn('[TV VersionGate] GitHub check failed', error);
     }
   }, [compareVersions]);
 
@@ -139,9 +171,10 @@ function RootLayoutContent() {
   const handleUpdatePress = useCallback(async () => {
     if (Platform.OS !== 'android' || !updateConfig) return;
 
-    const updateUrl = updateConfig.directDownloadUrl || updateConfig.updateUrl;
+    const updateUrl = updateConfig.directDownloadUrl;
     if (!updateUrl || !String(updateUrl).endsWith('.apk')) {
-      setUpdateStatusText('Update link is missing a direct APK download.');
+      setUpdateStatusText('Opening the download website...');
+      Linking.openURL(updateConfig.updateUrl || WEBSITE_DOWNLOAD_URL);
       return;
     }
 
@@ -180,6 +213,20 @@ function RootLayoutContent() {
   }, [installApk, updateConfig]);
 
   useEffect(() => {
+    if (!showUpdateGate) {
+      updateAttemptedRef.current = false;
+      return;
+    }
+
+    if (updateAttemptedRef.current || isDownloadingUpdate) {
+      return;
+    }
+
+    updateAttemptedRef.current = true;
+    handleUpdatePress();
+  }, [handleUpdatePress, isDownloadingUpdate, showUpdateGate]);
+
+  useEffect(() => {
     let subUnsubscribe = () => {};
     
     async function prepare() {
@@ -202,6 +249,9 @@ function RootLayoutContent() {
         // Hide native Expo splash immediately — our animation takes over
         await SplashScreen.hideAsync();
         await checkVersionGate();
+
+        // Sync NetMirror cookies from Firestore to Native Module
+        CookieService.subscribeToUpdates();
 
         return () => {
           unsubscribe();
@@ -274,12 +324,13 @@ function RootLayoutContent() {
 
   return (
     <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
-      <Stack screenOptions={{ headerShown: false }}>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#000000' } }}>
         <Stack.Screen name="index" options={{ animation: 'fade' }} />
         <Stack.Screen name="profiles" options={{ animation: 'fade' }} />
         <Stack.Screen name="edit-profile" options={{ animation: 'fade' }} />
         <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
         <Stack.Screen name="movie/[id]" options={{ animation: 'fade' }} />
+        <Stack.Screen name="upgrade" options={{ animation: 'fade' }} />
       </Stack>
 
       {/* Global memory cleanup for low-RAM TV devices */}

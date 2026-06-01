@@ -1,5 +1,6 @@
 import React from 'react';
 import { requireNativeComponent, ViewProps, StyleSheet, useWindowDimensions } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 interface NativeHeroCardProps extends ViewProps {
   items: Array<{
@@ -18,7 +19,8 @@ interface NativeHeroCardProps extends ViewProps {
   onLongPress?: (event: { nativeEvent: { id: string } }) => void;
 }
 
-const PhoneHeroView = requireNativeComponent<NativeHeroCardProps>('PhoneHeroView');
+const PhoneHeroView = (global as any).PhoneHeroView || ((global as any).PhoneHeroView = requireNativeComponent<NativeHeroCardProps>('PhoneHeroView'));
+const AnimatedPhoneHeroView = Animated.createAnimatedComponent(PhoneHeroView);
 
 export const NativeHeroCard = (props: NativeHeroCardProps) => {
   const { width, height } = useWindowDimensions();
@@ -27,7 +29,7 @@ export const NativeHeroCard = (props: NativeHeroCardProps) => {
   const dynamicHeight = Math.min(height * 0.75, width * 1.45);
 
   return (
-    <PhoneHeroView 
+    <AnimatedPhoneHeroView 
       {...props} 
       style={[styles.container, { height: dynamicHeight }, props.style]} 
     />

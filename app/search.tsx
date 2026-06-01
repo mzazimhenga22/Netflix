@@ -19,6 +19,70 @@ import * as Haptics from 'expo-haptics';
 // Removed static Dimensions measurement to prevent orientation-change distortion
 // useWindowDimensions() is used inside the component instead.
 
+const POPULAR_DICTIONARY = [
+  "Stranger Things", "Wednesday", "Squid Game", "The Crown", "Bridgerton", "Avatar", 
+  "Inception", "Titanic", "Breaking Bad", "Game of Thrones", "The Witcher", "Black Mirror", 
+  "Ozark", "Mindhunter", "Narcos", "Peaky Blinders", "Better Call Saul", "Lucifer", 
+  "The Umbrella Academy", "Money Heist", "Dark", "Elite", "You", "Sex Education", "Cobra Kai", 
+  "The Queen's Gambit", "The Sandman", "Outer Banks", "Manifest", "Emily in Paris", 
+  "Sweet Tooth", "Shadow and Bone", "Lupin", "Locke & Key", "Alice in Borderland", 
+  "All of Us Are Dead", "Kingdom", "The Last Dance", "Rick and Morty", "BoJack Horseman", 
+  "Friends", "The Office", "The Big Bang Theory", "Brooklyn Nine-Nine", "Sherlock", 
+  "Fargo", "The Mandalorian", "The Boys", "Succession", "Ted Lasso", "Severance", 
+  "Euphoria", "Dune", "Interstellar", "The Dark Knight", "Pulp Fiction", "Forrest Gump", 
+  "The Matrix", "Gladiator", "The Godfather", "Star Wars", "Jurassic Park", "Spider-Man", 
+  "Iron Man", "Avengers", "Black Panther", "The Lion King", "Frozen", "Toy Story", 
+  "Shrek", "Harry Potter", "Lord of the Rings", "The Hobbit", "Hunger Games", "Twilight"
+];
+
+function getLevenshteinDistance(a: string, b: string): number {
+  const tmp: number[][] = [];
+  for (let i = 0; i <= a.length; i++) {
+    tmp[i] = [i];
+  }
+  for (let j = 0; j <= b.length; j++) {
+    tmp[0][j] = j;
+  }
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      tmp[i][j] = Math.min(
+        tmp[i - 1][j] + 1, // deletion
+        tmp[i][j - 1] + 1, // insertion
+        tmp[i - 1][j - 1] + (a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1) // substitution
+      );
+    }
+  }
+  return tmp[a.length][b.length];
+}
+
+function findSpellingSuggestion(query: string, dictionary: string[]): string | null {
+  const cleanQuery = query.toLowerCase().trim();
+  if (cleanQuery.length < 3) return null;
+
+  let bestMatch: string | null = null;
+  let minDistance = 3; // Max threshold distance is 2 edits
+
+  for (const title of dictionary) {
+    if (!title) continue;
+    const cleanTitle = title.toLowerCase().trim();
+    // Exact match: no suggestion needed
+    if (cleanTitle === cleanQuery) return null;
+
+    // Check if query is a substring of the title
+    if (cleanTitle.includes(cleanQuery)) {
+      continue;
+    }
+
+    const dist = getLevenshteinDistance(cleanQuery, cleanTitle);
+    if (dist < minDistance) {
+      minDistance = dist;
+      bestMatch = title;
+    }
+  }
+
+  return bestMatch;
+}
+
 export default function SearchScreen() {
   const { width, height } = useWindowDimensions();
   const router = useRouter();
@@ -27,6 +91,8 @@ export default function SearchScreen() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [liveSuggestions, setLiveSuggestions] = useState<string[]>([]);
+  const [spellingSuggestion, setSpellingSuggestion] = useState<string | null>(null);
   const searchInputRef = useRef<TextInput>(null);
   
   const { selectedProfile } = useProfile();
@@ -77,17 +143,39 @@ export default function SearchScreen() {
         setSearchResults(results);
         setLoading(false);
         
+        // Generate live spelling and search suggestions
+        if (results && results.length > 0) {
+          const suggestions: string[] = [];
+          for (const item of results) {
+            const title = item.title || item.name;
+            if (title && !suggestions.includes(title)) {
+              suggestions.push(title);
+            }
+            if (suggestions.length >= 5) break;
+          }
+          setLiveSuggestions(suggestions);
+          setSpellingSuggestion(null);
+        } else {
+          setLiveSuggestions([]);
+          // If no results, perform fuzzy search against top Searches & popular titles dictionary
+          const dict = [...POPULAR_DICTIONARY, ...topSearches.map(t => t.title || t.name).filter(Boolean)];
+          const suggestion = findSpellingSuggestion(searchQuery, dict);
+          setSpellingSuggestion(suggestion);
+        }
+        
         // Save to recent searches if result is found (Netflix-like behavior)
         if (results.length > 0 && searchQuery.length > 3) {
            SearchService.saveSearch(selectedProfile?.id || '', searchQuery);
         }
       } else {
         setSearchResults([]);
+        setLiveSuggestions([]);
+        setSpellingSuggestion(null);
       }
-    }, 800);
+    }, 600); // 600ms debounce for smoother live typing corrections
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery, isKids]);
+  }, [searchQuery, isKids, topSearches]);
 
   const handleSearchFocus = () => {
     searchBarWidth.value = withSpring(width - 80);
@@ -146,6 +234,48 @@ export default function SearchScreen() {
           </Pressable>
         ) : null}
       </View>
+
+      {/* Spelling Correction & Autocomplete Suggestions */}
+      {searchQuery.length > 0 && (
+        <View style={styles.suggestionsContainer}>
+          {spellingSuggestion && (
+            <Pressable 
+              style={styles.spellingBanner}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSearchQuery(spellingSuggestion);
+              }}
+            >
+              <Ionicons name="sparkles" size={16} color="#E50914" />
+              <Text style={styles.spellingText}>
+                Did you mean: <Text style={styles.spellingHighlight}>{spellingSuggestion}</Text>?
+              </Text>
+            </Pressable>
+          )}
+
+          {liveSuggestions.length > 0 && (
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.suggestionsHorizontalScroll}
+            >
+              {liveSuggestions.map((suggestion, index) => (
+                <Pressable
+                  key={index}
+                  style={styles.suggestionPill}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setSearchQuery(suggestion);
+                  }}
+                >
+                  <Ionicons name="search" size={12} color="#A3A3A3" style={{ marginRight: 4 }} />
+                  <Text style={styles.suggestionPillText} numberOfLines={1}>{suggestion}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      )}
 
       {!searchQuery ? (
         <FlatList
@@ -422,5 +552,52 @@ const styles = StyleSheet.create({
   },
   resultsGrid: {
     flex: 1,
-  }
+  },
+  suggestionsContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#000',
+  },
+  spellingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(229, 9, 20, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(229, 9, 20, 0.25)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  spellingText: {
+    color: '#D4D4D4',
+    fontSize: 13,
+    marginLeft: 8,
+  },
+  spellingHighlight: {
+    color: '#E50914',
+    fontWeight: '700',
+    fontStyle: 'italic',
+  },
+  suggestionsHorizontalScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  suggestionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  suggestionPillText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
 });

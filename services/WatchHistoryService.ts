@@ -53,13 +53,23 @@ export const WatchHistoryService = {
       const storageId = this._buildStorageId(itemId, type, season, episode);
       const now = Date.now();
 
+      const minimizedItem = item ? {
+        id: item.id,
+        title: item.title || null,
+        name: item.name || null,
+        poster_path: item.poster_path || null,
+        backdrop_path: item.backdrop_path || null,
+        overview: item.overview || null,
+        type: item.type || type,
+      } : null;
+
       const newItem: WatchHistoryItem = {
         id: itemId,
         type,
         currentTime,
         duration,
         lastUpdated: now,
-        item
+        item: minimizedItem
       };
       
       if (season !== undefined && season !== null) newItem.season = season;

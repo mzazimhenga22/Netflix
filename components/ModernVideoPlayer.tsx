@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, useWindowDimensions, ScrollView, Modal, Image, NativeModules, Alert, requireNativeComponent } from 'react-native';
+import { View, Text, StyleSheet, Pressable, useWindowDimensions, ScrollView, Modal, Image, NativeModules, Alert, requireNativeComponent, Platform, TextInput } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import { BlurView } from 'expo-blur';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons, MaterialCommunityIcons, MaterialIcons, Feather } from '@expo/vector-icons';
 import Animated, { 
@@ -28,23 +30,34 @@ import { parseVtt, Subtitle } from '../utils/vttParser';
 import { getImageUrl } from '../services/tmdb';
 import { NetflixLoader } from './NetflixLoader';
 import { VidLinkResolver } from './VidLinkResolver';
-import { VidSrcResolver } from './VidSrcResolver';
+import { MoviesApiResolver } from './MoviesApiResolver';
 import { VidLinkStream, VidLinkSkipMarker } from '../services/vidlink';
-import { VidSrcStream } from '../services/vidsrc';
+import { MoviesApiStream } from '../services/moviesapi';
 import { useProfile } from '../context/ProfileContext';
 import { WatchHistoryService } from '../services/WatchHistoryService';
 import { RatingsService, RatingValue } from '../services/RatingsService';
 import { ViewProps } from 'react-native';
+import { FriendsService, FRIEND_AVATARS } from '../services/friends';
 
 interface HologramNativeViewProps extends ViewProps {
   videoUrl?: string;
   title?: string;
   drmLicenseUrl?: string;
   videoFormat?: string;
+  hologramType?: string;
   onPlaybackStatusUpdate?: (event: any) => void;
 }
 
-const HologramNativeView = requireNativeComponent<HologramNativeViewProps>('HologramModule');
+// Safe lazy-load: requireNativeComponent crashes the entire bundle if the
+// native ViewManager hasn't been registered (e.g. in Expo Go, or if the
+// native build is stale). We catch that and fall back to null.
+let HologramNativeView: React.ComponentType<HologramNativeViewProps> | null = null;
+try {
+  HologramNativeView = (global as any).HologramNativeView ||
+    ((global as any).HologramNativeView = requireNativeComponent<HologramNativeViewProps>('HologramModule'));
+} catch (e) {
+  console.warn('[Hologram] Native HologramModule not available — hologram mode disabled:', (e as any)?.message);
+}
 
 // Stable empty array references to prevent useEffect infinite loops.
 // Default param `= []` creates a new ref every render; if that ref is in
@@ -76,6 +89,8 @@ interface ModernPlayerProps {
   seasonNum?: number;
   primaryId?: string;
   backdropUrl?: string;
+  watchPartyId?: string;
+  isHost?: boolean;
 }
 
 export function ModernVideoPlayer({ 
@@ -94,7 +109,9 @@ export function ModernVideoPlayer({
   episodeNum,
   seasonNum,
   primaryId,
-  backdropUrl
+  backdropUrl,
+  watchPartyId,
+  isHost
 }: ModernPlayerProps) {
   const { width, height } = useWindowDimensions();
   useKeepAwake(); // Keep screen from sleeping during playback
@@ -117,8 +134,8 @@ export function ModernVideoPlayer({
   const [showSubtitlePicker, setShowSubtitlePicker] = useState(false);
   const [showMoreOptions, setShowMoreOptions] = useState(false);
   
-  // Source resolution state — VidLink primary, VidSrc fallback
-  const [activeSource, setActiveSource] = useState<'vidlink' | 'vidsrc' | 'none'>('none');
+  // Source resolution state — VidLink primary, MoviesAPI fallback (which is slower)
+  const [activeSource, setActiveSource] = useState<'vidlink' | 'moviesapi' | 'net22' | 'net52' | 'none'>('none');
   const [resolveAttempt, setResolveAttempt] = useState(0); // bump to re-trigger resolution
   
   // Premium Features State
@@ -143,6 +160,8 @@ export function ModernVideoPlayer({
   const isScrubbing = useRef(false);
   const [brightnessLevel, setBrightnessLevel] = useState(0.5);
   const [volumeLevel, setVolumeLevel] = useState(1); // 1 is max
+  const initialBrightnessRef = useRef(0.5);
+  const initialVolumeRef = useRef(1);
 
   // Subtitle State
   const parsedSubtitles = useRef<Subtitle[]>([]);
@@ -151,6 +170,8 @@ export function ModernVideoPlayer({
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(-1);
   const [resizeMode, setResizeMode] = useState<'contain' | 'cover'>('contain');
   const [isHologramMode, setIsHologramMode] = useState(false);
+  const [showHologramSetup, setShowHologramSetup] = useState(false);
+  const [selectedHologramType, setSelectedHologramType] = useState<'air' | 'pyramid'>('air');
   const nextEpisodeData = React.useMemo(() => {
     if (contentType === 'tv' && episodes && episodes.length > 0 && episodeNum) {
       const currentIndex = episodes.findIndex((e: any) => e.episode_number === episodeNum);
@@ -160,6 +181,128 @@ export function ModernVideoPlayer({
     }
     return null;
   }, [episodes, episodeNum, contentType]);
+
+  // Watch Party Refined Sync State & Effects
+  const lastWriteTimeRef = useRef(0);
+  const lastCheckedTimeRef = useRef(0);
+  const lastProcessedEventIdRef = useRef<string | null>(null);
+  const [partyMessage, setPartyMessage] = useState<string | null>(null);
+  const [partyParticipantsCount, setPartyParticipantsCount] = useState(1);
+  const [showPartyDrawer, setShowPartyDrawer] = useState(false);
+  const [participants, setParticipants] = useState<any[]>([]);
+  const [floatingEmojis, setFloatingEmojis] = useState<{ id: string; emoji: string; xOffset: number }[]>([]);
+  const [partyFeed, setPartyFeed] = useState<any[]>([]);
+  const [drawerInput, setDrawerInput] = useState('');
+  const drawerChatScrollRef = useRef<ScrollView>(null);
+
+  const triggerFloatingEmoji = useCallback((emoji: string) => {
+    const xOffset = -50 + Math.random() * 100;
+    setFloatingEmojis((prev) => [...prev, { id: Math.random().toString(), emoji, xOffset }]);
+  }, []);
+
+  // Presence and Participant Heartbeat
+  useEffect(() => {
+    if (!watchPartyId) return;
+    
+    const unsub = FriendsService.subscribeToWatchPartyParticipants(watchPartyId, (list) => {
+      setParticipants(list);
+      setPartyParticipantsCount(list.length);
+      if (list.length > 1) {
+        setPartyMessage(`Watch Party: ${list.length} members`);
+      }
+    });
+
+    const updatePresence = () => {
+      FriendsService.updateWatchPartyPresence(watchPartyId, selectedProfile, 'online').catch(() => {});
+    };
+    updatePresence();
+    const heartbeatInterval = setInterval(updatePresence, 8000);
+
+    return () => {
+      unsub();
+      clearInterval(heartbeatInterval);
+      FriendsService.updateWatchPartyPresence(watchPartyId, selectedProfile, 'offline').catch(() => {});
+    };
+  }, [watchPartyId, selectedProfile]);
+
+  // Subscribe to live chat and reaction events in the watch party
+  useEffect(() => {
+    if (!watchPartyId) return;
+    const unsubFeed = FriendsService.subscribeToWatchPartyChat(watchPartyId, (list) => {
+      setPartyFeed(list);
+    });
+    return () => unsubFeed();
+  }, [watchPartyId]);
+
+  // Auto-scroll watch party chat drawer to end on updates
+  useEffect(() => {
+    if (showPartyDrawer) {
+      const timer = setTimeout(() => {
+        drawerChatScrollRef.current?.scrollToEnd({ animated: true });
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [partyFeed, showPartyDrawer]);
+
+  const handleSendDrawerMessage = async () => {
+    if (!drawerInput.trim() || !watchPartyId) return;
+    const msg = drawerInput.trim();
+    setDrawerInput('');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await FriendsService.sendWatchPartyEvent(
+      watchPartyId,
+      selectedProfile?.name || 'Friend',
+      'chat',
+      currentTime,
+      { content: msg }
+    );
+  };
+
+  // Action-Driven Event Sync
+  useEffect(() => {
+    if (!watchPartyId || !player) return;
+
+    if (isHost) {
+      setPartyMessage("Hosting Watch Party");
+      return;
+    }
+
+    setPartyMessage("Joining Watch Party...");
+    const unsubEvents = FriendsService.subscribeToWatchPartyEvents(watchPartyId, (event) => {
+      if (!event) return;
+      if (event.id === lastProcessedEventIdRef.current) return;
+      
+      const currentUid = selectedProfile?.id || 'guest';
+      if (event.senderId === currentUid) return;
+
+      lastProcessedEventIdRef.current = event.id;
+      console.log(`[WatchParty] Guest processing event: ${event.type} at ${event.currentTime}s`);
+
+      if (event.type === 'play') {
+        if (!player.playing) {
+          player.play();
+        }
+      } else if (event.type === 'pause') {
+        if (player.playing) {
+          player.pause();
+        }
+      } else if (event.type === 'seek') {
+        player.currentTime = event.currentTime;
+      } else if (event.type === 'reaction') {
+        triggerFloatingEmoji(event.content);
+      }
+
+      // Safeguard sync drift
+      const drift = Math.abs(event.currentTime - player.currentTime);
+      if (drift > 2.5) {
+        player.currentTime = event.currentTime;
+      }
+      
+      setPartyMessage(`Synced with Host (${event.senderName})`);
+    });
+
+    return () => unsubEvents();
+  }, [watchPartyId, isHost, player, selectedProfile]);
 
   const controlsOpacity = useSharedValue(1);
   const loadingOpacity = useSharedValue(1);
@@ -171,19 +314,19 @@ export function ModernVideoPlayer({
   const currentUrlRef = useRef(videoUrl || '');
 
   // Initialize player with a valid source only if available
-  const player = useVideoPlayer((internalVideoUrl && internalVideoUrl !== 'ERROR') ? { 
+  const player = useVideoPlayer((internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') ? { 
     uri: internalVideoUrl, 
     headers: internalHeaders || undefined,
     contentType: 'hls' as any,  // VidLink proxy URLs have no .m3u8 extension
-  } : '', (player) => {
+  } : null, (player) => {
     player.loop = false;
     player.staysActiveInBackground = true;
     player.timeUpdateEventInterval = 0.25; // 250ms for performance
     
-    // Low-network resilience: buffer 60s ahead for smooth playback
-    // Only use valid expo-video bufferOptions keys
+    // Aggressive buffer options to minimize stalling on slower Wifi connections
     player.bufferOptions = {
-      preferredForwardBufferDuration: 60,
+      preferredForwardBufferDuration: 180, // Buffer 3 minutes ahead
+      maxBufferBytes: Platform.OS === 'android' ? 150 * 1024 * 1024 : undefined, // 150MB maximum cache size on Android
     };
     
     if (internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') {
@@ -193,10 +336,173 @@ export function ModernVideoPlayer({
 
   const videoViewRef = useRef<any>(null);
 
-  // VidLink resolver state
+  // Resolution states
   const [vidlinkEnabled, setVidlinkEnabled] = useState(false);
+  const [moviesapiEnabled, setMoviesapiEnabled] = useState(false);
+  const hasResolvedRef = useRef(false);
+  const failedCountRef = useRef(0);
+  // Backup streams from resolvers that lost the race — used for auto-fallback
+  // when the winning stream fails at the player level (e.g. 403)
+  const backupStreamsRef = useRef<{ source: string; stream: any }[]>([]);
 
-  // Internal Fetching Logic - now delegates to VidLinkResolver component
+  // Resolution cleanup helper
+  const cleanupResolvers = useCallback(() => {
+    setVidlinkEnabled(false);
+    setMoviesapiEnabled(false);
+    setActiveSource('none');
+  }, []);
+
+  // Unified stream error handler (defined before handleSourceResolved to avoid circular deps)
+  const handleSourceError = useCallback((source: string, error: string) => {
+    console.warn(`[Player] ⚠️ ${source} resolution failed: ${error}`);
+    if (hasResolvedRef.current) {
+      console.log(`[Player] ⏭ ${source} error ignored — another source already resolved.`);
+      return;
+    }
+    
+    failedCountRef.current += 1;
+    console.log(`[Player] 📊 Failed sources: ${failedCountRef.current}/4`);
+    if (failedCountRef.current >= 4) {
+      console.error('[Player] ❌ All 4 resolution sources failed!');
+      setFetchError(true);
+      setStatus('error');
+      cleanupResolvers();
+    }
+  }, [cleanupResolvers]);
+
+  // Unified stream success handler
+  // IMPORTANT: Pre-decodes data: URIs to temp files BEFORE setting state,
+  // because useVideoPlayer is reactive and would feed raw data: URIs to ExoPlayer
+  // (which can't play them), causing "Input does not start with #EXTM3U" errors.
+  // Also pre-validates the stream URL with a HEAD request to catch unreachable
+  // proxy domains (DNS failures, dead CDNs) before committing to the native player.
+  const handleSourceResolved = useCallback(async (source: string, stream: any) => {
+    if (hasResolvedRef.current) {
+      // Don't discard — save as backup for auto-fallback if the winner fails
+      if (stream?.url && stream.url !== '') {
+        console.log(`[Player] 💾 ${source} resolved but another source won — saving as backup`);
+        backupStreamsRef.current.push({ source, stream });
+      } else {
+        console.log(`[Player] ⏭ ${source} resolved empty — discarding`);
+      }
+      return;
+    }
+    
+    // Guard: NetMirror may return an object with empty url when rate-limited
+    if (!stream?.url || stream.url === '') {
+      console.warn(`[Player] ⚠️ ${source} returned empty/null URL${stream?.isRateLimited ? ' (RATE LIMITED)' : ''} — treating as error`);
+      handleSourceError(source, stream?.isRateLimited ? 'Rate limited by CDN' : 'Empty stream URL');
+      return;
+    }
+    
+    // Pre-validate: Quick HEAD request to verify the domain is reachable.
+    // Catches unreachable proxy domains (e.g. DNS failures like toodfk.vfodvidl.site)
+    // before committing to the native player where error recovery is much slower.
+    // Skip validation for local file:// and data: URIs.
+    const urlToCheck = stream.url;
+    if (urlToCheck.startsWith('http')) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000); // 5s max
+        const checkResp = await fetch(urlToCheck, {
+          method: 'HEAD',
+          signal: controller.signal,
+          headers: stream.headers || {},
+        });
+        clearTimeout(timeout);
+        // Accept any response (even 403) — it means the domain resolved.
+        // Only reject if the fetch itself threw (DNS failure, connection refused).
+        console.log(`[Player] 🏥 ${source} URL health-check: HTTP ${checkResp.status}`);
+      } catch (healthErr: any) {
+        console.warn(`[Player] 🚫 ${source} URL health-check FAILED: ${healthErr.message} — domain unreachable, skipping`);
+        // Another source may have won during our await — check before treating as error
+        if (hasResolvedRef.current) {
+          console.log(`[Player] ⏭ ${source} health-check failed but another source already won`);
+          return;
+        }
+        handleSourceError(source, `URL unreachable: ${healthErr.message}`);
+        return;
+      }
+      // Re-check winner after async validation — another source may have claimed during await
+      if (hasResolvedRef.current) {
+        console.log(`[Player] 💾 ${source} passed health-check but another source won during validation — saving as backup`);
+        backupStreamsRef.current.push({ source, stream });
+        return;
+      }
+    }
+    
+    hasResolvedRef.current = true;
+    
+    console.log(`[Player] ✅ ${source} stream resolved first: ${stream.url.substring(0, 80)}...`);
+    console.log(`[Player] 📊 ${source} details: captions=${(stream.captions || []).length}, markers=${(stream.markers || []).length}, rateLimited=${stream.isRateLimited || false}, headers=${JSON.stringify(stream.headers || {}).substring(0, 100)}`);
+    
+    // Pre-decode data: URIs to temp .m3u8 files before setting state
+    let playableUrl = stream.url;
+    if (playableUrl.startsWith('data:')) {
+      try {
+        const base64Match = playableUrl.match(/^data:[^;]+;base64,(.+)$/);
+        if (base64Match) {
+          const decoded = global.atob(base64Match[1]);
+          const tempFile = `${FileSystem.cacheDirectory}stream_${Date.now()}.m3u8`;
+          await FileSystem.writeAsStringAsync(tempFile, decoded);
+          console.log(`[Player] 📁 Pre-decoded data URI → ${tempFile} (${decoded.length} bytes, starts: "${decoded.substring(0, 30)}...")`);
+          playableUrl = tempFile;
+        } else {
+          console.error(`[Player] ❌ Data URI format not recognized`);
+        }
+      } catch (decodeErr: any) {
+        console.error(`[Player] ❌ Data URI pre-decode failed: ${decodeErr.message}`);
+      }
+    }
+    
+    // Check we're still the winner after async decode (another source might have won during await)
+    if (!hasResolvedRef.current) {
+      // This shouldn't happen since we set it above, but guard anyway
+      return;
+    }
+    
+    setInternalVideoUrl(playableUrl);
+    setInternalHeaders(stream.headers);
+    
+    const mappedTracks = (stream.captions || []).map((c: any) => ({
+      file: c.url || c.file,
+      label: c.language || c.label,
+      kind: 'captions',
+    }));
+    setInternalTracks(mappedTracks);
+    setInternalAudioTracks(stream.audioTracks || []);
+    setSelectedAudioTrackId(stream.audioTracks?.[0]?.id || null);
+    
+    if (stream.markers) {
+      setSkipMarkers(stream.markers);
+      skipMarkersRef.current = stream.markers;
+    }
+    
+    setFetchError(false);
+    setIsRateLimited(false);
+    setStatus('readyToPlay');
+    cleanupResolvers();
+  }, [cleanupResolvers, handleSourceError]);
+
+  // VidLink callbacks
+  const handleVidLinkResolved = useCallback((stream: VidLinkStream) => {
+    handleSourceResolved('VidLink', stream);
+  }, [handleSourceResolved]);
+
+  const handleVidLinkError = useCallback((error: string) => {
+    handleSourceError('VidLink', error);
+  }, [handleSourceError]);
+
+  // MoviesAPI callbacks
+  const handleMoviesApiResolved = useCallback((stream: MoviesApiStream) => {
+    handleSourceResolved('MoviesAPI', stream);
+  }, [handleSourceResolved]);
+
+  const handleMoviesApiError = useCallback((error: string) => {
+    handleSourceError('MoviesAPI', error);
+  }, [handleSourceError]);
+
+  // Internal Fetching Logic - delegates concurrently to all resolvers
   useEffect(() => {
     // If we already have a URL from props, prioritize it
     if (videoUrl) {
@@ -214,16 +520,16 @@ export function ModernVideoPlayer({
     if (!tmdbId || !title) return;
 
     // CRITICAL: Reset state for new episode/content to prevent stale resume/buffering
-    console.log(`[Player] 🚀 Starting stream resolution for: ${title} (TMDB: ${tmdbId}, S:${seasonNum} E:${episodeNum})`);
-    hasSeekedRef.current = false;       // Allow fresh resume lookup for this episode
-    lastSaveTimeRef.current = 0;        // Reset save throttle
-    currentUrlRef.current = '';          // Clear cached URL so replaceAsync fires
-    setInternalVideoUrl('');             // Clear old stream
+    console.log(`[Player] 🚀 Starting CONCURRENT stream resolution for: ${title} (TMDB: ${tmdbId}, S:${seasonNum} E:${episodeNum})`);
+    hasSeekedRef.current = false;
+    lastSaveTimeRef.current = 0;
+    currentUrlRef.current = '';
+    setInternalVideoUrl('');
     setInternalHeaders(undefined);
     setInternalTracks(EMPTY_TRACKS);
     setInternalAudioTracks(EMPTY_AUDIO_TRACKS);
     setSelectedAudioTrackId(null);
-    setCurrentTime(0);                  // Reset playback position display
+    setCurrentTime(0);
     setDuration(0);
     progressPercentage.value = 0;
     isNextEpisodeCountdownRef.current = false;
@@ -235,96 +541,100 @@ export function ModernVideoPlayer({
     setStatus('loading');
     setFetchError(false);
     setIsRateLimited(false);
-    // Start with VidLink as primary source
-    setActiveSource('vidlink');
+
+    // Setup concurrency coordinators
+    hasResolvedRef.current = false;
+    failedCountRef.current = 0;
+    backupStreamsRef.current = [];
+
+    // Trigger WebView resolvers
     setVidlinkEnabled(true);
-  // NOTE: audioTracks, tracks, headers are intentionally EXCLUDED from deps.
-  // They are only consumed in the `if (videoUrl)` early-return branch above,
-  // and `videoUrl` is already in the dep list — so when an external URL is
-  // provided the effect will re-run and read the latest closure values.
-  // Including them caused an infinite render loop because the parent does
-  // not pass audioTracks, making the default `[]` a new ref every render.
+    setMoviesapiEnabled(true);
+    setActiveSource('all');
+
+    // Launch Net22 scraper in parallel (with 30s safety timeout)
+    const net22StartMs = Date.now();
+    (async () => {
+      try {
+        console.log(`[Player] 🚀 Resolving Net22 in parallel...`);
+        const { resolveNet22 } = require('../services/netmirrorResolver');
+        const resolvePromise = resolveNet22(tmdbId, contentType || 'movie', seasonNum || 0, episodeNum || 0);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Net22 overall timeout (30s)')), 30000)
+        );
+        const stream = await Promise.race([resolvePromise, timeoutPromise]);
+        const elapsed = Date.now() - net22StartMs;
+        console.log(`[Player] 🏁 Net22 finished in ${elapsed}ms`);
+        handleSourceResolved('Net22', stream);
+      } catch (error: any) {
+        const elapsed = Date.now() - net22StartMs;
+        console.error(`[Player] 💥 Net22 crashed after ${elapsed}ms: ${error.message}`);
+        if (error.stack) console.error(`[Player] Net22 stack: ${error.stack.split('\n').slice(0, 3).join(' | ')}`);
+        handleSourceError('Net22', error.message || 'Unknown error');
+      }
+    })();
+
+    // Launch Net52 scraper in parallel (with 30s safety timeout)
+    const net52StartMs = Date.now();
+    (async () => {
+      try {
+        console.log(`[Player] 🚀 Resolving Net52 in parallel...`);
+        const { resolveNet52 } = require('../services/netmirrorResolver');
+        const resolvePromise = resolveNet52(tmdbId, contentType || 'movie', seasonNum || 0, episodeNum || 0);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Net52 overall timeout (30s)')), 30000)
+        );
+        const stream = await Promise.race([resolvePromise, timeoutPromise]);
+        const elapsed = Date.now() - net52StartMs;
+        console.log(`[Player] 🏁 Net52 finished in ${elapsed}ms`);
+        handleSourceResolved('Net52', stream);
+      } catch (error: any) {
+        const elapsed = Date.now() - net52StartMs;
+        console.error(`[Player] 💥 Net52 crashed after ${elapsed}ms: ${error.message}`);
+        if (error.stack) console.error(`[Player] Net52 stack: ${error.stack.split('\n').slice(0, 3).join(' | ')}`);
+        handleSourceError('Net52', error.message || 'Unknown error');
+      }
+    })();
+
+    return () => {
+      hasResolvedRef.current = true;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt, title]);
-
-  // VidLink stream resolved callback
-  const handleVidLinkResolved = useCallback((stream: VidLinkStream) => {
-    console.log(`[Player] ✅ VidLink stream resolved: ${stream.url.substring(0, 80)}...`);
-    setInternalVideoUrl(stream.url);
-    setInternalHeaders(stream.headers);
-    const vidlinkTracks = stream.captions.map(c => ({
-      file: c.url,
-      label: c.language,
-      kind: 'captions',
-    }));
-    setInternalTracks(vidlinkTracks);
-    setInternalAudioTracks((stream as any).audioTracks || []);
-    setSelectedAudioTrackId((stream as any).audioTracks?.[0]?.id || null);
-    
-    if (stream.markers) {
-      setSkipMarkers(stream.markers);
-      skipMarkersRef.current = stream.markers;
-    }
-    
-    setFetchError(false);
-    setIsRateLimited(false);
-    setStatus('readyToPlay');
-    setVidlinkEnabled(false);
-    setActiveSource('none');
-  }, []);
-
-  const handleVidLinkError = useCallback((error: string) => {
-    console.error(`[Player] ❌ VidLink failed: ${error} — falling back to VidSrc`);
-    setVidlinkEnabled(false);
-    // Don't set fetchError yet — try VidSrc fallback first
-    setActiveSource('vidsrc');
-  }, []);
-
-  // VidSrc fallback resolved callback
-  const handleVidSrcResolved = useCallback((stream: VidSrcStream) => {
-    console.log(`[Player] ✅ VidSrc fallback resolved: ${stream.url.substring(0, 80)}...`);
-    setInternalVideoUrl(stream.url);
-    setInternalHeaders(stream.headers);
-    const vidsrcTracks = stream.captions.map(c => ({
-      file: c.url,
-      label: c.language,
-      kind: 'captions',
-    }));
-    setInternalTracks(vidsrcTracks);
-    setInternalAudioTracks((stream as any).audioTracks || []);
-    setSelectedAudioTrackId((stream as any).audioTracks?.[0]?.id || null);
-    setFetchError(false);
-    setIsRateLimited(false);
-    setStatus('readyToPlay');
-    setActiveSource('none');
-  }, []);
-
-  const handleVidSrcError = useCallback((error: string) => {
-    console.error(`[Player] ❌ VidSrc fallback also failed: ${error}`);
-    setFetchError(true);
-    setStatus('error');
-    setActiveSource('none');
-  }, []);
+  }, [tmdbId, episodeNum, seasonNum, videoUrl, resolveAttempt, title, contentType]);
 
   // Handle Player Source Updates (when state changes)
+  // Data URIs are already pre-decoded in handleSourceResolved, so internalVideoUrl
+  // is always a playable URL (https:// or file://) — never a raw data: URI.
   useEffect(() => {
     async function updatePlayer() {
       if (internalVideoUrl && internalVideoUrl !== '' && internalVideoUrl !== 'ERROR') {
          if (internalVideoUrl !== currentUrlRef.current) {
-            console.log(`[Player] 🔄 Updating native player source to: ${internalVideoUrl.substring(0, 50)}...`);
-            currentUrlRef.current = internalVideoUrl;
+            const finalUrl = internalVideoUrl;
+            const urlScheme = finalUrl.substring(0, Math.min(finalUrl.indexOf(':') + 1, 30));
+            console.log(`[Player] 🔄 Updating native player source | scheme: ${urlScheme} | length: ${finalUrl.length} | preview: ${finalUrl.substring(0, 80)}...`);
+
+            currentUrlRef.current = internalVideoUrl; // Track for dedup
             try {
-              // Ensure player is not released before calling
               if (player) {
+                // Auto-detect content type instead of always forcing HLS
+                const lowerUrl = finalUrl.toLowerCase();
+                let detectedContentType: string | undefined = 'hls'; // Default for streaming
+                if (lowerUrl.endsWith('.mp4') || lowerUrl.includes('.mp4?') || lowerUrl.includes('.mp4%') || lowerUrl.includes('/mp/')) {
+                  detectedContentType = undefined; // Let ExoPlayer auto-detect MP4
+                } else if (lowerUrl.endsWith('.mpd')) {
+                  detectedContentType = 'dash';
+                }
+                console.log(`[Player] ▶️ replaceAsync(uri=${finalUrl.substring(0, 60)}..., contentType=${detectedContentType || 'auto'})`);
+
                 await (player as any).replaceAsync({
-                  uri: internalVideoUrl,
+                  uri: finalUrl,
                   headers: internalHeaders || undefined,
-                  contentType: 'hls',  // VidLink proxy URLs need explicit HLS content type
+                  ...(detectedContentType ? { contentType: detectedContentType } : {}),
                 });
                 player.play();
               }
-            } catch (e) {
-              console.error("[Player] ❌ replaceAsync failed:", e);
+            } catch (e: any) {
+              console.error(`[Player] ❌ replaceAsync failed: ${e.message}`);
             }
          }
       }
@@ -483,7 +793,7 @@ export function ModernVideoPlayer({
     }
     lockOrientation();
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.DEFAULT).catch(() => {});
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT).catch(() => {});
     };
   }, []);
   
@@ -532,6 +842,44 @@ export function ModernVideoPlayer({
       player.addListener('statusChange', (payload: any) => {
         if (payload.status === 'error') {
           console.error(`[Player] 💥 Error details:`, payload.error);
+          
+          // Auto-fallback: if the winning stream failed at the player level
+          // (e.g. DNS failure, 403, malformed), try the next backup stream.
+          // If no backups are available yet (slower resolvers still running),
+          // wait up to 8s for them to arrive before giving up.
+          const tryFallback = () => {
+            if (backupStreamsRef.current.length > 0) {
+              const backup = backupStreamsRef.current.shift()!;
+              console.log(`[Player] 🔄 Winner failed — falling back to ${backup.source} backup stream`);
+              hasResolvedRef.current = false;
+              currentUrlRef.current = '';
+              setStatus('loading');
+              handleSourceResolved(backup.source, backup.stream);
+              return true;
+            }
+            return false;
+          };
+          
+          if (currentUrlRef.current) {
+            if (!tryFallback()) {
+              // No backups yet — poll briefly for late-arriving streams
+              console.log(`[Player] ⏳ No backup streams yet — waiting up to 8s for other resolvers...`);
+              setStatus('loading'); // Show loading instead of error while waiting
+              let waited = 0;
+              const pollInterval = setInterval(() => {
+                waited += 500;
+                if (tryFallback()) {
+                  clearInterval(pollInterval);
+                } else if (waited >= 8000) {
+                  clearInterval(pollInterval);
+                  console.error(`[Player] ❌ No backup streams arrived after 8s — all sources exhausted`);
+                  setStatus('error');
+                  setFetchError(true);
+                }
+              }, 500);
+            }
+            return; // Don't set error status — we're retrying or waiting
+          }
         }
         setStatus(payload.status);
         // Mid-stream buffering detection: if status goes back to 'loading'
@@ -540,6 +888,7 @@ export function ModernVideoPlayer({
           setIsBuffering(true);
         } else if (payload.status === 'readyToPlay') {
           setIsBuffering(false);
+          resetHideTimer();
         }
       }),
       player.addListener('timeUpdate', (payload: any) => {
@@ -556,12 +905,37 @@ export function ModernVideoPlayer({
 
         // If time is advancing, we are not buffering
         if (current > 0) setIsBuffering(false);
+
+        // Watch Party Host Update
+        if (watchPartyId && isHost) {
+          // Detect manual seeks
+          const timeDelta = Math.abs(current - lastCheckedTimeRef.current);
+          if (timeDelta > 2.0 && lastCheckedTimeRef.current > 0) {
+            console.log(`[WatchParty] Host seek detected: ${lastCheckedTimeRef.current}s -> ${current}s. Broadcasting seek event.`);
+            FriendsService.sendWatchPartyEvent(watchPartyId, selectedProfile?.name || 'Host', 'seek', current).catch(() => {});
+          }
+
+          // Heartbeat state update (every 10 seconds to keep party document alive)
+          const now = Date.now();
+          if (now - lastWriteTimeRef.current > 10000) {
+            lastWriteTimeRef.current = now;
+            FriendsService.updateWatchPartyState(watchPartyId, player.playing, current).catch(() => {});
+          }
+        }
+        lastCheckedTimeRef.current = current;
       }),
       (player as any).addListener('durationChange', (payload: any) => {
         setDuration(payload.duration);
       }),
       player.addListener('playingChange', (payload: any) => {
         setIsPlaying(payload.isPlaying);
+        
+        // Watch Party Host Update
+        if (watchPartyId && isHost) {
+          const type = payload.isPlaying ? 'play' : 'pause';
+          console.log(`[WatchParty] Host state changed: ${type}. Broadcasting event.`);
+          FriendsService.sendWatchPartyEvent(watchPartyId, selectedProfile?.name || 'Host', type, player.currentTime).catch(() => {});
+        }
       })
     ];
 
@@ -586,7 +960,7 @@ export function ModernVideoPlayer({
       }
       subscriptions.forEach(sub => sub.remove());
     };
-  }, [player, handleProgressUpdate, duration, tmdbId, title, backdropUrl, contentType, selectedProfile?.id, seasonNum, episodeNum]);
+  }, [player, handleProgressUpdate, handleSourceResolved, duration, tmdbId, title, backdropUrl, contentType, selectedProfile?.id, seasonNum, episodeNum, resetHideTimer]);
 
   // Loading Screen Crossfade Animation
   useEffect(() => {
@@ -606,6 +980,12 @@ export function ModernVideoPlayer({
   const resetHideTimer = useCallback(() => {
     if (hideTimeout.current) clearTimeout(hideTimeout.current);
 
+    if (status === 'loading' || status === 'idle' || !internalVideoUrl || internalVideoUrl === '') {
+      setIsControlsVisible(false);
+      controlsOpacity.value = 0;
+      return;
+    }
+
     setIsControlsVisible(true);
     controlsOpacity.value = withTiming(1, { duration: 200 });
 
@@ -619,7 +999,7 @@ export function ModernVideoPlayer({
         });
       }, 5000); // Increased from 3500ms to 5000ms
     }
-  }, [isLocked, controlsOpacity]);
+  }, [isLocked, controlsOpacity, status, internalVideoUrl]);
 
   useEffect(() => {
     resetHideTimer();
@@ -629,6 +1009,7 @@ export function ModernVideoPlayer({
   }, [isLocked, resetHideTimer]);
 
   const toggleControls = () => {
+    if (status === 'loading' || status === 'idle' || !internalVideoUrl || internalVideoUrl === '') return;
     if (controlsOpacity.value > 0) {
       controlsOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
         if (finished) runOnJS(setIsControlsVisible)(false);
@@ -761,7 +1142,7 @@ export function ModernVideoPlayer({
       }
     })
     .onEnd(() => {
-      if (duration > 0) {
+      if (duration > 0 && player) {
         player.currentTime = (progressPercentage.value / 100) * duration;
       }
     })
@@ -775,22 +1156,26 @@ export function ModernVideoPlayer({
 
   const brightnessGesture = Gesture.Pan()
     .runOnJS(true)
+    .onBegin(() => {
+      initialBrightnessRef.current = brightnessLevel;
+    })
     .onUpdate((e) => {
       if (isLocked) return;
       resetHideTimer();
-      const delta = -e.translationY / 2000;
-      const newBright = Math.max(0, Math.min(1, brightnessLevel + delta));
+      const newBright = Math.max(0, Math.min(1, initialBrightnessRef.current + (-e.translationY / 400)));
       setBrightnessLevel(newBright);
       Brightness.setBrightnessAsync(newBright);
     });
 
   const volumeGesture = Gesture.Pan()
     .runOnJS(true)
+    .onBegin(() => {
+      initialVolumeRef.current = volumeLevel;
+    })
     .onUpdate((e) => {
       if (isLocked) return;
       resetHideTimer();
-      const delta = -e.translationY / 2000;
-      const newVol = Math.max(0, Math.min(1, volumeLevel + delta));
+      const newVol = Math.max(0, Math.min(1, initialVolumeRef.current + (-e.translationY / 400)));
       // Round to 2 decimal places to prevent audio distortion from rapid micro-updates
       const roundedVol = Math.round(newVol * 100) / 100;
       setVolumeLevel(roundedVol);
@@ -872,23 +1257,24 @@ export function ModernVideoPlayer({
           onError={handleVidLinkError}
         />
 
-        {/* VidSrc Fallback Resolver WebView */}
-        <VidSrcResolver
+        {/* MoviesAPI Fallback Resolver WebView (slower than VidLink) */}
+        <MoviesApiResolver
           tmdbId={tmdbId || ''}
           type={contentType || 'movie'}
           season={seasonNum}
           episode={episodeNum}
-          enabled={activeSource === 'vidsrc'}
-          onStreamResolved={handleVidSrcResolved}
-          onError={handleVidSrcError}
+          enabled={moviesapiEnabled}
+          onStreamResolved={handleMoviesApiResolved}
+          onError={handleMoviesApiError}
         />
 
         <Animated.View style={[StyleSheet.absoluteFill, animatedVideoStyle]}>
-          {isHologramMode && internalVideoUrl ? (
+          {isHologramMode && internalVideoUrl && HologramNativeView ? (
             <HologramNativeView 
               videoUrl={internalVideoUrl}
               title={title || ''}
               videoFormat="standard"
+              hologramType={selectedHologramType}
               style={StyleSheet.absoluteFill}
             />
           ) : (
@@ -916,19 +1302,7 @@ export function ModernVideoPlayer({
           </Pressable>
         )}
 
-        {/* Premium Overlays */}
-        {showSkipIntro && !isNextEpisodeCountdown && (
-          <Animated.View entering={FadeInDown} exiting={FadeOutRight} style={styles.skipIntroContainer}>
-            <Pressable style={styles.skipIntroBtn} onPress={() => {
-              // Explicitly hide BEFORE skipping to prevent stale render
-              showSkipIntroRef.current = false;
-              setShowSkipIntro(false);
-              skip(60);
-            }}>
-              <Text style={styles.skipIntroText}>Skip Intro</Text>
-            </Pressable>
-          </Animated.View>
-        )}
+        {/* Premium Overlays — Skip Intro is rendered inside controls below */}
 
         {isNextEpisodeCountdown && (
           <Animated.View entering={FadeInRight.duration(600).springify()} exiting={FadeOutRight} style={styles.nextEpisodeOverlay}>
@@ -963,7 +1337,7 @@ export function ModernVideoPlayer({
             <View style={styles.nextEpisodeActions}>
               <Pressable 
                 style={[styles.nextEpisodeBtn, styles.nextEpisodeBtnPrimary]} 
-                onPress={() => { setIsNextEpisodeCountdown(false); onNextEpisode?.(); }}
+                onPress={() => { isNextEpisodeCountdownRef.current = false; setIsNextEpisodeCountdown(false); onNextEpisode?.(); }}
               >
                  <Ionicons name="play" size={20} color="black" />
                  <Text style={styles.nextEpisodeBtnText}>Play Now</Text>
@@ -971,6 +1345,7 @@ export function ModernVideoPlayer({
               <Pressable 
                 style={styles.nextEpisodeBtn} 
                 onPress={() => { 
+                  isNextEpisodeCountdownRef.current = false;
                   setIsNextEpisodeCountdown(false); 
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 }}
@@ -1032,25 +1407,7 @@ export function ModernVideoPlayer({
           )}
           
           {(!fetchError) && (
-            <>
-              <NetflixLoader size={60} withPercentage={true} />
-              {!internalVideoUrl ? (
-                <>
-                  <Text style={[styles.loadingStatusText, { marginTop: 30, fontSize: 18, fontWeight: '600', color: 'white' }]}>
-                    {contentType === 'tv' && episodeNum
-                      ? `Getting Episode ${episodeNum} ready...`
-                      : 'Getting your movie ready...'}
-                  </Text>
-                  <Text style={[styles.loadingStatusText, { marginTop: 10, fontSize: 13 }]}>
-                    {activeSource === 'vidlink' ? 'Trying VidLink...' 
-                     : activeSource === 'vidsrc' ? 'Trying VidSrc fallback...' 
-                     : 'Resolving stream...'}
-                  </Text>
-                </>
-              ) : (
-                <Text style={[styles.loadingStatusText, { marginTop: 30 }]}>Buffering...</Text>
-              )}
-            </>
+            <NetflixLoader size={60} withPercentage={true} />
           )}
         </Animated.View>
 
@@ -1061,8 +1418,8 @@ export function ModernVideoPlayer({
           </View>
         )}
 
-        {/* Error Overlay */}
-        {(status === 'error' || fetchError) && (
+        {/* Error Overlay — only show when resolvers exhausted OR player errored on a real URL */}
+        {(fetchError || (status === 'error' && currentUrlRef.current !== '')) && (
           <View style={styles.centeredOverlay}>
             <Ionicons name={isRateLimited ? "time-outline" : "alert-circle"} size={50} color={isRateLimited ? "#FFA500" : COLORS.primary} />
             <Text style={styles.errorText}>
@@ -1093,7 +1450,7 @@ export function ModernVideoPlayer({
           </View>
         )}
 
-        {isControlsVisible && status !== 'error' && (
+        {isControlsVisible && status !== 'error' && status !== 'loading' && status !== 'idle' && internalVideoUrl !== '' && (
           <Animated.View 
             style={[styles.overlay, animatedControlsStyle]}
             pointerEvents="box-none"
@@ -1106,7 +1463,14 @@ export function ModernVideoPlayer({
                     <Pressable onPress={onClose} style={styles.iconBtn}>
                       <Ionicons name="chevron-back" size={28} color="white" />
                     </Pressable>
-                    <Text style={styles.videoTitle} numberOfLines={1}>{title}</Text>
+                    <View style={{ marginLeft: 4 }}>
+                      <Text style={styles.videoTitle} numberOfLines={1}>{title}</Text>
+                      {partyMessage && (
+                        <Text style={{ color: '#34D399', fontSize: 11, fontWeight: '700', marginTop: 2 }}>
+                          🔴 {partyMessage}
+                        </Text>
+                      )}
+                    </View>
                   </View>
                   
                   {/* Three Thumbs (Rating) */}
@@ -1129,6 +1493,11 @@ export function ModernVideoPlayer({
                   </View>
 
                   <View style={styles.topBarRight}>
+                    {watchPartyId && (
+                      <Pressable style={[styles.iconBtn, showPartyDrawer && styles.activeIconBtn]} onPress={() => setShowPartyDrawer(!showPartyDrawer)}>
+                        <MaterialCommunityIcons name="account-multiple" size={26} color={showPartyDrawer ? COLORS.primary : "white"} />
+                      </Pressable>
+                    )}
                     <Pressable style={styles.iconBtn}>
                       <MaterialCommunityIcons name="cast" size={26} color="white" />
                     </Pressable>
@@ -1538,9 +1907,13 @@ export function ModernVideoPlayer({
               style={[styles.moreOptionRow, { borderTopWidth: 1, borderTopColor: 'rgba(0,229,255,0.15)', marginTop: 8, paddingTop: 16 }]} 
               onPress={() => {
                 setShowMoreOptions(false);
+                if (!HologramNativeView) {
+                  Alert.alert('Hologram', 'Hologram mode requires a native build. Please rebuild the app with EAS.');
+                  return;
+                }
                 if (internalVideoUrl) {
                   try { player.pause(); } catch(_) {}
-                  setIsHologramMode(true);
+                  setShowHologramSetup(true);
                 } else {
                   Alert.alert('Hologram', 'No active video stream to project. Please wait for the video to load first.');
                 }
@@ -1557,14 +1930,471 @@ export function ModernVideoPlayer({
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* ═══ HOLOGRAM SETUP DASHBOARD ═══ */}
+      <Modal visible={showHologramSetup} animationType="fade" transparent statusBarTranslucent>
+        <View style={holoStyles.dashboardBg}>
+          <ScrollView contentContainerStyle={holoStyles.dashboardScroll} showsVerticalScrollIndicator={false}>
+            {/* Header */}
+            <View style={holoStyles.headerSection}>
+              <Text style={holoStyles.headerTitle}>HOLOGRAPHIC MOVIE MODE</Text>
+              <Text style={holoStyles.headerSubtitle}>Watch movies like never before</Text>
+              <Text style={holoStyles.headerDesc}>
+                Turn your phone into a holographic projector and enjoy a floating 3D cinema experience.{'\n'}Best experienced in a dark environment.
+              </Text>
+            </View>
+
+            {/* Mode Selector */}
+            <View style={holoStyles.sectionRow}>
+              <View style={holoStyles.sectionFlex}>
+                <Text style={holoStyles.sectionTitle}>PROJECTION MODE</Text>
+                <Pressable
+                  style={[holoStyles.modeCard, selectedHologramType === 'air' && holoStyles.modeCardActive]}
+                  onPress={() => setSelectedHologramType('air')}
+                >
+                  <Ionicons name="sparkles-outline" size={22} color={selectedHologramType === 'air' ? '#00E5FF' : '#5a7a99'} />
+                  <View style={{ marginLeft: 12, flex: 1 }}>
+                    <Text style={[holoStyles.modeLabel, selectedHologramType === 'air' && holoStyles.modeLabelActive]}>Ambient Cinema</Text>
+                    <Text style={holoStyles.modeDesc}>3D volumetric display with ambilight glow, spatial audio &amp; kinetic haptics</Text>
+                  </View>
+                  {selectedHologramType === 'air' && <Ionicons name="checkmark-circle" size={20} color="#00E5FF" />}
+                </Pressable>
+                <Pressable
+                  style={[holoStyles.modeCard, selectedHologramType === 'pyramid' && holoStyles.modeCardActive]}
+                  onPress={() => setSelectedHologramType('pyramid')}
+                >
+                  <Ionicons name="prism-outline" size={22} color={selectedHologramType === 'pyramid' ? '#00E5FF' : '#5a7a99'} />
+                  <View style={{ marginLeft: 12, flex: 1 }}>
+                    <Text style={[holoStyles.modeLabel, selectedHologramType === 'pyramid' && holoStyles.modeLabelActive]}>Prism Hologram</Text>
+                    <Text style={holoStyles.modeDesc}>4-way Pepper's Ghost projection — requires a clear pyramid prism</Text>
+                  </View>
+                  {selectedHologramType === 'pyramid' && <Ionicons name="checkmark-circle" size={20} color="#00E5FF" />}
+                </Pressable>
+              </View>
+
+              {/* Right panel */}
+              <View style={holoStyles.sectionFlex}>
+                {/* Best Results */}
+                <Text style={holoStyles.sectionTitle}>BEST RESULTS</Text>
+                <View style={holoStyles.tipCard}>
+                  <View style={holoStyles.tipRow}>
+                    <Ionicons name="moon-outline" size={18} color="#00E5FF" />
+                    <Text style={holoStyles.tipText}>Use in a dark room</Text>
+                  </View>
+                  <View style={holoStyles.tipRow}>
+                    <Ionicons name="sunny-outline" size={18} color="#00E5FF" />
+                    <Text style={holoStyles.tipText}>Increase screen brightness to maximum</Text>
+                  </View>
+                  <View style={holoStyles.tipRow}>
+                    <Ionicons name="phone-landscape-outline" size={18} color="#00E5FF" />
+                    <Text style={holoStyles.tipText}>Place phone flat on a table</Text>
+                  </View>
+                  {selectedHologramType === 'pyramid' && (
+                    <View style={holoStyles.tipRow}>
+                      <Ionicons name="triangle-outline" size={18} color="#00E5FF" />
+                      <Text style={holoStyles.tipText}>Use a clear acrylic/plastic pyramid</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Works On */}
+                <Text style={[holoStyles.sectionTitle, { marginTop: 16 }]}>WORKS ON</Text>
+                <View style={holoStyles.displayRow}>
+                  <View style={holoStyles.displayChip}>
+                    <View style={[holoStyles.displayDot, { backgroundColor: '#FF4444' }]} />
+                    <Text style={holoStyles.displayLabel}>AMOLED / OLED</Text>
+                    <Text style={holoStyles.displayQuality}>Best quality</Text>
+                  </View>
+                  <View style={holoStyles.displayChip}>
+                    <View style={[holoStyles.displayDot, { backgroundColor: '#44AAFF' }]} />
+                    <Text style={holoStyles.displayLabel}>QLED</Text>
+                    <Text style={holoStyles.displayQuality}>Good</Text>
+                  </View>
+                  <View style={holoStyles.displayChip}>
+                    <View style={[holoStyles.displayDot, { backgroundColor: '#88AAcc' }]} />
+                    <Text style={holoStyles.displayLabel}>LCD / IPS</Text>
+                    <Text style={holoStyles.displayQuality}>Basic</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {/* How It Works */}
+            <Text style={[holoStyles.sectionTitle, { marginTop: 24 }]}>HOW IT WORKS</Text>
+            <View style={holoStyles.flowRow}>
+              <View style={holoStyles.flowStep}>
+                <View style={holoStyles.flowIconWrap}>
+                  <Ionicons name="play-circle-outline" size={28} color="#00E5FF" />
+                </View>
+                <Text style={holoStyles.flowStepNum}>1. STREAM</Text>
+                <Text style={holoStyles.flowStepDesc}>The M3U8 video is streamed from the cloud and decoded.</Text>
+              </View>
+              <Ionicons name="arrow-forward" size={16} color="#334466" style={{ marginTop: 18 }} />
+              <View style={holoStyles.flowStep}>
+                <View style={holoStyles.flowIconWrap}>
+                  <Ionicons name="grid-outline" size={28} color="#00E5FF" />
+                </View>
+                <Text style={holoStyles.flowStepNum}>{selectedHologramType === 'pyramid' ? '2. SPLIT & RENDER' : '2. PROCESS'}</Text>
+                <Text style={holoStyles.flowStepDesc}>
+                  {selectedHologramType === 'pyramid' 
+                    ? 'The app renders the video into 4 different angles.'
+                    : 'Volumetric slices, ambilight colors, and audio spectrum are extracted.'}
+                </Text>
+              </View>
+              <Ionicons name="arrow-forward" size={16} color="#334466" style={{ marginTop: 18 }} />
+              <View style={holoStyles.flowStep}>
+                <View style={holoStyles.flowIconWrap}>
+                  <Ionicons name="layers-outline" size={28} color="#00E5FF" />
+                </View>
+                <Text style={holoStyles.flowStepNum}>{selectedHologramType === 'pyramid' ? '3. REFLECT' : '3. PROJECT'}</Text>
+                <Text style={holoStyles.flowStepDesc}>
+                  {selectedHologramType === 'pyramid'
+                    ? 'The pyramid reflects the 4 views into the center.'
+                    : 'Ambilight glow, beam, and particles are projected around the video.'}
+                </Text>
+              </View>
+              <Ionicons name="arrow-forward" size={16} color="#334466" style={{ marginTop: 18 }} />
+              <View style={holoStyles.flowStep}>
+                <View style={holoStyles.flowIconWrap}>
+                  <Ionicons name="eye-outline" size={28} color="#00E5FF" />
+                </View>
+                <Text style={holoStyles.flowStepNum}>4. IMMERSIVE VIEW</Text>
+                <Text style={holoStyles.flowStepDesc}>
+                  {selectedHologramType === 'pyramid'
+                    ? 'Your brain perceives it as a floating 3D movie.'
+                    : 'Spatial audio follows your head. Bass drives haptic feedback.'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Performance */}
+            <View style={holoStyles.perfRow}>
+              <View style={holoStyles.perfChip}>
+                <Ionicons name="speedometer-outline" size={16} color="#00E5FF" />
+                <Text style={holoStyles.perfText}>Smooth 60fps</Text>
+                <Text style={holoStyles.perfSub}>On High-End Devices</Text>
+              </View>
+              <View style={holoStyles.perfChip}>
+                <Ionicons name="hardware-chip-outline" size={16} color="#00E5FF" />
+                <Text style={holoStyles.perfText}>Optimized Rendering</Text>
+                <Text style={holoStyles.perfSub}>Single render pass</Text>
+              </View>
+              <View style={holoStyles.perfChip}>
+                <Ionicons name="battery-half-outline" size={16} color="#FFB300" />
+                <Text style={holoStyles.perfText}>Battery Usage</Text>
+                <Text style={holoStyles.perfSub}>Higher than normal</Text>
+              </View>
+              <View style={holoStyles.perfChip}>
+                <Ionicons name="diamond-outline" size={16} color="#00E5FF" />
+                <Text style={holoStyles.perfText}>Best Quality</Text>
+                <Text style={holoStyles.perfSub}>AMOLED / OLED</Text>
+              </View>
+            </View>
+
+            {/* Start Projection Button */}
+            <Pressable
+              style={holoStyles.startBtn}
+              onPress={() => {
+                setShowHologramSetup(false);
+                setIsHologramMode(true);
+              }}
+            >
+              <Ionicons name="flash-outline" size={22} color="#000" />
+              <Text style={holoStyles.startBtnText}>START PROJECTION</Text>
+            </Pressable>
+
+            {/* Close */}
+            <Pressable
+              style={holoStyles.closeDashBtn}
+              onPress={() => {
+                setShowHologramSetup(false);
+                try { player.play(); } catch(_) {}
+              }}
+            >
+              <Text style={holoStyles.closeDashText}>Cancel</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Watch Party Side Drawer */}
+      {showPartyDrawer && watchPartyId && (
+        <Animated.View entering={SlideInRight} exiting={SlideOutRight} style={styles.partyDrawer}>
+          <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+          
+          <View style={styles.partyDrawerHeader}>
+            <View>
+              <Text style={styles.partyDrawerTitle}>Watch Party</Text>
+              <Pressable onPress={() => {
+                const { Clipboard } = require('react-native');
+                Clipboard.setString(watchPartyId);
+                Alert.alert("Copied", "Party code copied to clipboard!");
+              }} style={styles.partyCodeHeaderRow}>
+                <Text style={styles.partyCodeHeaderText}>Code: {watchPartyId}</Text>
+                <Feather name="copy" size={10} color="#A3A3A3" style={{ marginLeft: 4 }} />
+              </Pressable>
+            </View>
+            <Pressable onPress={() => setShowPartyDrawer(false)} style={styles.closeBtn}>
+              <Ionicons name="close" size={24} color="white" />
+            </Pressable>
+          </View>
+          
+          {/* Compact Horizontal Participants list */}
+          <View style={styles.participantsHorizontalContainer}>
+            {participants.map((member) => (
+              <View key={member.uid} style={styles.participantAvatarWrapper}>
+                <Image source={{ uri: FRIEND_AVATARS[member.avatarId] || FRIEND_AVATARS.avatar1 }} style={styles.participantAvatarCompact} />
+                <View style={[styles.presenceDotOverlay, { backgroundColor: member.status === 'online' ? '#10B981' : '#6B7280' }]} />
+              </View>
+            ))}
+          </View>
+
+          {/* Live Chat Feed */}
+          <Text style={styles.chatSectionTitle}>Live Feed</Text>
+          <ScrollView
+            ref={drawerChatScrollRef}
+            style={styles.drawerChatScroll}
+            contentContainerStyle={styles.drawerChatContent}
+            showsVerticalScrollIndicator={true}
+          >
+            {partyFeed.map((item) => {
+              const isMe = item.senderId === (selectedProfile?.id || 'guest');
+              if (item.type === 'chat') {
+                return (
+                  <View key={item.id} style={[styles.chatFeedRow, isMe ? styles.chatFeedRowRight : styles.chatFeedRowLeft]}>
+                    {!isMe && <Text style={styles.chatFeedSender}>{item.senderName}</Text>}
+                    <View style={[styles.chatFeedBubble, isMe ? styles.chatFeedBubbleMe : styles.chatFeedBubbleOther]}>
+                      <Text style={styles.chatFeedText}>{item.content}</Text>
+                    </View>
+                  </View>
+                );
+              }
+
+              // System event message
+              let systemText = '';
+              if (item.type === 'reaction') {
+                systemText = `${item.senderName} reacted ${item.content}`;
+              } else if (item.type === 'play') {
+                systemText = `${item.senderName} played`;
+              } else if (item.type === 'pause') {
+                systemText = `${item.senderName} paused`;
+              } else if (item.type === 'seek') {
+                const min = Math.floor(item.currentTime / 60);
+                const sec = Math.floor(item.currentTime % 60).toString().padStart(2, '0');
+                systemText = `${item.senderName} jumped to ${min}:${sec}`;
+              } else {
+                systemText = `${item.senderName} triggered ${item.type}`;
+              }
+
+              return (
+                <View key={item.id} style={styles.systemFeedRow}>
+                  <Text style={styles.systemFeedText}>{systemText}</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          {/* Quick reactions panel */}
+          <View style={styles.reactionsContainer}>
+            {['🔥', '😂', '😱', '❤️', '😢'].map((emoji) => (
+              <Pressable key={emoji} style={styles.reactionBubble} onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                // Send locally
+                triggerFloatingEmoji(emoji);
+                // Broadcast
+                FriendsService.sendWatchPartyEvent(watchPartyId, selectedProfile?.name || 'Friend', 'reaction', currentTime, { content: emoji });
+              }}>
+                <Text style={{ fontSize: 20 }}>{emoji}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {/* Chat text input footer */}
+          <View style={styles.drawerInputRow}>
+            <TextInput
+              style={styles.drawerTextInput}
+              placeholder="Send a message..."
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              value={drawerInput}
+              onChangeText={setDrawerInput}
+              onSubmitEditing={handleSendDrawerMessage}
+            />
+            <Pressable onPress={handleSendDrawerMessage} disabled={!drawerInput.trim()} style={styles.drawerSendBtn}>
+              <Ionicons name="send" size={14} color={drawerInput.trim() ? COLORS.primary : 'rgba(255,255,255,0.3)'} />
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
+
+      {/* Floating Emojis Screen Overlay */}
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        {floatingEmojis.map((item) => (
+          <FloatingEmoji
+            key={item.id}
+            emoji={item.emoji}
+            xOffset={item.xOffset}
+            onComplete={() => {
+              setFloatingEmojis((prev) => prev.filter((e) => e.id !== item.id));
+            }}
+          />
+        ))}
+      </View>
+
     </GestureHandlerRootView>
   );
 }
+
+const FloatingEmoji = ({ emoji, xOffset, onComplete }: { emoji: string; xOffset: number; onComplete: () => void }) => {
+  const yAnim = useSharedValue(0);
+  const opacityAnim = useSharedValue(1);
+
+  useEffect(() => {
+    yAnim.value = withTiming(-280, { duration: 2500, easing: Easing.out(Easing.quad) });
+    opacityAnim.value = withTiming(0, { duration: 2500, easing: Easing.out(Easing.quad) }, (finished) => {
+      if (finished) {
+        runOnJS(onComplete)();
+      }
+    });
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      transform: [
+        { translateY: yAnim.value },
+        { translateX: xOffset },
+        { scale: interpolate(yAnim.value, [0, -250], [1, 1.4]) }
+      ],
+      opacity: opacityAnim.value,
+      position: 'absolute',
+      bottom: 120, // Start just above the controls
+      alignSelf: 'center',
+    };
+  });
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Text style={{ fontSize: 36 }}>{emoji}</Text>
+    </Animated.View>
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: 'black',
+  },
+  partyDrawer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 280,
+    backgroundColor: 'rgba(26, 26, 26, 0.85)',
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 255, 255, 0.1)',
+    zIndex: 100,
+    padding: 20,
+    paddingTop: 40,
+  },
+  partyDrawerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  partyDrawerTitle: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  partyCodeBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 20,
+  },
+  partyCodeLabel: {
+    color: '#A3A3A3',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  partyCodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  partyCodeText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  copyBtn: {
+    padding: 4,
+  },
+  participantsSectionTitle: {
+    color: '#A3A3A3',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  participantsScroll: {
+    flex: 1,
+  },
+  participantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  participantAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+  },
+  participantName: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 10,
+    flex: 1,
+  },
+  presenceDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  reactionsTitle: {
+    color: '#A3A3A3',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 10,
+    marginTop: 10,
+  },
+  reactionsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  reactionBubble: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  activeIconBtn: {
+    backgroundColor: 'rgba(229, 9, 20, 0.2)',
+    borderRadius: 20,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -2158,5 +2988,355 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: 'rgba(255,255,255,0.4)',
     borderRadius: 2,
+  },
+});
+
+const holoStyles = StyleSheet.create({
+  dashboardBg: {
+    flex: 1,
+    backgroundColor: '#080E1A',
+  },
+  dashboardScroll: {
+    padding: 28,
+    paddingTop: 52,
+    paddingBottom: 60,
+  },
+  headerSection: {
+    marginBottom: 24,
+  },
+  headerTitle: {
+    fontSize: 26,
+    fontWeight: '900',
+    color: '#E0F0FF',
+    letterSpacing: 2.5,
+  },
+  headerSubtitle: {
+    fontSize: 15,
+    fontStyle: 'italic',
+    color: '#5a8abb',
+    marginTop: 4,
+    letterSpacing: 0.8,
+  },
+  headerDesc: {
+    fontSize: 13,
+    color: '#6688AA',
+    marginTop: 10,
+    lineHeight: 19,
+  },
+  sectionRow: {
+    flexDirection: 'row',
+    gap: 18,
+  },
+  sectionFlex: {
+    flex: 1,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#4488BB',
+    letterSpacing: 1.8,
+    marginBottom: 10,
+  },
+  modeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0C1628',
+    borderWidth: 1,
+    borderColor: '#1A2844',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+  },
+  modeCardActive: {
+    borderColor: '#00E5FF',
+    backgroundColor: '#0A1830',
+    shadowColor: '#00E5FF',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  modeLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#6688AA',
+  },
+  modeLabelActive: {
+    color: '#00E5FF',
+  },
+  modeDesc: {
+    fontSize: 11,
+    color: '#4A6688',
+    marginTop: 3,
+    lineHeight: 15,
+  },
+  tipCard: {
+    backgroundColor: '#0C1628',
+    borderWidth: 1,
+    borderColor: '#1A2844',
+    borderRadius: 12,
+    padding: 14,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 10,
+  },
+  tipText: {
+    fontSize: 13,
+    color: '#8AAACC',
+    flex: 1,
+  },
+  displayRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  displayChip: {
+    flex: 1,
+    backgroundColor: '#0C1628',
+    borderWidth: 1,
+    borderColor: '#1A2844',
+    borderRadius: 10,
+    padding: 10,
+    alignItems: 'center',
+  },
+  displayDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    marginBottom: 6,
+  },
+  displayLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#8AAACC',
+    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  displayQuality: {
+    fontSize: 9,
+    color: '#4A6688',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  flowRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#0C1628',
+    borderWidth: 1,
+    borderColor: '#1A2844',
+    borderRadius: 12,
+    padding: 16,
+    gap: 6,
+  },
+  flowStep: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  flowIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#0A1A2E',
+    borderWidth: 1,
+    borderColor: '#1A3355',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  flowStepNum: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#5A8ABB',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  flowStepDesc: {
+    fontSize: 10,
+    color: '#4A6688',
+    textAlign: 'center',
+    lineHeight: 14,
+  },
+  perfRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 16,
+    backgroundColor: '#060C18',
+    borderWidth: 1,
+    borderColor: '#142240',
+    borderRadius: 10,
+    padding: 12,
+  },
+  perfChip: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  perfText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#8AAACC',
+    textAlign: 'center',
+  },
+  perfSub: {
+    fontSize: 9,
+    color: '#4A6688',
+    textAlign: 'center',
+  },
+  startBtn: {
+    marginTop: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: '#00E5FF',
+    paddingVertical: 16,
+    borderRadius: 14,
+    shadowColor: '#00E5FF',
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  startBtnText: {
+    fontSize: 17,
+    fontWeight: '900',
+    color: '#000',
+    letterSpacing: 2,
+  },
+  closeDashBtn: {
+    marginTop: 16,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  closeDashText: {
+    fontSize: 15,
+    color: '#5a7a99',
+    fontWeight: '600',
+  },
+  partyCodeHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  partyCodeHeaderText: {
+    color: '#A3A3A3',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  participantsHorizontalContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 6,
+  },
+  participantAvatarWrapper: {
+    position: 'relative',
+  },
+  participantAvatarCompact: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  presenceDotOverlay: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#1a1a1a',
+  },
+  chatSectionTitle: {
+    color: '#A3A3A3',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  drawerChatScroll: {
+    flex: 1,
+    marginVertical: 4,
+  },
+  drawerChatContent: {
+    paddingVertical: 4,
+    gap: 8,
+  },
+  chatFeedRow: {
+    flexDirection: 'column',
+    marginBottom: 2,
+    maxWidth: '85%',
+  },
+  chatFeedRowLeft: {
+    alignSelf: 'flex-start',
+    alignItems: 'flex-start',
+  },
+  chatFeedRowRight: {
+    alignSelf: 'flex-end',
+    alignItems: 'flex-end',
+  },
+  chatFeedSender: {
+    color: '#A3A3A3',
+    fontSize: 9,
+    fontWeight: '600',
+    marginBottom: 2,
+    marginLeft: 4,
+  },
+  chatFeedBubble: {
+    borderRadius: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  chatFeedBubbleMe: {
+    backgroundColor: '#8B5CF6',
+    borderBottomRightRadius: 2,
+  },
+  chatFeedBubbleOther: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderBottomLeftRadius: 2,
+  },
+  chatFeedText: {
+    color: 'white',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  systemFeedRow: {
+    alignSelf: 'center',
+    marginVertical: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  systemFeedText: {
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontSize: 10,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  drawerInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    marginTop: 4,
+  },
+  drawerTextInput: {
+    flex: 1,
+    color: 'white',
+    fontSize: 12,
+    height: 32,
+    padding: 0,
+  },
+  drawerSendBtn: {
+    padding: 4,
+    marginLeft: 6,
   },
 });

@@ -1,0 +1,282 @@
+127.0.0.1:53032: GET http://127.0.0.1:8080/
+ << Connection killed: Request destination unknown. Unable to figure out where this request should be forwarded to.
+127.0.0.1:49516: GET http://mitm.it/
+              << 200 OK 17.4k
+127.0.0.1:49516: GET http://mitm.it/static/bootstrap.min.css
+              << 200 OK 157k
+127.0.0.1:49518: GET http://mitm.it/static/mitmproxy.css
+              << 200 OK 640b
+127.0.0.1:49542: GET http://mitm.it/static/images/mitmproxy-long.png
+              << 200 OK 121k
+127.0.0.1:49542: GET http://mitm.it/static/images/favicon.ico
+              << 200 OK 5.3k
+127.0.0.1:41808: POST http://update.googleapis.com/service/update2/json?cup2k…
+              << 200 OK 772b
+127.0.0.1:49542: GET http://mitm.it/cert/cer
+              << 200 OK 1.1k
+127.0.0.1:50628: GET https://net52.cc/mobile/home?app=1 HTTP/2.0
+     << HTTP/2.0 200 OK 12.6k
+127.0.0.1:50628: GET https://net52.cc/mobile/home.css?v1.4000000 HTTP/2.0
+     << HTTP/2.0 200 OK 12.6k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/nf2/icon_x192.png HTTP/2.0
+     << HTTP/2.0 200 OK 13.0k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/user-account2.png HTTP/2.0
+     << HTTP/2.0 200 OK 1.3k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/playdark2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 273b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/plus2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 199b
+127.0.0.1:50628: GET https://net52.cc/mobile/js/lazyload.min.js HTTP/2.0
+     << HTTP/2.0 200 OK 3.0k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/newrel.webp HTTP/2.0
+     << HTTP/2.0 200 OK 4.8k
+127.0.0.1:50628: GET https://net52.cc/mobile/js/nf-custom.js?v=1.40000000 HTTP/2.0
+     << HTTP/2.0 200 OK 8.0k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/netflix.webp HTTP/2.0
+     << HTTP/2.0 200 OK 617b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/primevideo.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.8k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/disneyplus.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.5k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/jiohotstar.webp HTTP/2.0
+     << HTTP/2.0 200 OK 5.1k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/hbomax.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.8k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/mxplayer.webp HTTP/2.0
+     << HTTP/2.0 200 OK 477b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/paramount.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.6k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/lionsgate.webp HTTP/2.0
+     << HTTP/2.0 200 OK 891b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/erosnow.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.7k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/appletv.webp HTTP/2.0
+     << HTTP/2.0 200 OK 743b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/peacock.webp HTTP/2.0
+     << HTTP/2.0 200 OK 893b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/animetimes.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.1k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/crunchyroll.webp HTTP/2.0
+     << HTTP/2.0 200 OK 6.1k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/discovery.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.3k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/mgm.webp HTTP/2.0
+     << HTTP/2.0 200 OK 945b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/zee5.webp HTTP/2.0
+     << HTTP/2.0 200 OK 2.0k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ottimg/amc.webp HTTP/2.0
+     << HTTP/2.0 200 OK 1.2k
+127.0.0.1:50628: GET https://net52.cc/img/telegram.png HTTP/2.0
+     << HTTP/2.0 200 OK 5.7k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/info2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 342b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/play.svg HTTP/2.0
+     << HTTP/2.0 200 OK 287b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/delete.svg HTTP/2.0
+     << HTTP/2.0 200 OK 228b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num2.svg HTTP/2.0
+     << HTTP/2.0 200 OK 515b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num1.svg HTTP/2.0
+     << HTTP/2.0 200 OK 216b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num3.svg HTTP/2.0
+     << HTTP/2.0 200 OK 694b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num4.svg HTTP/2.0
+     << HTTP/2.0 200 OK 251b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num5.svg HTTP/2.0
+     << HTTP/2.0 200 OK 546b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num6.svg HTTP/2.0
+     << HTTP/2.0 200 OK 724b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num7.svg HTTP/2.0
+     << HTTP/2.0 200 OK 233b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num8.svg HTTP/2.0
+     << HTTP/2.0 200 OK 823b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num9.svg HTTP/2.0
+     << HTTP/2.0 200 OK 1.0k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/num10.svg HTTP/2.0
+     << HTTP/2.0 200 OK 546b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/android.png HTTP/2.0
+     << HTTP/2.0 200 OK 27.4k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/rate2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 888b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/down-arrow.svg HTTP/2.0
+     << HTTP/2.0 200 OK 292b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/search2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 321b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/report2222.svg HTTP/2.0
+     << HTTP/2.0 200 OK 518b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/person.svg HTTP/2.0
+     << HTTP/2.0 200 OK 338b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/lock.svg HTTP/2.0
+     << HTTP/2.0 200 OK 300b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/ios.png HTTP/2.0
+     << HTTP/2.0 200 OK 22.9k
+127.0.0.1:50628: GET https://net52.cc/mobile/img/home.svg HTTP/2.0
+     << HTTP/2.0 200 OK 13.0k
+127.0.0.1:50634: GET https://imgcdn.kim/poster/n/82813021.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 57.4k
+127.0.0.1:50636: GET https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.m… HTTP/2.0
+     << HTTP/2.0 200 OK 30.7k
+127.0.0.1:50634: GET https://imgcdn.kim/poster/c/82813021.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 236k
+127.0.0.1:50638: GET https://ssl.p.jwpcdn.com/player/v/8.38.8/jwplayer.js HTTP/2.0
+     << HTTP/2.0 200 OK 46.4k
+127.0.0.1:50654: GET https://www.googletagmanager.com/gtag/js?id=G-6H28ST6E9… HTTP/2.0
+     << HTTP/2.0 200 OK 151k
+127.0.0.1:50668: GET https://static.cloudflareinsights.com/beacon.min.js/v83… HTTP/2.0
+     << HTTP/2.0 200 OK 11.2k
+127.0.0.1:50650: GET https://whos.amung.us/widget/iyify2024mo.png HTTP/2.0
+     << HTTP/2.0 307 Temporary Redirect 0b
+127.0.0.1:50674: GET https://widgets.amung.us/draw/?w=classic&n=46400&c=ffc2… HTTP/2.0
+     << HTTP/2.0 200 OK 1.5k
+127.0.0.1:50662: GET https://sstatic1.histats.com/0.gif?1188575&101
+              << 200 OK 43b
+127.0.0.1:50628: GET https://net52.cc/mobile/img/p11111.png HTTP/2.0
+     << HTTP/2.0 200 OK 3.8k
+127.0.0.1:50682: GET https://www.clarity.ms/tag/vrrbzn8o8n
+              << 200 OK 601b
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80186863.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 20.0k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80241318.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 15.5k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81397558.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 21.4k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80105699.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 23.3k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80100172.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 36.3k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80119426.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 26.9k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80214767.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 25.1k
+127.0.0.1:50692: GET https://scripts.clarity.ms/0.8.64/clarity.js HTTP/2.0
+     << HTTP/2.0 200 OK 24.7k
+127.0.0.1:50628: POST https://net52.cc/cdn-cgi/rum? HTTP/2.0
+     << HTTP/2.0 204 No Content 0b
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50716: POST https://www.google-analytics.com/g/collect?v=2&tid=G-6H… HTTP/2.0
+     << HTTP/2.0 204 No Content 0b
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81990239.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 32.1k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81948067.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 29.0k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81788930.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 26.6k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/82152349.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 22.8k
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50628: GET https://net52.cc/mobile/post.php?id=80186863&t=17802280… HTTP/2.0
+     << HTTP/2.0 200 OK 1.3k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80244953.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 25.2k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81252707.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 23.6k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80174608.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 21.6k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80104198.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 25.3k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80242724.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 23.3k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81639536.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 2.5k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81661231.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 5.6k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81661233.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 5.3k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81661234.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 4.0k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81661232.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 5.4k
+127.0.0.1:50634: GET https://imgcdn.kim/epimg/150/81661235.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 5.4k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80117803.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 32.5k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80236319.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 34.2k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/80996532.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 28.6k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81165134.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 40.1k
+127.0.0.1:50634: GET https://imgcdn.kim/poster/h/80186863.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 193k
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50638: GET https://ssl.p.jwpcdn.com/player/v/8.38.8/jwpsrv.js HTTP/2.0
+     << HTTP/2.0 304 Not Modified 0b
+127.0.0.1:50628: GET https://net52.cc/mobile/playlist.php?id=81639536&t=The%… HTTP/2.0
+     << HTTP/2.0 200 OK 505b
+127.0.0.1:47068: GET https://entitlements.jwplayer.com/vu0LFFarEeWQxhJtO5t17… HTTP/2.0
+     << HTTP/2.0 404 Not Found 90b
+127.0.0.1:47152: CONNECT subscdn.top:443
+              << 502 Bad Gateway 190b
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-da.srt HTTP/2.0
+     << HTTP/2.0 200 OK 20.7k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-es(1).srt HTTP/2.0
+     << HTTP/2.0 200 OK 23.8k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-el.srt HTTP/2.0
+     << HTTP/2.0 200 OK 25.3k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-cs.srt HTTP/2.0
+     << HTTP/2.0 200 OK 22.5k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-cs(1).srt HTTP/2.0
+     << HTTP/2.0 200 OK 22.3k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-de.[CC].srt HTTP/2.0
+     << HTTP/2.0 200 OK 26.9k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-de.srt HTTP/2.0
+     << HTTP/2.0 200 OK 21.4k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-en.[CC].srt HTTP/2.0
+     << HTTP/2.0 200 OK 27.4k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-de(1).srt HTTP/2.0
+     << HTTP/2.0 200 OK 23.6k
+127.0.0.1:47084: GET https://subscdn.top/files/81639536/81639536-ar.srt HTTP/2.0
+     << HTTP/2.0 200 OK 23.6k
+127.0.0.1:50628: GET https://net52.cc/mobile/hls/81639536.m3u8?in=fca7490d89… HTTP/2.0
+     << HTTP/2.0 200 OK 606b
+127.0.0.1:47184: GET https://prd.jwpltx.com/v1/jwplayer6/ping.gif?h=-8207987… HTTP/2.0
+     << HTTP/2.0 204 No Content 0b
+127.0.0.1:47146: GET https://back03.nfmirrorcdn.top/vtt/81639536.vtt HTTP/2.0
+     << HTTP/2.0 200 OK 15.8k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/a/2/2.m3u8
+              << 200 OK 927b
+127.0.0.1:47204: GET https://s24.freecdn3.top/files/81639536/720p/720p.m3u8?…
+              << 200 OK 1.7k
+127.0.0.1:47204: GET https://s24.freecdn3.top/files/81639536/720p/5979_000.j…
+              << 200 OK 211k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/a/2/5979_000.js
+              << 200 OK 65.5k
+127.0.0.1:50634: GET https://imgcdn.kim/nf/v/200/81759464.jpg HTTP/2.0
+     << HTTP/2.0 200 OK 25.5k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/a/2/5979_001.js
+              << 200 OK 83.8k
+127.0.0.1:47204: GET https://s24.freecdn3.top/files/81639536/720p/5979_001.j…
+              << 200 OK 618k
+127.0.0.1:47204: GET https://s24.freecdn3.top/files/81639536/a/2/5979_002.js
+              << 200 OK 161k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/720p/5979_002.j…
+              << 200 OK 932k
+127.0.0.1:50628: POST https://net52.cc/mobile/recentplay.php HTTP/2.0
+     << HTTP/2.0 200 OK 32b
+127.0.0.1:47184: GET https://prd.jwpltx.com/v1/jwplayer6/ping.gif?h=12256781… HTTP/2.0
+     << HTTP/2.0 204 No Content 0b
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/a/2/5979_003.js
+              << 200 OK 160k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/720p/5979_003.j…
+              << 200 OK 1.1m
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/a/2/5979_004.js
+              << 200 OK 160k
+127.0.0.1:47200: GET https://s24.freecdn3.top/files/81639536/720p/5979_004.j…
+              << 200 OK 623k
+127.0.0.1:50706: POST https://k.clarity.ms/collect
+              << 204 No Content 0b
+127.0.0.1:50650: GET https://whos.amung.us/widget/iyify2024mo.png?0.90059731… HTTP/2.0
+     << HTTP/2.0 307 Temporary Redirect 0b

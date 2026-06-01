@@ -94,8 +94,8 @@ android {
         applicationId 'com.movieflix.tv'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 22
+        versionName "1.0.13"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -181,6 +181,7 @@ dependencies {
 
 
     implementation("io.coil-kt:coil-compose:2.6.0") // Native image loading for Compose Cards
+    implementation("io.coil-kt:coil-svg:2.6.0") // SVG support for Coil
     implementation("androidx.palette:palette-ktx:1.0.0") // Dominant color extraction from hero backdrops
     implementation("androidx.media3:media3-exoplayer:1.2.0") // Native Trailer playback
     implementation("androidx.media3:media3-exoplayer-hls:1.2.0") // HLS trailer support

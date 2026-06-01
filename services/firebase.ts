@@ -37,9 +37,9 @@ if (Platform.OS !== 'web' && getReactNativePersistence) {
   auth = getAuth(app);
 }
 
-// Initialize Firestore with forced long polling for stability in mobile environments
+// Initialize Firestore with auto-detect long polling for stability in mobile environments
 const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
+  experimentalAutoDetectLongPolling: true,
 });
 
 const storage = getStorage(app);

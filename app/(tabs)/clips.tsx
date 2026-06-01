@@ -78,7 +78,7 @@ export default function ClipsScreen() {
   if (loading) {
     return (
       <View style={[styles.container, styles.center]}>
-        <NetflixLoader size={40} />
+        <NetflixLoader size={60} withPercentage={true} />
       </View>
     );
   }

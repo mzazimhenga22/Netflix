@@ -7,12 +7,18 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -26,6 +32,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -104,6 +111,47 @@ fun TvRow(
     val focusedGenre = if (focusedMovie != null) primaryGenre(focusedMovie!!) else ""
     val focusedProgress = focusedMovie?.optDouble("_progress", -1.0) ?: -1.0
     val focusedSeasons = focusedMovie?.optInt("number_of_seasons", 0) ?: 0
+    var focusedLogoUrl by remember { mutableStateOf<String?>(null) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    LaunchedEffect(focusedMovie) {
+        focusedLogoUrl = null
+        val movie = focusedMovie ?: return@LaunchedEffect
+        val id = movie.optString("id", "")
+        val mediaType = movie.optString("media_type", "movie")
+        
+        if (id.isNotEmpty()) {
+            val apiKey = "8baba8ab6b8bbe247645bcae7df63d0d"
+            val url = "https://api.themoviedb.org/3/$mediaType/$id/images?api_key=$apiKey&include_image_language=en,null"
+            
+            Thread {
+                try {
+                    val response = java.net.URL(url).readText()
+                    val json = JSONObject(response)
+                    val logos = json.optJSONArray("logos")
+                    if (logos != null && logos.length() > 0) {
+                        var bestPath = ""
+                        for (i in 0 until logos.length()) {
+                            val l = logos.getJSONObject(i)
+                            if (l.optString("iso_639_1") == "en") {
+                                bestPath = l.optString("file_path", "")
+                                break
+                            }
+                        }
+                        if (bestPath.isEmpty()) bestPath = logos.getJSONObject(0).optString("file_path", "")
+                        
+                        if (bestPath.isNotEmpty()) {
+                            mainHandler.post {
+                                focusedLogoUrl = "https://image.tmdb.org/t/p/w500$bestPath"
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }.start()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -195,6 +243,34 @@ fun TvRow(
                     .fillMaxWidth()
                     .padding(start = 58.dp, end = 58.dp, top = 10.dp)
             ) {
+                // Title Logo / Text
+                if (!focusedLogoUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(focusedLogoUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = focusedTitle,
+                        modifier = Modifier
+                            .height(54.dp)
+                            .widthIn(max = 250.dp),
+                        contentScale = ContentScale.Fit,
+                        alignment = Alignment.CenterStart
+                    )
+                } else {
+                    Text(
+                        text = focusedTitle.uppercase(),
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 20.sp,
+                            letterSpacing = 1.sp
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 // Metadata line: TV Show • Thriller • 2023 • 2 Seasons • TV-MA
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -397,6 +473,22 @@ fun MovieCard(
         }
     }
 
+    var trailerProgress by remember { mutableStateOf(0f) }
+    LaunchedEffect(isVideoReady, exoPlayer) {
+        val player = exoPlayer
+        if (isVideoReady && player != null) {
+            while (true) {
+                val dur = player.duration
+                if (dur > 0) {
+                    trailerProgress = (player.currentPosition.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                }
+                kotlinx.coroutines.delay(100)
+            }
+        } else {
+            trailerProgress = 0f
+        }
+    }
+
     LaunchedEffect(shouldRequestFocus, focusRequestToken) {
         if (shouldRequestFocus) {
             try {
@@ -431,6 +523,17 @@ fun MovieCard(
                     if (wasFocused && !it.isFocused) onBlur()
                 }
         ) {
+            val kenBurnsTransition = rememberInfiniteTransition(label = "kenBurnsCard")
+            val kenBurnsScale by kenBurnsTransition.animateFloat(
+                initialValue = 1.0f,
+                targetValue = 1.05f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(20000),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "kenBurnsCardScale"
+            )
+
             Box(modifier = Modifier.fillMaxSize()) {
                 // Background image (poster or backdrop)
                 AsyncImage(
@@ -439,7 +542,7 @@ fun MovieCard(
                         .crossfade(true)
                         .build(),
                     contentDescription = title,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().scale(if (isFocused) kenBurnsScale else 1f),
                     contentScale = ContentScale.Crop
                 )
 
@@ -507,7 +610,7 @@ fun MovieCard(
                                     colors = listOf(
                                         Color.Transparent,
                                         Color.Transparent,
-                                        Color.Black.copy(alpha = 0.7f)
+                                        Color.Black.copy(alpha = 0.8f)
                                     )
                                 )
                             )
@@ -515,10 +618,14 @@ fun MovieCard(
                 }
 
                 // Title overlay on focused card (bottom-left, like Netflix reference)
-                if (isFocused) {
+                AnimatedVisibility(
+                    visible = isFocused,
+                    enter = slideInVertically(initialOffsetY = { 20 }, animationSpec = tween(400, delayMillis = 150)) + fadeIn(tween(400, delayMillis = 150)),
+                    exit = fadeOut(tween(200)),
+                    modifier = Modifier.align(Alignment.BottomStart)
+                ) {
                     Column(
                         modifier = Modifier
-                            .align(Alignment.BottomStart)
                             .padding(horizontal = 16.dp, vertical = 14.dp)
                     ) {
                         // N SERIES / N FILM badge
@@ -564,11 +671,17 @@ fun MovieCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
 
-                    // Bottom-right badges: "New Episode", "#1 in TV Shows"
+                // Bottom-right badges: "New Episode", "#1 in TV Shows"
+                AnimatedVisibility(
+                    visible = isFocused,
+                    enter = slideInVertically(initialOffsetY = { 20 }, animationSpec = tween(400, delayMillis = 250)) + fadeIn(tween(400, delayMillis = 250)),
+                    exit = fadeOut(tween(200)),
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                ) {
                     Row(
                         modifier = Modifier
-                            .align(Alignment.BottomEnd)
                             .padding(horizontal = 12.dp, vertical = 14.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -617,6 +730,28 @@ fun MovieCard(
                         )
                     }
                 }
+
+                // Trailer Progress Indicator (only if focused and playing video)
+                AnimatedVisibility(
+                    visible = isVideoReady,
+                    enter = fadeIn(tween(400)),
+                    exit = fadeOut(tween(200)),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(Color.Transparent)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(trailerProgress.coerceIn(0f, 1f))
+                                .background(Color(0xFFE50914))
+                        )
+                    }
+                }
             }
         }
     }
@@ -631,12 +766,13 @@ private fun MetaBadge(
 ) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
             .background(
-                if (isRank) Color(0xFF333333).copy(alpha = 0.9f)
-                else if (accent) Color.White.copy(alpha = 0.16f)
-                else Color.White.copy(alpha = 0.1f)
+                color = if (isRank) Color.White.copy(alpha = 0.15f)
+                        else if (accent) Color.White.copy(alpha = 0.18f)
+                        else Color.White.copy(alpha = 0.1f),
+                shape = RoundedCornerShape(4.dp)
             )
+            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)

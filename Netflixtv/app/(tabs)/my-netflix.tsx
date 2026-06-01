@@ -13,18 +13,31 @@ import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHisto
 import { MyListService } from '../../services/MyListService';
 import { useCallback } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { usePageColor } from '../../context/PageColorContext';
 import { useTvFocusBridge } from '../../context/TvFocusBridgeContext';
+import { TV_TOP_NAV_TOTAL_OFFSET } from './_layout';
 
 export default function MyNetflixScreen() {
   const { selectedProfile } = useProfile();
+  const { pageColor, setPageColor } = usePageColor();
   const [myList, setMyList] = useState<any[]>([]);
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
-  const [heroColors, setHeroColors] = useState<readonly [string, string, string]>(['rgba(40, 0, 0, 0.8)', 'rgba(10, 0, 0, 0.9)', '#000']);
   const [loading, setLoading] = useState(true);
   const [pendingTarget, setPendingTarget] = useState<{ id: string, type: string } | null>(null);
   const router = useRouter();
   const { setHeroFocusTag } = useTvFocusBridge();
   const downloadsActionRef = useRef<any>(null);
+  const watchNowRef = useRef<any>(null);
+
+  // Focus trap for the Gate Overlay
+  useEffect(() => {
+    if (pendingTarget) {
+      const timeout = setTimeout(() => {
+        watchNowRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timeout);
+    }
+  }, [pendingTarget]);
 
   const loadData = useCallback(async () => {
     try {
@@ -38,7 +51,12 @@ export default function MyNetflixScreen() {
       setContinueWatching(history.map(h => ({
         ...h.item,
         media_type: h.type,
-        progressPercentage: (h.currentTime / h.duration) * 100
+        progressPercentage: (h.currentTime / h.duration) * 100,
+        _progress: h.duration > 0 ? h.currentTime / h.duration : 0,
+        _currentTime: h.currentTime,
+        _duration: h.duration,
+        _season: h.season,
+        _episode: h.episode
       })));
 
     } catch (e) {
@@ -78,13 +96,30 @@ export default function MyNetflixScreen() {
     }, [loading, setHeroFocusTag])
   );
 
-  const handleSelect = useCallback((id: string, type: string = 'movie') => {
-    setPendingTarget({ id, type });
+  const handleSelect = useCallback((movie: any) => {
+    setPendingTarget(movie);
   }, []);
 
   const confirmNavigation = () => {
     if (pendingTarget) {
-      router.push({ pathname: `/movie/${pendingTarget.id}`, params: { type: pendingTarget.type } });
+      const type = pendingTarget.media_type || pendingTarget.type || 'movie';
+      const params: any = {
+        type,
+        title: pendingTarget.title || pendingTarget.name,
+        poster: pendingTarget.poster_path,
+        backdrop: pendingTarget.backdrop_path,
+        overview: pendingTarget.overview,
+      };
+
+      if (pendingTarget._season) params.season = pendingTarget._season.toString();
+      if (pendingTarget._episode) params.episode = pendingTarget._episode.toString();
+      if (pendingTarget._currentTime) params.resumeTime = pendingTarget._currentTime.toString();
+      if (pendingTarget._duration) params.resumeDuration = pendingTarget._duration.toString();
+
+      router.push({
+        pathname: `/movie/${pendingTarget.id}`,
+        params: params
+      });
       setPendingTarget(null);
     }
   };
@@ -104,19 +139,23 @@ export default function MyNetflixScreen() {
       {/* Ambient Background Layer */}
       <View style={styles.ambientBackground}>
         <LinearGradient
-          colors={heroColors}
+          colors={[`${pageColor}99`, `${pageColor}66`, '#000000']}
           style={StyleSheet.absoluteFill}
         />
       </View>
+      <LinearGradient
+        colors={['rgba(255,255,255,0.05)', 'transparent']}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 200, zIndex: 1 }}
+      />
 
       <ColorExtractor 
         imageUrl={getBackdropUrl(firstPoster) || ''} 
         onColorExtracted={(color) => {
-          setHeroColors([`${color}99`, `${color}66`, '#000000']);
+          setPageColor(color);
         }}
       />
 
-      <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} focusable={false}>
         <View style={styles.header}>
            <Image 
              source={selectedProfile?.avatar} 
@@ -128,10 +167,11 @@ export default function MyNetflixScreen() {
              <Text style={styles.userName}>{selectedProfile?.name || 'Netflix User'}</Text>
            </View>
            
-           {/* Account Quick Actions */}
+            {/* Account Quick Actions */}
            <View style={styles.actionRow}>
               <Pressable
                 ref={downloadsActionRef}
+                focusable={true}
                 style={({ focused }) => [styles.actionBtn, focused && styles.actionBtnFocused]}
                 onPress={() => router.push('/(tabs)/downloads')}
               >
@@ -141,6 +181,7 @@ export default function MyNetflixScreen() {
                  <Text style={styles.actionText}>Downloads</Text>
               </Pressable>
               <Pressable
+                focusable={true}
                 style={({ focused }) => [styles.actionBtn, focused && styles.actionBtnFocused]}
                 onPress={() => router.push('/notifications')}
               >
@@ -156,12 +197,12 @@ export default function MyNetflixScreen() {
           <ExpandingRow 
              title="Continue Watching" 
              content={continueWatching} 
-             onItemPress={(movie) => handleSelect(movie.id.toString(), movie.media_type || 'movie')} 
+             onItemPress={handleSelect} 
           />
           <ExpandingRow 
              title="My List" 
              content={myList} 
-             onItemPress={(movie) => handleSelect(movie.id.toString(), 'movie')} 
+             onItemPress={handleSelect} 
           />
         </View>
       </ScrollView>
@@ -181,6 +222,8 @@ export default function MyNetflixScreen() {
             
             <View style={styles.gateActions}>
               <Pressable 
+                ref={watchNowRef}
+                focusable={true}
                 style={({ focused }) => [styles.gateBtn, styles.gateBtnPrimary, focused && styles.gateBtnFocused]}
                 onPress={confirmNavigation}
               >
@@ -188,6 +231,7 @@ export default function MyNetflixScreen() {
               </Pressable>
               
               <Pressable 
+                focusable={true}
                 style={({ focused }) => [styles.gateBtn, focused && styles.gateBtnFocused]}
                 onPress={() => setPendingTarget(null)}
               >
@@ -216,7 +260,7 @@ const styles = StyleSheet.create({
   },
   contentContainer: { 
     paddingHorizontal: 80, 
-    paddingTop: 120,
+    paddingTop: TV_TOP_NAV_TOTAL_OFFSET + 12,
     paddingBottom: 100,
   },
   center: {

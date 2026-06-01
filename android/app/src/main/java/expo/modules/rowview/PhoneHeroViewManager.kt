@@ -159,13 +159,18 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
     }
 
     private fun sendEvent(view: View, context: ThemedReactContext, eventName: String, id: String) {
-        val event = Arguments.createMap()
-        event.putString("id", id)
-        context.getJSModule(RCTEventEmitter::class.java).receiveEvent(
-            view.id,
-            eventName,
-            event
-        )
+        android.util.Log.d("PhoneHeroViewManager", "sendEvent called: eventName=$eventName, id=$id")
+        try {
+            val event = Arguments.createMap()
+            event.putString("id", id)
+            context.getJSModule(RCTEventEmitter::class.java).receiveEvent(
+                view.id,
+                eventName,
+                event
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("PhoneHeroViewManager", "Error sending event: ", e)
+        }
     }
 
     override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
@@ -190,8 +195,20 @@ class PhoneHeroViewManager : SimpleViewManager<FrameLayout>() {
     private fun getSafeString(map: ReadableMap, key: String): String {
         if (!map.hasKey(key) || map.isNull(key)) return ""
         return try {
-            map.getString(key) ?: ""
+            when (map.getType(key)) {
+                com.facebook.react.bridge.ReadableType.String -> map.getString(key) ?: ""
+                com.facebook.react.bridge.ReadableType.Number -> {
+                    val num = map.getDouble(key)
+                    if (num % 1.0 == 0.0) {
+                        num.toLong().toString()
+                    } else {
+                        num.toString()
+                    }
+                }
+                else -> ""
+            }
         } catch (e: Exception) {
+            android.util.Log.e("PhoneHeroViewManager", "Error getting safe string for key $key", e)
             ""
         }
     }

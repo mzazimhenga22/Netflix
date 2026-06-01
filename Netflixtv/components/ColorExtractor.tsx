@@ -56,7 +56,12 @@ const ColorExtractor = React.memo(({ imageUrl, onColorExtracted }: ColorExtracto
   `;
 
   return (
-    <View style={hiddenStyle.container}>
+    <View 
+      style={hiddenStyle.container} 
+      pointerEvents="none" 
+      focusable={false} 
+      importantForAccessibility="no-hide-descendants"
+    >
       <WebView
         originWhitelist={['*']}
         source={{ html }}
@@ -68,6 +73,8 @@ const ColorExtractor = React.memo(({ imageUrl, onColorExtracted }: ColorExtracto
           onColorExtracted(color);
         }}
         javaScriptEnabled={true}
+        setSupportMultipleWindows={false}
+        focusable={false}
       />
     </View>
   );

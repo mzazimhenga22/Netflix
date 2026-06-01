@@ -21,21 +21,43 @@ const NAV_ITEMS = [
 export default function TvTopNav() {
   const router = useRouter();
   const pathname = usePathname();
-  const { selectedProfile, profiles, selectProfile } = useProfile();
+  const { selectedProfile, profiles, selectProfile, subscriptionStatus, maxProfilesAllowed } = useProfile();
   const { pageColor } = usePageColor();
   const { heroFocusTag, setNavFocusTag } = useTvFocusBridge();
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const navRefs = useRef<Array<any>>([]);
+  
+  // Focus Management Refs
+  const profileBtnRef = useRef<any>(null);
+  const firstProfileRef = useRef<any>(null);
+  const [profileBtnTag, setProfileBtnTag] = useState<number | null>(null);
+  const [firstNavTag, setFirstNavTag] = useState<number | null>(null);
+
+  const isPlanRestricted = subscriptionStatus?.status !== 'active';
 
   const handlePress = useCallback((item: (typeof NAV_ITEMS)[number]) => {
     if (item.type === 'nav') {
-      // Use navigate for tabs to persist state and prevent full remounts
       router.navigate(item.path as any);
     }
   }, [router]);
 
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
+
+  // Manage focus when opening/closing the sidebar modal
+  useEffect(() => {
+    if (isSidebarOpen) {
+      const timeout = setTimeout(() => {
+        firstProfileRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timeout);
+    } else {
+      const timeout = setTimeout(() => {
+        profileBtnRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timeout);
+    }
+  }, [isSidebarOpen]);
 
   useEffect(() => {
     const activeIndex = NAV_ITEMS.findIndex((item) => (
@@ -62,6 +84,8 @@ export default function TvTopNav() {
           <Pressable
             style={StyleSheet.absoluteFill}
             onPress={() => setIsSidebarOpen(false)}
+            focusable={false}
+            importantForAccessibility="no"
           >
             <Animated.View entering={FadeIn.duration(400)} style={StyleSheet.absoluteFill}>
               <LinearGradient
@@ -88,26 +112,51 @@ export default function TvTopNav() {
                 <Text style={styles.sidebarTitle}>Switch Profile</Text>
               </View>
               <View style={styles.sidebarProfiles}>
-                {profiles.map((p) => (
-                  <Pressable
-                    key={p.id}
-                    style={({ focused }) => [
-                      styles.sidebarProfileItem,
-                      focused && styles.sidebarProfileItemFocused,
-                      p.id === selectedProfile?.id && styles.sidebarProfileItemActive
-                    ]}
-                    onPress={() => {
-                      selectProfile(p);
-                      setIsSidebarOpen(false);
-                    }}
-                  >
-                    <Image source={p.avatar} style={styles.sidebarAvatar} contentFit="cover" />
-                    <Text style={styles.sidebarProfileName}>{p.name}</Text>
-                  </Pressable>
-                ))}
+                {profiles.map((p, index) => {
+                  const isLocked = isPlanRestricted && index >= maxProfilesAllowed;
+                  
+                  return (
+                    <Pressable
+                      key={p.id}
+                      ref={(node) => {
+                        if (index === 0) firstProfileRef.current = node;
+                      }}
+                      focusable={true}
+                      style={({ focused }) => [
+                        styles.sidebarProfileItem,
+                        focused && styles.sidebarProfileItemFocused,
+                        p.id === selectedProfile?.id && styles.sidebarProfileItemActive,
+                        isLocked && { opacity: 0.5 }
+                      ]}
+                      onPress={() => {
+                        if (isLocked) {
+                          setIsSidebarOpen(false);
+                          router.push('/upgrade');
+                          return;
+                        }
+                        selectProfile(p);
+                        setIsSidebarOpen(false);
+                      }}
+                    >
+                      <View>
+                        <Image source={p.avatar} style={styles.sidebarAvatar} contentFit="cover" />
+                        {isLocked && (
+                          <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', borderRadius: 4 }}>
+                            <Ionicons name="lock-closed" size={24} color="white" />
+                          </View>
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sidebarProfileName}>{p.name}</Text>
+                        {isLocked && <Text style={{ color: '#E50914', fontSize: 12, fontWeight: 'bold', marginTop: 4 }}>UPGRADE TO UNLOCK</Text>}
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </View>
               <View style={styles.sidebarFooter}>
                 <Pressable
+                  focusable={true}
                   style={({ focused }) => [styles.exitBtn, focused && styles.exitBtnFocused]}
                   onPress={() => {
                     setIsSidebarOpen(false);
@@ -125,7 +174,15 @@ export default function TvTopNav() {
 
       <View style={styles.leftSection}>
         <Pressable
+          ref={(node) => {
+            profileBtnRef.current = node;
+            const tag = findNodeHandle(node);
+            if (tag && tag !== profileBtnTag) setProfileBtnTag(tag);
+          }}
           onPress={toggleSidebar}
+          focusable={true}
+          nextFocusRight={firstNavTag ?? undefined}
+          nextFocusDown={heroFocusTag ?? undefined}
           style={({ focused }) => [styles.profileBtn, focused && styles.profileBtnFocused]}
         >
           <Image
@@ -137,11 +194,17 @@ export default function TvTopNav() {
         </Pressable>
       </View>
 
-      <View style={styles.navShell}>
+      <View style={[styles.navShell, { shadowColor: pageColor }]}>
         <LinearGradient
-          colors={['rgba(0,0,0,0.18)', `${pageColor}AA`, 'rgba(0,0,0,0.3)']}
+          colors={[`${pageColor}33`, `${pageColor}66`, `${pageColor}22`]}
           start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
+          end={{ x: 1, y: 0 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <LinearGradient
+          colors={['rgba(255,255,255,0.05)', 'transparent']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
 
@@ -155,7 +218,12 @@ export default function TvTopNav() {
                 key={item.label}
                 ref={(node) => {
                   navRefs.current[index] = node;
+                  if (index === 0) {
+                    const tag = findNodeHandle(node);
+                    if (tag && tag !== firstNavTag) setFirstNavTag(tag);
+                  }
                 }}
+                focusable={true}
                 onFocus={() => {
                   setFocusedIndex(index);
                   const tag = findNodeHandle(navRefs.current[index]);
@@ -165,6 +233,7 @@ export default function TvTopNav() {
                 }}
                 onBlur={() => setFocusedIndex(null)}
                 onPress={() => handlePress(item)}
+                nextFocusLeft={index === 0 ? (profileBtnTag ?? undefined) : undefined}
                 nextFocusDown={heroFocusTag ?? undefined}
                 style={styles.navItemContainer}
               >
@@ -219,27 +288,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 40,
+    paddingHorizontal: 20,
     backgroundColor: 'transparent',
     zIndex: 1000,
-    paddingTop: 10,
+    paddingTop: 15,
   },
   leftSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 84,
+    width: 120, // Give more room for the profile at the edge
+    justifyContent: 'flex-start',
   },
   navShell: {
     flexDirection: 'row',
     alignItems: 'center',
     borderRadius: 999,
     overflow: 'hidden',
-    backgroundColor: 'rgba(10,10,10,0.5)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.25,
-    shadowRadius: 24,
-    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 30,
+    elevation: 12,
     paddingHorizontal: 10,
     minHeight: 56,
   },
@@ -287,8 +357,8 @@ const styles = StyleSheet.create({
   },
   rightSection: {
     justifyContent: 'center',
-    alignItems: 'center',
-    minWidth: 84,
+    alignItems: 'flex-end',
+    width: 120, // Balance the profile on the other side
   },
   profileBtn: {
     flexDirection: 'row',

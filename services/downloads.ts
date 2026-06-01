@@ -148,7 +148,76 @@ export const getDownloadLink = async (
   return null;
 };
 
+// ─── Subtitle download helper ───────────────────────────────────────
+/**
+ * Downloads remote subtitle files to local storage so they work offline.
+ * Returns the same subtitle array but with `url` replaced by local file:// paths.
+ */
+async function downloadSubtitlesLocally(
+  downloadId: string,
+  subtitles: { url: string; label: string; kind?: string }[]
+): Promise<{ url: string; label: string; kind?: string }[]> {
+  if (!subtitles || subtitles.length === 0) return [];
+
+  const subsDir = `${DOWNLOADS_DIR}subs_${downloadId}/`;
+  try {
+    await FileSystem.makeDirectoryAsync(subsDir, { intermediates: true });
+  } catch (_) {}
+
+  const localSubs: { url: string; label: string; kind?: string }[] = [];
+
+  for (let i = 0; i < subtitles.length; i++) {
+    const sub = subtitles[i];
+    if (!sub.url || sub.url.startsWith('file://') || sub.url.startsWith(DOWNLOADS_DIR)) {
+      // Already local
+      localSubs.push(sub);
+      continue;
+    }
+
+    const ext = sub.url.includes('.srt') ? 'srt' : 'vtt';
+    const safeLabel = (sub.label || `track_${i}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const localPath = `${subsDir}${safeLabel}_${i}.${ext}`;
+
+    try {
+      const result = await FileSystem.downloadAsync(sub.url, localPath);
+      if (result?.uri) {
+        console.log(`[DownloadService] ✅ Subtitle "${sub.label}" saved → ${localPath}`);
+        localSubs.push({ ...sub, url: result.uri });
+      } else {
+        console.warn(`[DownloadService] ⚠️ Subtitle "${sub.label}" download returned no URI`);
+        localSubs.push(sub); // Keep remote URL as fallback
+      }
+    } catch (err: any) {
+      console.warn(`[DownloadService] ⚠️ Failed to download subtitle "${sub.label}": ${err.message}`);
+      localSubs.push(sub); // Keep remote URL as fallback
+    }
+  }
+
+  return localSubs;
+}
+
 // ─── Core download logic ────────────────────────────────────────────
+
+export const isHlsUrl = async (url: string, headers?: Record<string, string>): Promise<boolean> => {
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.includes('.m3u8') || lowerUrl.includes('type=hls') || lowerUrl.includes('/hls/')) return true;
+  try {
+    const res = await fetch(url, { method: 'HEAD', headers });
+    const contentType = res.headers.get('content-type')?.toLowerCase();
+    if (contentType && (contentType.includes('mpegurl') || contentType.includes('m3u8') || contentType.includes('mpeg-url'))) {
+      return true;
+    }
+  } catch (e) {
+    console.warn('[DownloadService] HEAD check failed for HLS detection:', e);
+  }
+  // Fallback: fetch first 200 bytes and check if it starts with #EXTM3U
+  try {
+    const res = await fetch(url, { headers: { ...headers, Range: 'bytes=0-200' } });
+    const text = await res.text();
+    if (text.startsWith('#EXTM3U')) return true;
+  } catch (_) {}
+  return false;
+};
 
 export const downloadVideo = async (
   tmdbId: string,
@@ -178,7 +247,8 @@ export const downloadVideo = async (
   }
   if (!linkData) throw new Error('Could not find a download link.');
 
-  if (linkData.url.includes('.m3u8')) {
+  const isHls = await isHlsUrl(linkData.url, linkData.headers);
+  if (isHls) {
     const subtitles = (resolvedStream?.captions || []).map((c: any) => ({
       url: c.url,
       label: c.language || 'Unknown',
@@ -239,6 +309,14 @@ export const downloadVideo = async (
 
   _activeResumables[downloadId] = downloadResumable;
 
+  // Download subtitle files to local storage for offline playback
+  const remoteSubs = (resolvedStream?.captions || []).map((c: any) => ({
+    url: c.url,
+    label: c.language || 'Unknown',
+    kind: c.type || 'captions',
+  }));
+  const localSubs = await downloadSubtitlesLocally(downloadId, remoteSubs);
+
   // Register item in metadata
   const items = await loadMetadata();
   const existingIndex = items.findIndex(i => i.id === downloadId);
@@ -252,11 +330,7 @@ export const downloadVideo = async (
     status: 'downloading',
     streamUrl: linkData.url,
     streamHeaders: linkData.headers,
-    subtitles: resolvedStream?.captions?.map((c: any) => ({
-      url: c.url,
-      label: c.language || 'Unknown',
-      kind: c.type || 'captions',
-    })) || [],
+    subtitles: localSubs,
     audioTracks: resolvedStream?.audioTracks || [],
   };
   if (existingIndex > -1) items[existingIndex] = newItem;
@@ -290,6 +364,46 @@ export const downloadVideo = async (
       if (!fileSize && result.headers?.['content-length']) {
         fileSize = parseInt(result.headers['content-length'], 10) || 0;
       }
+
+      // Sanity check: if the "direct" download is suspiciously small (< 10 MB)
+      // and its content starts with #EXTM3U, it's actually an HLS playlist
+      // that slipped through isHlsUrl() detection. Re-route through HLS downloader.
+      const MAX_PLAYLIST_SIZE = 10 * 1024 * 1024; // 10 MB
+      if (fileSize > 0 && fileSize < MAX_PLAYLIST_SIZE) {
+        try {
+          const headContent = await FileSystem.readAsStringAsync(localUri);
+          if (headContent.trimStart().startsWith('#EXTM3U')) {
+            console.warn(`[DownloadService] ⚠️ Direct download was actually an HLS playlist (${fileSize} bytes). Re-routing to HLS downloader...`);
+            await FileSystem.deleteAsync(localUri, { idempotent: true });
+            delete _activeResumables[downloadId];
+
+            // Re-route through HLS downloader with the already-fetched playlist content
+            const subtitles = (resolvedStream?.captions || []).map((c: any) => ({
+              url: c.url,
+              label: c.language || 'Unknown',
+              kind: c.type || 'captions',
+            }));
+            return downloadHlsVideo(
+              downloadId,
+              linkData!.url,
+              linkData!.headers,
+              localUri,
+              tmdbId,
+              title,
+              type,
+              image,
+              season,
+              episode,
+              onProgress,
+              subtitles,
+              resolvedStream?.audioTracks || []
+            );
+          }
+        } catch (readErr: any) {
+          console.warn(`[DownloadService] Could not verify download content: ${readErr.message}`);
+        }
+      }
+
       const updatedItems = await loadMetadata();
       const item = updatedItems.find(i => i.id === downloadId);
       if (item) {
@@ -452,6 +566,12 @@ export const deleteDownload = async (id: string) => {
       if (dirInfo.exists) {
         await FileSystem.deleteAsync(segmentsDir, { idempotent: true });
       }
+      // Also delete locally saved subtitle files
+      const subsDir = `${DOWNLOADS_DIR}subs_${id}/`;
+      const subsDirInfo = await FileSystem.getInfoAsync(subsDir);
+      if (subsDirInfo.exists) {
+        await FileSystem.deleteAsync(subsDir, { idempotent: true });
+      }
     } catch (error) {
       console.error('[DownloadService] Error deleting file:', error);
     }
@@ -469,6 +589,12 @@ export const deleteAllDownloads = async () => {
       const dirInfo = await FileSystem.getInfoAsync(segmentsDir);
       if (dirInfo.exists) {
         await FileSystem.deleteAsync(segmentsDir, { idempotent: true });
+      }
+      // Also delete locally saved subtitle files
+      const subsDir = `${DOWNLOADS_DIR}subs_${item.id}/`;
+      const subsDirInfo = await FileSystem.getInfoAsync(subsDir);
+      if (subsDirInfo.exists) {
+        await FileSystem.deleteAsync(subsDir, { idempotent: true });
       }
     } catch (_) {}
   }
@@ -555,20 +681,49 @@ async function downloadHlsVideo(
       }
     }
 
-    // 2. Extract segments and prepare local M3U8
+    // 2. Extract segments and prepare local M3U8 (parsing byte ranges to avoid duplicate full-file downloads)
     const lines = m3u8Content.split('\n');
     const segmentUrls: string[] = [];
     const localLines: string[] = [];
     let segmentCount = 0;
 
+    let runningOffset = 0;
+    let currentByteRange: string | null = null;
+    const segmentRanges: ({ length: number; offset: number } | null)[] = [];
+
     for (const line of lines) {
       const trimmed = line.trim();
+      if (trimmed.startsWith('#EXT-X-BYTERANGE:')) {
+        currentByteRange = trimmed.split(':')[1].trim();
+        // Omit `#EXT-X-BYTERANGE` header from local M3U8, since local files are isolated and read from offset 0
+        continue;
+      }
+      
       if (trimmed && !trimmed.startsWith('#')) {
         const segmentUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, url).toString();
         const segmentFilename = `seg_${segmentCount}.ts`;
         segmentUrls.push(segmentUrl);
         // Use absolute path for the local M3U8 so expo-video can resolve it from the file:// scheme
         localLines.push(`${segmentsDir}${segmentFilename}`); 
+
+        if (currentByteRange) {
+          let length = 0;
+          let offset = runningOffset;
+          if (currentByteRange.includes('@')) {
+            const parts = currentByteRange.split('@');
+            length = parseInt(parts[0]);
+            offset = parseInt(parts[1]);
+            runningOffset = offset + length;
+          } else {
+            length = parseInt(currentByteRange);
+            offset = runningOffset;
+            runningOffset += length;
+          }
+          segmentRanges.push({ length, offset });
+          currentByteRange = null;
+        } else {
+          segmentRanges.push(null);
+        }
         segmentCount++;
       } else {
         localLines.push(line);
@@ -580,7 +735,9 @@ async function downloadHlsVideo(
     const detectedAudioTracks = incomingAudioTracks.length > 0
       ? incomingAudioTracks
       : extractAudioTracksFromM3u8(m3u8Content);
-    const subtitleTracks = incomingSubtitles;
+    
+    // Download subtitle files to local storage for offline playback
+    const localSubtitleTracks = await downloadSubtitlesLocally(downloadId, incomingSubtitles);
 
     // 2b. Write initial local M3U8 immediately to allow "Preview" during download
     const initialM3U8 = localLines.join('\n');
@@ -592,7 +749,7 @@ async function downloadHlsVideo(
       id: downloadId, tmdbId, title, type, season, episode, image,
       localUri: actualLocalUri, progress: 0, status: 'downloading',
       streamUrl: url, streamHeaders: headers, // Persist stream info
-      subtitles: subtitleTracks,
+      subtitles: localSubtitleTracks,
       audioTracks: detectedAudioTracks,
     };
     const existingIdx = items.findIndex(i => i.id === downloadId);
@@ -642,6 +799,13 @@ async function downloadHlsVideo(
       await Promise.all(batch.map(async (segUrl, idx) => {
         const segIndex = i + idx;
         const segTarget = `${segmentsDir}seg_${segIndex}.ts`;
+        const range = segmentRanges[segIndex];
+
+        const segmentHeaders = { ...headers };
+        if (range) {
+          segmentHeaders['Range'] = `bytes=${range.offset}-${range.offset + range.length - 1}`;
+        }
+
         try {
           // SKIP ALREADY DOWNLOADED SEGMENTS FOR RESUME
           const stat = await FileSystem.getInfoAsync(segTarget);
@@ -650,9 +814,16 @@ async function downloadHlsVideo(
              return;
           }
 
-          const res = await FileSystem.downloadAsync(segUrl, segTarget, { headers });
+          const res = await FileSystem.downloadAsync(segUrl, segTarget, { headers: segmentHeaders });
           downloadedCount++;
-          if (res.headers['content-length']) totalSizeAccumulated += parseInt(res.headers['content-length']);
+          
+          let segmentSize = 0;
+          if (res.headers['content-length']) {
+            segmentSize = parseInt(res.headers['content-length']);
+          } else if (range) {
+            segmentSize = range.length;
+          }
+          totalSizeAccumulated += segmentSize;
           
           const progress = downloadedCount / segmentUrls.length;
           if (onProgress) onProgress(progress);

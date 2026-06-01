@@ -17,6 +17,7 @@ import com.facebook.react.uimanager.events.RCTEventEmitter
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistryOwner
+import android.view.KeyEvent
 
 class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
 
@@ -35,7 +36,8 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
         val movieData: MutableState<String?> = mutableStateOf(null),
         val streamUrl: MutableState<String?> = mutableStateOf(null),
         val streamHeaders: MutableState<String?> = mutableStateOf(null),
-        val hasFocus: MutableState<Boolean> = mutableStateOf(false)
+        val hasFocus: MutableState<Boolean> = mutableStateOf(false),
+        val isScreenActive: MutableState<Boolean> = mutableStateOf(true)
     )
 
     private val viewState = mutableMapOf<Int, BannerStateHolders>()
@@ -69,8 +71,20 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
             if (hasFocus) {
                 val event = Arguments.createMap()
                 reactContext.getJSModule(RCTEventEmitter::class.java)
-                    .receiveEvent(view.id, "topFocus", event)
+                    .receiveEvent(view.id, "onBannerFocus", event)
             }
+        }
+
+        view.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    val jsEvent = Arguments.createMap()
+                    reactContext.getJSModule(RCTEventEmitter::class.java)
+                        .receiveEvent(view.id, "onBannerPress", jsEvent)
+                    return@setOnKeyListener true
+                }
+            }
+            false
         }
 
         // setContent is called ONCE when the view attaches to a window.
@@ -107,6 +121,12 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
         ensureMounted(view)
     }
 
+    @ReactProp(name = "isScreenActive", defaultBoolean = true)
+    fun setIsScreenActive(view: SafeComposeView, isScreenActive: Boolean) {
+        val holders = viewState.getOrPut(view.id) { BannerStateHolders() }
+        holders.isScreenActive.value = isScreenActive
+    }
+
     /**
      * Mounts the Compose content tree exactly once.
      * Subsequent prop updates flow via mutableStateOf, not setContent().
@@ -135,6 +155,7 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
                 streamUrl = holders.streamUrl.value,
                 streamHeaders = holders.streamHeaders.value,
                 isFocused = holders.hasFocus.value,
+                isScreenActive = holders.isScreenActive.value,
                 onColorExtracted = { colorInt ->
                     val event = Arguments.createMap().apply {
                         val r = (colorInt shr 16) and 0xFF
@@ -145,6 +166,16 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
                     }
                     reactContext.getJSModule(RCTEventEmitter::class.java)
                         .receiveEvent(view.id, "onColorExtracted", event)
+                },
+                onPlayClick = {
+                    val event = Arguments.createMap()
+                    reactContext.getJSModule(RCTEventEmitter::class.java)
+                        .receiveEvent(view.id, "onBannerPress", event)
+                },
+                onMyListClick = {
+                    val event = Arguments.createMap()
+                    reactContext.getJSModule(RCTEventEmitter::class.java)
+                        .receiveEvent(view.id, "onMyListPress", event)
                 }
             )
         }
@@ -173,7 +204,9 @@ class TvHeroBannerViewManager : SimpleViewManager<SafeComposeView>() {
     override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any>? {
         return MapBuilder.builder<String, Any>()
             .put("onColorExtracted", MapBuilder.of("registrationName", "onColorExtracted"))
-            .put("topFocus", MapBuilder.of("registrationName", "onFocus"))
+            .put("onBannerFocus", MapBuilder.of("registrationName", "onBannerFocus"))
+            .put("onBannerPress", MapBuilder.of("registrationName", "onBannerPress"))
+            .put("onMyListPress", MapBuilder.of("registrationName", "onMyListPress"))
             .build()
     }
 }

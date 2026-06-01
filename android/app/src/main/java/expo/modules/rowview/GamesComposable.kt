@@ -128,7 +128,12 @@ fun HeroSection() {
             verticalArrangement = Arrangement.Bottom
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(18.dp, 28.dp).background(Color(0xFFE50914)))
+                AsyncImage(
+                    model = "https://assets.nflxext.com/ffe/siteui/common/icons/nficon2016.png",
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp, 28.dp),
+                    contentScale = ContentScale.Fit
+                )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("G A M E S", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
             }

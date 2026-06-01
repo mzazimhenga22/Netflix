@@ -8,6 +8,7 @@ import {
   Modal,
   ScrollView,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { BlurView } from 'expo-blur';
@@ -20,6 +21,7 @@ import Animated, {
   withTiming,
   withDelay,
   withSequence,
+  withRepeat,
   FadeIn,
   FadeInDown,
   FadeInUp,
@@ -56,7 +58,6 @@ const ActionButton = ({
   onPress,
   isPrimary,
   isActive,
-  delay = 0,
 }: {
   icon: React.ReactNode;
   activeIcon?: React.ReactNode;
@@ -64,7 +65,6 @@ const ActionButton = ({
   onPress: () => void;
   isPrimary?: boolean;
   isActive?: boolean;
-  delay?: number;
 }) => {
   const scale = useSharedValue(1);
 
@@ -83,22 +83,20 @@ const ActionButton = ({
   };
 
   return (
-    <Animated.View entering={FadeInUp.delay(delay).duration(400).springify()}>
-      <Pressable onPress={handlePress} style={styles.actionButton}>
-        <Animated.View
-          style={[
-            styles.actionCircle,
-            isPrimary && styles.actionCirclePrimary,
-            animStyle,
-          ]}
-        >
-          {isActive && activeIcon ? activeIcon : icon}
-        </Animated.View>
-        <Text style={[styles.actionLabel, isPrimary && styles.actionLabelPrimary]}>
-          {label}
-        </Text>
-      </Pressable>
-    </Animated.View>
+    <Pressable onPress={handlePress} style={styles.actionButton}>
+      <Animated.View
+        style={[
+          styles.actionCircle,
+          isPrimary && styles.actionCirclePrimary,
+          animStyle,
+        ]}
+      >
+        {isActive && activeIcon ? activeIcon : icon}
+      </Animated.View>
+      <Text style={[styles.actionLabel, isPrimary && styles.actionLabelPrimary]}>
+        {label}
+      </Text>
+    </Pressable>
   );
 };
 
@@ -119,12 +117,12 @@ const MatchScoreRing = ({ score, delay = 0 }: { score: number; delay?: number })
   }));
 
   return (
-    <Animated.View entering={FadeIn.delay(delay).duration(400)} style={styles.matchContainer}>
+    <View style={styles.matchContainer}>
       <View style={styles.matchBarBg}>
         <Animated.View style={[styles.matchBarFill, { backgroundColor: ringColor }, fillStyle]} />
       </View>
       <Text style={[styles.matchText, { color: ringColor }]}>{score}% Match</Text>
-    </Animated.View>
+    </View>
   );
 };
 
@@ -157,9 +155,28 @@ export function QuickPreviewModal({ visible, item, onClose }: QuickPreviewModalP
   const [isInMyList, setIsInMyList] = useState(false);
 
   // Animation
-  const translateY = useSharedValue(0);
+  const translateY = useSharedValue(height);
   const backdropOpacity = useSharedValue(0);
   const BACKDROP_H = width * 0.56; // 16:9 aspect
+  const pulseAnim = useSharedValue(0.4);
+
+  // Pulse animation for skeletons
+  useEffect(() => {
+    if (visible && loading) {
+      pulseAnim.value = 0.4;
+      pulseAnim.value = withRepeat(
+        withTiming(0.8, { duration: 1000, easing: Easing.inOut(Easing.ease) }),
+        -1,
+        true
+      );
+    } else {
+      pulseAnim.value = 1;
+    }
+  }, [visible, loading]);
+
+  const pulseStyle = useAnimatedStyle(() => ({
+    opacity: pulseAnim.value,
+  }));
 
   // Fetch details when item changes
   useEffect(() => {
@@ -199,27 +216,32 @@ export function QuickPreviewModal({ visible, item, onClose }: QuickPreviewModalP
   // Entry animation
   useEffect(() => {
     if (visible) {
-      backdropOpacity.value = withTiming(1, { duration: 300 });
-      translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+      translateY.value = height;
+      backdropOpacity.value = 0;
+      backdropOpacity.value = withTiming(1, { duration: 250, easing: Easing.out(Easing.quad) });
+      translateY.value = withTiming(0, {
+        duration: 320,
+        easing: Easing.bezier(0.25, 1, 0.5, 1)
+      });
     }
-  }, [visible, backdropOpacity, translateY]);
+  }, [visible, height, backdropOpacity, translateY]);
 
   const handleClose = useCallback(() => {
     backdropOpacity.value = withTiming(0, { duration: 200 });
-    translateY.value = withTiming(height * 0.5, { duration: 250 }, () => {
+    translateY.value = withTiming(height, { duration: 250 }, () => {
       runOnJS(onClose)();
     });
   }, [onClose, backdropOpacity, translateY, height]);
 
   const handleToggleMyList = useCallback(async () => {
-    if (!selectedProfile || !item || !details) return;
+    if (!selectedProfile || !item) return;
     const newStatus = !isInMyList;
     setIsInMyList(newStatus);
     const wasAdded = await MyListService.toggleItem(selectedProfile.id, {
       id: item.id,
-      title: details.title || details.name,
-      poster_path: details.poster_path,
-      backdrop_path: details.backdrop_path,
+      title: details?.title || details?.name || item.title,
+      poster_path: details?.poster_path || item.imageUrl,
+      backdrop_path: details?.backdrop_path || item.imageUrl,
       type: item.type || 'movie',
     });
     if (typeof wasAdded === 'boolean') setIsInMyList(wasAdded);
@@ -257,10 +279,10 @@ export function QuickPreviewModal({ visible, item, onClose }: QuickPreviewModalP
       }
     })
     .onEnd((e) => {
-      if (e.translationY > 120) {
+      if (e.translationY > 120 || e.velocityY > 500) {
         handleClose();
       } else {
-        translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+        translateY.value = withTiming(0, { duration: 200, easing: Easing.out(Easing.quad) });
       }
     });
 
@@ -292,11 +314,13 @@ export function QuickPreviewModal({ visible, item, onClose }: QuickPreviewModalP
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose} statusBarTranslucent>
       <GestureHandlerRootView style={{ flex: 1 }}>
-        {/* Blurred Background */}
+        {/* Blurred/Translucent Background */}
         <Animated.View style={[StyleSheet.absoluteFill, overlayStyle]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={handleClose}>
-            <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]} />
+            {Platform.OS === 'ios' ? (
+              <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+            ) : null}
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: Platform.OS === 'ios' ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.78)' }]} />
           </Pressable>
         </Animated.View>
 
@@ -339,139 +363,148 @@ export function QuickPreviewModal({ visible, item, onClose }: QuickPreviewModalP
                 />
 
                 {/* Play FAB overlaid on backdrop */}
-                <Animated.View
-                  entering={FadeInDown.delay(200).duration(500).springify()}
-                  style={styles.playFab}
-                >
+                <View style={styles.playFab}>
                   <Pressable onPress={handlePlay} style={styles.playFabPressable}>
                     <Ionicons name="play" size={28} color="black" style={{ marginLeft: 3 }} />
                   </Pressable>
-                </Animated.View>
+                </View>
               </View>
 
               {/* Content */}
               <View style={styles.content}>
+                {/* Title */}
+                <Text
+                  style={styles.title}
+                  numberOfLines={2}
+                >
+                  {details?.title || details?.name || item.title}
+                </Text>
+
+                {/* Match Score + Metadata Row */}
                 {loading ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color={COLORS.primary} />
-                  </View>
+                  <Animated.View style={[styles.metaRowPlaceholder, pulseStyle]}>
+                    <View style={styles.placeholderMetadataMatch} />
+                    <View style={styles.placeholderMetadataText} />
+                    <View style={styles.placeholderMetadataBadge} />
+                    <View style={styles.placeholderMetadataText} />
+                  </Animated.View>
                 ) : (
-                  <>
-                    {/* Title */}
-                    <Animated.Text
-                      entering={FadeInUp.delay(100).duration(400)}
-                      style={styles.title}
-                      numberOfLines={2}
-                    >
-                      {details?.title || details?.name || item.title}
-                    </Animated.Text>
-
-                    {/* Match Score + Metadata Row */}
-                    <Animated.View
-                      entering={FadeInUp.delay(200).duration(400)}
-                      style={styles.metaRow}
-                    >
-                      <MatchScoreRing score={matchScore} delay={400} />
-                      {year ? <Text style={styles.metaText}>{year}</Text> : null}
-                      <View style={styles.ratingBadge}>
-                        <Text style={styles.ratingText}>16+</Text>
-                      </View>
-                      {runtime ? <Text style={styles.metaText}>{runtime}</Text> : null}
-                      <View style={styles.hdBadge}>
-                        <Text style={styles.hdText}>HD</Text>
-                      </View>
-                    </Animated.View>
-
-                    {/* Genres */}
-                    {genres.length > 0 && (
-                      <Animated.Text
-                        entering={FadeInUp.delay(300).duration(400)}
-                        style={styles.genresText}
-                      >
-                        {genres.join(' · ')}
-                      </Animated.Text>
-                    )}
-
-                    {/* Action Buttons Row */}
-                    <View style={styles.actionsRow}>
-                      <ActionButton
-                        icon={<Ionicons name="play" size={26} color="black" style={{ marginLeft: 2 }} />}
-                        label="Play"
-                        onPress={handlePlay}
-                        isPrimary
-                        delay={300}
-                      />
-                      <ActionButton
-                        icon={<Ionicons name="add" size={26} color="white" />}
-                        activeIcon={<Ionicons name="checkmark" size={26} color="#46d369" />}
-                        label="My List"
-                        onPress={handleToggleMyList}
-                        isActive={isInMyList}
-                        delay={400}
-                      />
-                      <ActionButton
-                        icon={<Feather name="download" size={22} color="white" />}
-                        label="Download"
-                        onPress={handleDownload}
-                        delay={500}
-                      />
-                      <ActionButton
-                        icon={<Ionicons name="paper-plane-outline" size={22} color="white" />}
-                        label="Share"
-                        onPress={handleShare}
-                        delay={600}
-                      />
+                  <View style={styles.metaRow}>
+                    <MatchScoreRing score={matchScore} delay={100} />
+                    {year ? <Text style={styles.metaText}>{year}</Text> : null}
+                    <View style={styles.ratingBadge}>
+                      <Text style={styles.ratingText}>16+</Text>
                     </View>
-
-                    {/* Synopsis */}
-                    <Animated.Text
-                      entering={FadeInUp.delay(500).duration(400)}
-                      style={styles.synopsis}
-                      numberOfLines={4}
-                    >
-                      {details?.overview || 'No description available.'}
-                    </Animated.Text>
-
-                    {/* Similar Titles */}
-                    {similar.length > 0 && (
-                      <Animated.View entering={FadeInUp.delay(600).duration(400)}>
-                        <Text style={styles.sectionTitle}>More Like This</Text>
-                        <View style={styles.similarGrid}>
-                          {similar.map((sim) => (
-                            <SimilarCard
-                              key={sim.id}
-                              item={sim}
-                              onPress={() => {
-                                handleClose();
-                                setTimeout(() => {
-                                  router.push({
-                                    pathname: '/movie/[id]',
-                                    params: {
-                                      id: sim.id.toString(),
-                                      type: sim.media_type || item.type || 'movie',
-                                    },
-                                  });
-                                }, 300);
-                              }}
-                            />
-                          ))}
-                        </View>
-                      </Animated.View>
-                    )}
-
-                    {/* Full Details Link */}
-                    <Animated.View entering={FadeInUp.delay(700).duration(400)}>
-                      <Pressable
-                        style={styles.detailsButton}
-                        onPress={handlePlay}
-                      >
-                        <Ionicons name="information-circle-outline" size={20} color="white" />
-                        <Text style={styles.detailsButtonText}>Details & More</Text>
-                        <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.5)" />
-                      </Pressable>
-                    </Animated.View>
-                  </>
+                    {runtime ? <Text style={styles.metaText}>{runtime}</Text> : null}
+                    <View style={styles.hdBadge}>
+                      <Text style={styles.hdText}>HD</Text>
+                    </View>
+                  </View>
                 )}
+
+                {/* Genres */}
+                {loading ? (
+                  <Animated.View style={[styles.genresPlaceholder, pulseStyle]} />
+                ) : (
+                  genres.length > 0 && (
+                    <Text style={styles.genresText}>
+                      {genres.join(' · ')}
+                    </Text>
+                  )
+                )}
+
+                {/* Action Buttons Row */}
+                <View style={styles.actionsRow}>
+                  <ActionButton
+                    icon={<Ionicons name="play" size={26} color="black" style={{ marginLeft: 2 }} />}
+                    label="Play"
+                    onPress={handlePlay}
+                    isPrimary
+                  />
+                  <ActionButton
+                    icon={<Ionicons name="add" size={26} color="white" />}
+                    activeIcon={<Ionicons name="checkmark" size={26} color="#46d369" />}
+                    label="My List"
+                    onPress={handleToggleMyList}
+                    isActive={isInMyList}
+                  />
+                  <ActionButton
+                    icon={<Feather name="download" size={22} color="white" />}
+                    label="Download"
+                    onPress={handleDownload}
+                  />
+                  <ActionButton
+                    icon={<Ionicons name="paper-plane-outline" size={22} color="white" />}
+                    label="Share"
+                    onPress={handleShare}
+                  />
+                </View>
+
+                {/* Synopsis */}
+                {loading ? (
+                  <Animated.View style={[styles.synopsisPlaceholder, pulseStyle]}>
+                    <View style={styles.placeholderLine} />
+                    <View style={styles.placeholderLine} />
+                    <View style={[styles.placeholderLine, { width: '60%' }]} />
+                  </Animated.View>
+                ) : (
+                  <Text
+                    style={styles.synopsis}
+                    numberOfLines={4}
+                  >
+                    {details?.overview || 'No description available.'}
+                  </Text>
+                )}
+
+                {/* Similar Titles */}
+                {loading ? (
+                  <Animated.View style={[{ marginBottom: 20 }, pulseStyle]}>
+                    <View style={styles.placeholderSectionTitle} />
+                    <View style={styles.similarGrid}>
+                      <View style={[styles.placeholderCard, { width: (width - 64) / 3, height: ((width - 64) / 3) * 1.5 }]} />
+                      <View style={[styles.placeholderCard, { width: (width - 64) / 3, height: ((width - 64) / 3) * 1.5 }]} />
+                      <View style={[styles.placeholderCard, { width: (width - 64) / 3, height: ((width - 64) / 3) * 1.5 }]} />
+                    </View>
+                  </Animated.View>
+                ) : (
+                  similar.length > 0 && (
+                    <View>
+                      <Text style={styles.sectionTitle}>More Like This</Text>
+                      <View style={styles.similarGrid}>
+                        {similar.map((sim) => (
+                          <SimilarCard
+                            key={sim.id}
+                            item={sim}
+                            onPress={() => {
+                              handleClose();
+                              setTimeout(() => {
+                                router.push({
+                                  pathname: '/movie/[id]',
+                                  params: {
+                                    id: sim.id.toString(),
+                                    type: sim.media_type || item.type || 'movie',
+                                  },
+                                });
+                              }, 300);
+                            }}
+                          />
+                        ))}
+                      </View>
+                    </View>
+                  )
+                )}
+
+                {/* Full Details Link */}
+                <View>
+                  <Pressable
+                    style={styles.detailsButton}
+                    onPress={handlePlay}
+                  >
+                    <Ionicons name="information-circle-outline" size={20} color="white" />
+                    <Text style={styles.detailsButtonText}>Details & More</Text>
+                    <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.5)" />
+                  </Pressable>
+                </View>
               </View>
             </ScrollView>
           </Animated.View>
@@ -703,5 +736,57 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     flex: 1,
+  },
+  metaRowPlaceholder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  placeholderMetadataMatch: {
+    width: 60,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  placeholderMetadataText: {
+    width: 40,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  placeholderMetadataBadge: {
+    width: 30,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  genresPlaceholder: {
+    width: '70%',
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginBottom: 16,
+  },
+  synopsisPlaceholder: {
+    gap: 8,
+    marginBottom: 24,
+  },
+  placeholderLine: {
+    width: '100%',
+    height: 14,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  placeholderSectionTitle: {
+    width: 120,
+    height: 18,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginBottom: 12,
+  },
+  placeholderCard: {
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
 });

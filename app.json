@@ -1,8 +1,9 @@
 {
   "expo": {
     "name": "netflix-clone",
-    "slug": "netflix-clone",
-    "version": "1.0.0",
+    "slug": "spotify",
+    "version": "1.0.11",
+    "versionCode": 9,
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "netflixclone",
@@ -49,9 +50,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "4fd2674b-2821-43b9-8ea2-3a87cb391426"
+        "projectId": "1c2077d8-45a6-4b87-b1ff-cb91ca6acf0e"
       }
     },
-    "owner": "derrogpt"
+    "owner": "waitas"
   }
 }

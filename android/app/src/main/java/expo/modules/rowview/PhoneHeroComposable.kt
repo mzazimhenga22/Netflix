@@ -26,6 +26,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -166,7 +169,7 @@ fun PhoneHeroComposable(
                 cameraDistance = if (spatialEnabled) 18f * density else 12f * density
             }
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF141414))
+            .background(Color.Transparent)
     ) {
         Crossfade(
             targetState = currentIndex,
@@ -200,8 +203,13 @@ fun PhoneHeroComposable(
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = {},
-                    onLongClick = { onLongPress(id) }
+                    onClick = {
+                        android.util.Log.d("PhoneHero", "Parent Box clicked for id: $id")
+                    },
+                    onLongClick = {
+                        android.util.Log.d("PhoneHero", "Parent Box long-clicked for id: $id")
+                        onLongPress(id)
+                    }
                 )
             ) {
                 // Poster Layer (Parallax)
@@ -213,8 +221,20 @@ fun PhoneHeroComposable(
                         .fillMaxSize()
                         .scale(1.28f)
                         .graphicsLayer {
+                            compositingStrategy = CompositingStrategy.Offscreen
                             translationX = imageOffsetX
                             translationY = imageOffsetY
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(Color.White, Color.Transparent),
+                                    startY = size.height * 0.72f,
+                                    endY = size.height
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
                         }
                 )
 
@@ -245,10 +265,10 @@ fun PhoneHeroComposable(
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
-                                    Color.Black.copy(alpha = 0.04f),
+                                    Color.Black.copy(alpha = 0.35f),
                                     Color.Transparent,
-                                    Color.Black.copy(alpha = 0.42f),
-                                    Color.Black.copy(alpha = 0.9f)
+                                    Color.Black.copy(alpha = 0.7f),
+                                    Color.Transparent
                                 ),
                                 startY = 0f,
                                 endY = Float.POSITIVE_INFINITY
@@ -283,8 +303,8 @@ fun PhoneHeroComposable(
                             Brush.verticalGradient(
                                 colors = listOf(
                                     Color.Transparent,
-                                    Color.Transparent,
-                                    Color.Black.copy(alpha = 0.22f)
+                                    Color.Black.copy(alpha = 0.25f),
+                                    Color.Transparent
                                 )
                             )
                         )
@@ -389,7 +409,10 @@ fun PhoneHeroComposable(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = { onPlayPress(id) },
+                            onClick = {
+                                android.util.Log.d("PhoneHero", "Play button clicked for id: $id")
+                                onPlayPress(id)
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(4.dp),
@@ -411,7 +434,10 @@ fun PhoneHeroComposable(
                         }
 
                         Button(
-                            onClick = { onListPress(id) },
+                            onClick = {
+                                android.util.Log.d("PhoneHero", "My List button clicked for id: $id")
+                                onListPress(id)
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A).copy(alpha = 0.9f)),
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(4.dp),

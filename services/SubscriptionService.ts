@@ -67,15 +67,24 @@ export const SubscriptionService = {
       if (cached) callback(JSON.parse(cached) as SubscriptionStatus);
     });
 
-    return onSnapshot(doc(db, 'users', uid, 'subscription', 'details'), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as SubscriptionStatus;
-        AsyncStorage.setItem(`sub_status_${uid}`, JSON.stringify(data));
-        callback(data);
-      } else {
-        callback({ status: 'none' });
+    return onSnapshot(doc(db, 'users', uid, 'subscription', 'details'), 
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as SubscriptionStatus;
+          AsyncStorage.setItem(`sub_status_${uid}`, JSON.stringify(data));
+          callback(data);
+        } else {
+          if (snap.metadata.fromCache) {
+            console.log('[SubscriptionService] Ignoring empty subscription snapshot from cache (offline)');
+            return;
+          }
+          callback({ status: 'none' });
+        }
+      },
+      (error) => {
+        console.warn('[SubscriptionService] Subscription listener failed:', error);
       }
-    });
+    );
   },
 
   activateSubscription: async (planId: string, planName: string) => {

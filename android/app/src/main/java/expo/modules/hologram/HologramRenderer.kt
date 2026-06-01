@@ -6,6 +6,7 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -134,7 +135,7 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
             // Subject/focus masking for holographic depth separation
             vec2 focusDelta = (vTC - uSubjectCenter) / uSubjectScale;
             float focusMask = 1.0 - smoothstep(0.45, 1.15, length(focusDelta));
-            float verticalBias = smoothstep(0.95, 0.15, vTC.y);
+            float verticalBias = smoothstep(0.15, 0.95, vTC.y);
             // Lowered luminance threshold so more of the video is visible in hologram
             float luminanceMask = smoothstep(0.04, 0.30, luma);
             float mask = clamp(max(luminanceMask, focusMask * 0.85) * verticalBias, 0.0, 1.0);
@@ -242,10 +243,165 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         }
     """.trimIndent()
 
+    // Pyramid projection shader — brightness-boosted with holographic rim glow
+    // for clean Pepper's Ghost reflection through a physical pyramid prism.
+    private val pyramidFS = """
+        precision mediump float;
+        varying vec2 vTC;
+        uniform sampler2D sTexture;
+        uniform float uTime;
+
+        void main() {
+            vec4 c = texture2D(sTexture, vTC);
+            float luma = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+
+            // Crush blacks, boost brightness for clean pyramid reflection
+            float mask = smoothstep(0.015, 0.10, luma);
+            vec3 boosted = c.rgb * 2.2 * mask;
+
+            // Edge detection for holographic cyan rim glow
+            vec2 ts = vec2(1.0 / 640.0, 1.0 / 360.0);
+            float lL = dot(texture2D(sTexture, vTC - vec2(ts.x, 0.0)).rgb, vec3(0.3, 0.59, 0.11));
+            float lR = dot(texture2D(sTexture, vTC + vec2(ts.x, 0.0)).rgb, vec3(0.3, 0.59, 0.11));
+            float lU = dot(texture2D(sTexture, vTC - vec2(0.0, ts.y)).rgb, vec3(0.3, 0.59, 0.11));
+            float lD = dot(texture2D(sTexture, vTC + vec2(0.0, ts.y)).rgb, vec3(0.3, 0.59, 0.11));
+            float edge = length(vec2(lR - lL, lD - lU));
+            float rim = smoothstep(0.03, 0.12, edge) * 0.8;
+            boosted += vec3(0.12, 0.82, 1.0) * rim;
+
+            // Subtle holographic shimmer animation
+            float shimmer = 0.96 + 0.04 * sin(uTime * 6.0 + vTC.x * 18.0 + vTC.y * 12.0);
+            boosted *= shimmer;
+
+            // Soft edge vignette per quad
+            vec2 ef = smoothstep(0.0, 0.06, vTC) * smoothstep(0.0, 0.06, 1.0 - vTC);
+            float edgeAlpha = ef.x * ef.y;
+
+            gl_FragColor = vec4(boosted, edgeAlpha * mask);
+        }
+    """.trimIndent()
+
+    // 0 = pyramid, 1 = air/ambient
+    @Volatile var hologramType = 1
+
+    private val ambilightVS = """
+        attribute vec4 aPosition;
+        attribute vec4 aTextureCoord;
+        varying vec2 vTC;
+        void main() {
+            gl_Position = aPosition;
+            vTC = aTextureCoord.xy;
+        }
+    """.trimIndent()
+
+    private val ambilightFS = """
+        precision mediump float;
+        varying vec2 vTC;
+        uniform sampler2D sTexture;
+        uniform float uAlpha;
+        
+        void main() {
+            vec4 col = vec4(0.0);
+            float total = 0.0;
+            for(float y = -2.0; y <= 2.0; y += 1.0) {
+                for(float x = -2.0; x <= 2.0; x += 1.0) {
+                    vec2 offset = vec2(x, y) * 0.025;
+                    float weight = 1.0 - (length(offset) / 0.04);
+                    if (weight > 0.0) {
+                        col += texture2D(sTexture, vTC + offset) * weight;
+                        total += weight;
+                    }
+                }
+            }
+            if (total > 0.0) {
+                col /= total;
+            }
+            
+            vec2 vc = vTC * 2.0 - 1.0;
+            float falloff = 1.0 - smoothstep(0.1, 0.95, length(vc));
+            
+            vec3 tinted = mix(col.rgb, vec3(0.05, 0.65, 0.95), 0.15);
+            gl_FragColor = vec4(tinted * 1.35, col.a * falloff * uAlpha * 0.45);
+        }
+    """.trimIndent()
+
+    private val beamVS = """
+        uniform mat4 uMVPMatrix;
+        attribute vec4 aPosition;
+        attribute float aProgress;
+        varying float vProgress;
+        void main() {
+            gl_Position = uMVPMatrix * aPosition;
+            vProgress = aProgress;
+        }
+    """.trimIndent()
+
+    private val beamFS = """
+        precision mediump float;
+        varying float vProgress;
+        uniform vec3 uColor;
+        uniform float uAlpha;
+        void main() {
+            float intensity = 1.0 - smoothstep(0.0, 1.0, vProgress);
+            intensity = pow(intensity, 1.6) * 0.5;
+            gl_FragColor = vec4(uColor, intensity * uAlpha);
+        }
+    """.trimIndent()
+
+    private val particleVS = """
+        uniform mat4 uMVPMatrix;
+        attribute vec4 aPosition;
+        attribute float aSize;
+        attribute float aAlpha;
+        varying float vAlpha;
+        void main() {
+            gl_Position = uMVPMatrix * vec4(aPosition.xyz, 1.0);
+            gl_PointSize = aSize * (1.5 / gl_Position.w);
+            vAlpha = aAlpha;
+        }
+    """.trimIndent()
+
+    private val particleFS = """
+        precision mediump float;
+        varying float vAlpha;
+        uniform vec3 uColor;
+        void main() {
+            vec2 coord = gl_PointCoord - vec2(0.5);
+            float dist = length(coord);
+            if (dist > 0.5) discard;
+            float intensity = smoothstep(0.5, 0.0, dist);
+            gl_FragColor = vec4(uColor, intensity * vAlpha * 0.7);
+        }
+    """.trimIndent()
+
+    private class Particle {
+        var x = 0f
+        var y = 0f
+        var z = 0f
+        var speed = 0f
+        var alpha = 0f
+        var size = 0f
+        
+        fun reset() {
+            x = (Math.random().toFloat() - 0.5f) * 1.2f
+            y = (Math.random().toFloat() - 0.5f) * 0.7f
+            z = -0.1f // start at screen plane
+            speed = 0.08f + Math.random().toFloat() * 0.15f
+            alpha = 0.2f + Math.random().toFloat() * 0.6f
+            size = 4f + Math.random().toFloat() * 8f
+        }
+    }
+
+    private val particles = Array(60) { Particle().apply { reset() } }
+
     private var copyProg = 0
     private var videoProg = 0
     private var inpaintProg = 0
     private var drawProg = 0
+    private var pyramidProg = 0
+    private var ambilightProg = 0
+    private var beamProg = 0
+    private var particleProg = 0
 
     private val stMatrix = FloatArray(16)
     private val modelMatrix = FloatArray(16)
@@ -264,12 +420,17 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     private lateinit var gridTexBuf: FloatBuffer
     private lateinit var gridIdxBuf: ShortBuffer
 
+    // Pyramid projection quad buffers (4 quads: top, bottom, left, right)
+    private lateinit var pyramidQuads: Array<FloatBuffer>
+    private lateinit var pyramidTexCoords: Array<FloatBuffer>
+
     init {
         val quadVerts = floatArrayOf(-1f, 1f, 0f, -1f, -1f, 0f, 1f, -1f, 0f, 1f, 1f, 0f)
         val quadTex = floatArrayOf(0f, 1f, 0f, 0f, 1f, 0f, 1f, 1f)
         quadVertBuf = floatBufferOf(quadVerts)
         quadTexBuf = floatBufferOf(quadTex)
         buildGridMesh()
+        buildPyramidQuads()
     }
 
     private fun buildGridMesh() {
@@ -317,6 +478,51 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         gridIdxBuf = shortBufferOf(indices)
     }
 
+    /**
+     * Build 4 quads for Pepper's Ghost pyramid projection.
+     * Layout: cross/diamond pattern with center left empty for the pyramid.
+     *
+     *         ┌──────┐
+     *         │  T   │  (video 180°)
+     *    ┌────┤      ├────┐
+     *    │ L  │      │  R │  (video ±90°)
+     *    └────┤      ├────┘
+     *         │  B   │  (video normal)
+     *         └──────┘
+     */
+    private fun buildPyramidQuads() {
+        val s = 0.32f   // half-width of each video copy
+        val g = 0.04f   // gap from center (pyramid sits here)
+        val e = 0.97f   // outer edge
+
+        // TRIANGLE_FAN: TL, BL, BR, TR (4 verts × 3 coords per quad)
+        val quads = arrayOf(
+            // Top
+            floatArrayOf(-s, e, 0f,  -s, g, 0f,  s, g, 0f,  s, e, 0f),
+            // Bottom
+            floatArrayOf(-s, -g, 0f,  -s, -e, 0f,  s, -e, 0f,  s, -g, 0f),
+            // Left
+            floatArrayOf(-e, s, 0f,  -e, -s, 0f,  -g, -s, 0f,  -g, s, 0f),
+            // Right
+            floatArrayOf(g, s, 0f,  g, -s, 0f,  e, -s, 0f,  e, s, 0f)
+        )
+
+        // Texture coordinates — each video oriented with bottom facing center
+        val texCoords = arrayOf(
+            // Top: 180° (upside down — pyramid face reflects it upright)
+            floatArrayOf(1f, 0f,  1f, 1f,  0f, 1f,  0f, 0f),
+            // Bottom: normal
+            floatArrayOf(0f, 1f,  0f, 0f,  1f, 0f,  1f, 1f),
+            // Left: 90° CCW
+            floatArrayOf(1f, 1f,  0f, 1f,  0f, 0f,  1f, 0f),
+            // Right: 90° CW
+            floatArrayOf(0f, 0f,  1f, 0f,  1f, 1f,  0f, 1f)
+        )
+
+        pyramidQuads = quads.map { floatBufferOf(it) }.toTypedArray()
+        pyramidTexCoords = texCoords.map { floatBufferOf(it) }.toTypedArray()
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glEnable(GLES20.GL_BLEND)
@@ -327,6 +533,10 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         videoProg = createProgram(videoVS, videoFS)
         inpaintProg = createProgram(inpaintVS, inpaintFS)
         drawProg = createProgram(drawVS, drawFS)
+        pyramidProg = createProgram(drawVS, pyramidFS)
+        ambilightProg = createProgram(ambilightVS, ambilightFS)
+        beamProg = createProgram(beamVS, beamFS)
+        particleProg = createProgram(particleVS, particleFS)
 
         val tex = IntArray(1)
         GLES20.glGenTextures(1, tex, 0)
@@ -390,27 +600,49 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         }
 
         val t = (System.nanoTime() - t0) / 1e9f
-        val ratio = screenWidth.toFloat() / screenHeight.toFloat()
-        val camX = eyeOffsetX * 1.35f
-        val camY = eyeOffsetY * 1.35f
-        val camZ = 2.0f + eyeDistance * 1.5f
 
-        val near = 0.5f
-        val far  = 20f
-        val left   = (-ratio - camX) * near / camZ
-        val right  = ( ratio - camX) * near / camZ
-        val bottom = (-1f    - camY) * near / camZ
-        val top    = ( 1f    - camY) * near / camZ
-        Matrix.frustumM(projectionMatrix, 0, left, right, bottom, top, near, far)
-        Matrix.setIdentityM(viewMatrix, 0)
-        Matrix.translateM(viewMatrix, 0, -camX, -camY, -camZ)
-
-        // STANDARD HOLOGRAM ARCHITECTURE: black background + additive glow slices
+        // Always clear to pure black — essential for both hologram modes
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, screenWidth, screenHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawVolumetricVideo(t)
+
+        if (hologramType == 0 && tableModeBlend > 0.5f) {
+            // ═══ PYRAMID MODE ═══
+            // Phone is flat on table — render 4-way Pepper's Ghost layout.
+            // Place a pyramid prism on the screen to see the hologram float!
+            drawPyramidProjection(t)
+        } else {
+            // ═══ AMBIENT CINEMA OR HAND-HELD MODE ═══
+            // Draw Ambilight glow on table in Ambient Mode when flat
+            if (hologramType == 1 && tableModeBlend > 0.01f) {
+                drawAmbilight(t)
+            }
+
+            val ratio = screenWidth.toFloat() / screenHeight.toFloat()
+            val camX = eyeOffsetX * 1.35f
+            val camY = eyeOffsetY * 1.35f
+            val baseCamZ = if (hologramType == 1 && tableModeBlend > 0.5f) 1.25f else 1.6f
+            val camZ = baseCamZ + eyeDistance * 0.7f  // Closer camera = bigger hologram
+
+            val near = 0.5f
+            val far  = 20f
+            val left   = (-ratio - camX) * near / camZ
+            val right  = ( ratio - camX) * near / camZ
+            val bottom = (-1f    - camY) * near / camZ
+            val top    = ( 1f    - camY) * near / camZ
+            Matrix.frustumM(projectionMatrix, 0, left, right, bottom, top, near, far)
+            Matrix.setIdentityM(viewMatrix, 0)
+            Matrix.translateM(viewMatrix, 0, -camX, -camY, -camZ)
+
+            // Draw volumetric projector beam and floating particles when flat
+            if (hologramType == 1 && tableModeBlend > 0.01f) {
+                updateAndDrawBeam(t)
+                updateAndDrawParticles(t)
+            }
+
+            drawVolumetricVideo(t)
+        }
     }
 
     private fun runInpaintingPass() {
@@ -459,6 +691,10 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     }
 
     private fun renderOesToFbo(fboId: Int, width: Int, height: Int) {
+        // Disable blend for the copy pass — we need the raw video pixels
+        // written at full opacity. Some codecs output alpha < 1.0 which
+        // would be dimmed by the additive blend func.
+        GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboId)
         GLES20.glViewport(0, 0, width, height)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -478,6 +714,9 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
         GLES20.glDisableVertexAttribArray(posH)
         GLES20.glDisableVertexAttribArray(texH)
+        // Re-enable additive blend for the hologram slice rendering
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
     }
 
     private fun extractFrameBitmap() {
@@ -554,19 +793,246 @@ class HologramRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
         GLES20.glDisableVertexAttribArray(texH)
     }
 
+    /**
+     * Pepper's Ghost pyramid projection — renders the video 4 times in a cross
+     * pattern (top/bottom/left/right), each copy rotated so the pyramid's 45°
+     * faces reflect it upright. The viewer sees a floating hologram inside the
+     * pyramid from any angle.
+     *
+     * Requirements for best results:
+     * - Dark room (ambient light washes out the reflection)
+     * - Phone brightness at maximum
+     * - Clear/transparent pyramid prism centered on screen
+     */
+    private fun drawPyramidProjection(t: Float) {
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+
+        GLES20.glUseProgram(pyramidProg)
+
+        val posH = GLES20.glGetAttribLocation(pyramidProg, "aPosition")
+        val texH = GLES20.glGetAttribLocation(pyramidProg, "aTextureCoord")
+        val timeH = GLES20.glGetUniformLocation(pyramidProg, "uTime")
+
+        GLES20.glUniform1f(timeH, t)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, videoFboTex[0])
+
+        for (i in 0..3) {
+            pyramidQuads[i].position(0)
+            pyramidTexCoords[i].position(0)
+
+            GLES20.glEnableVertexAttribArray(posH)
+            GLES20.glVertexAttribPointer(posH, 3, GLES20.GL_FLOAT, false, 12, pyramidQuads[i])
+            GLES20.glEnableVertexAttribArray(texH)
+            GLES20.glVertexAttribPointer(texH, 2, GLES20.GL_FLOAT, false, 8, pyramidTexCoords[i])
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+        }
+
+        GLES20.glDisableVertexAttribArray(posH)
+        GLES20.glDisableVertexAttribArray(texH)
+    }
+
+    private fun drawAmbilight(t: Float) {
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(ambilightProg)
+        
+        val posH = GLES20.glGetAttribLocation(ambilightProg, "aPosition")
+        val texH = GLES20.glGetAttribLocation(ambilightProg, "aTextureCoord")
+        val alphaH = GLES20.glGetUniformLocation(ambilightProg, "uAlpha")
+        
+        quadVertBuf.position(0)
+        quadTexBuf.position(0)
+        
+        GLES20.glEnableVertexAttribArray(posH)
+        GLES20.glVertexAttribPointer(posH, 3, GLES20.GL_FLOAT, false, 12, quadVertBuf)
+        GLES20.glEnableVertexAttribArray(texH)
+        GLES20.glVertexAttribPointer(texH, 2, GLES20.GL_FLOAT, false, 8, quadTexBuf)
+        
+        GLES20.glUniform1f(alphaH, tableModeBlend)
+        
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, videoFboTex[0])
+        
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+        
+        GLES20.glDisableVertexAttribArray(posH)
+        GLES20.glDisableVertexAttribArray(texH)
+    }
+
+    private fun updateAndDrawBeam(t: Float) {
+        val lift = tableModeBlend * 0.02f
+        val baseW = 0.12f
+        val baseH = 0.08f
+        val baseZ = -0.1f
+        
+        val topW = 0.65f
+        val topH = 0.45f
+        val topZ = 0.55f
+        
+        val bTL = floatArrayOf(-baseW, baseH + lift * 0.2f, baseZ)
+        val bTR = floatArrayOf(baseW, baseH + lift * 0.2f, baseZ)
+        val bBL = floatArrayOf(-baseW, -baseH + lift * 0.2f, baseZ)
+        val bBR = floatArrayOf(baseW, -baseH + lift * 0.2f, baseZ)
+        
+        val swayX = sin(t * 0.22f) * 0.02f
+        val swayY = lift + cos(t * 0.18f) * 0.015f
+        val tTL = floatArrayOf(-topW + swayX, topH + swayY, topZ)
+        val tTR = floatArrayOf(topW + swayX, topH + swayY, topZ)
+        val tBL = floatArrayOf(-topW + swayX, -topH + swayY, topZ)
+        val tBR = floatArrayOf(topW + swayX, -topH + swayY, topZ)
+        
+        val beamData = floatArrayOf(
+            // Bottom Panel
+            bBL[0], bBL[1], bBL[2], 0f,
+            bBR[0], bBR[1], bBR[2], 0f,
+            tBL[0], tBL[1], tBL[2], 1f,
+            tBR[0], tBR[1], tBR[2], 1f,
+            
+            // Top Panel
+            bTL[0], bTL[1], bTL[2], 0f,
+            bTR[0], bTR[1], bTR[2], 0f,
+            tTL[0], tTL[1], tTL[2], 1f,
+            tTR[0], tTR[1], tTR[2], 1f,
+            
+            // Left Panel
+            bBL[0], bBL[1], bBL[2], 0f,
+            bTL[0], bTL[1], bTL[2], 0f,
+            tBL[0], tBL[1], tBL[2], 1f,
+            tTL[0], tTL[1], tTL[2], 1f,
+            
+            // Right Panel
+            bBR[0], bBR[1], bBR[2], 0f,
+            bTR[0], bTR[1], bTR[2], 0f,
+            tBR[0], tBR[1], tBR[2], 1f,
+            tTR[0], tTR[1], tTR[2], 1f
+        )
+        
+        val buf = floatBufferOf(beamData)
+        
+        GLES20.glUseProgram(beamProg)
+        val posH = GLES20.glGetAttribLocation(beamProg, "aPosition")
+        val progressH = GLES20.glGetAttribLocation(beamProg, "aProgress")
+        val mvpH = GLES20.glGetUniformLocation(beamProg, "uMVPMatrix")
+        val colorH = GLES20.glGetUniformLocation(beamProg, "uColor")
+        val alphaH = GLES20.glGetUniformLocation(beamProg, "uAlpha")
+        
+        GLES20.glEnableVertexAttribArray(posH)
+        buf.position(0)
+        GLES20.glVertexAttribPointer(posH, 3, GLES20.GL_FLOAT, false, 16, buf)
+        
+        GLES20.glEnableVertexAttribArray(progressH)
+        buf.position(3)
+        GLES20.glVertexAttribPointer(progressH, 1, GLES20.GL_FLOAT, false, 16, buf)
+        
+        Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
+        GLES20.glUniformMatrix4fv(mvpH, 1, false, mvpMatrix, 0)
+        GLES20.glUniform3f(colorH, 0.05f, 0.70f, 0.95f)
+        GLES20.glUniform1f(alphaH, tableModeBlend * 0.22f)
+        
+        for (p in 0..3) {
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, p * 4, 4)
+        }
+        
+        GLES20.glDisableVertexAttribArray(posH)
+        GLES20.glDisableVertexAttribArray(progressH)
+    }
+
+    private fun updateAndDrawParticles(t: Float) {
+        val vertData = FloatArray(particles.size * 5)
+        var idx = 0
+        val lift = tableModeBlend * 0.02f
+        
+        for (p in particles) {
+            p.z += p.speed * 0.02f
+            p.x += sin(t * 1.5f + p.y * 10f) * 0.002f
+            p.y += cos(t * 1.2f + p.x * 10f) * 0.002f
+            
+            if (p.z > 1.2f) {
+                p.reset()
+            }
+            
+            vertData[idx++] = p.x
+            vertData[idx++] = p.y + lift
+            vertData[idx++] = p.z
+            vertData[idx++] = p.size
+            
+            val ageFade = if (p.z < 0.1f) {
+                smoothstep(-0.1f, 0.1f, p.z)
+            } else {
+                smoothstep(1.2f, 0.8f, p.z)
+            }
+            vertData[idx++] = p.alpha * ageFade * tableModeBlend
+        }
+        
+        val buf = floatBufferOf(vertData)
+        
+        GLES20.glUseProgram(particleProg)
+        val posH = GLES20.glGetAttribLocation(particleProg, "aPosition")
+        val sizeH = GLES20.glGetAttribLocation(particleProg, "aSize")
+        val alphaH = GLES20.glGetAttribLocation(particleProg, "aAlpha")
+        val mvpH = GLES20.glGetUniformLocation(particleProg, "uMVPMatrix")
+        val colorH = GLES20.glGetUniformLocation(particleProg, "uColor")
+        
+        GLES20.glEnableVertexAttribArray(posH)
+        buf.position(0)
+        GLES20.glVertexAttribPointer(posH, 3, GLES20.GL_FLOAT, false, 20, buf)
+        
+        GLES20.glEnableVertexAttribArray(sizeH)
+        buf.position(3)
+        GLES20.glVertexAttribPointer(sizeH, 1, GLES20.GL_FLOAT, false, 20, buf)
+        
+        GLES20.glEnableVertexAttribArray(alphaH)
+        buf.position(4)
+        GLES20.glVertexAttribPointer(alphaH, 1, GLES20.GL_FLOAT, false, 20, buf)
+        
+        Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
+        GLES20.glUniformMatrix4fv(mvpH, 1, false, mvpMatrix, 0)
+        GLES20.glUniform3f(colorH, 0.05f, 0.85f, 1.0f)
+        
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, particles.size)
+        
+        GLES20.glDisableVertexAttribArray(posH)
+        GLES20.glDisableVertexAttribArray(sizeH)
+        GLES20.glDisableVertexAttribArray(alphaH)
+    }
+    
+    private fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
+        val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
     private fun createProgram(vs: String, fs: String): Int {
         val vertexShader = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER).also {
             GLES20.glShaderSource(it, vs)
             GLES20.glCompileShader(it)
+            val compiled = IntArray(1)
+            GLES20.glGetShaderiv(it, GLES20.GL_COMPILE_STATUS, compiled, 0)
+            if (compiled[0] == 0) {
+                Log.e("HologramRenderer", "VS compilation failed: " + GLES20.glGetShaderInfoLog(it))
+            }
         }
         val fragmentShader = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER).also {
             GLES20.glShaderSource(it, fs)
             GLES20.glCompileShader(it)
+            val compiled = IntArray(1)
+            GLES20.glGetShaderiv(it, GLES20.GL_COMPILE_STATUS, compiled, 0)
+            if (compiled[0] == 0) {
+                Log.e("HologramRenderer", "FS compilation failed: " + GLES20.glGetShaderInfoLog(it))
+            }
         }
         return GLES20.glCreateProgram().also {
             GLES20.glAttachShader(it, vertexShader)
             GLES20.glAttachShader(it, fragmentShader)
             GLES20.glLinkProgram(it)
+            val linked = IntArray(1)
+            GLES20.glGetProgramiv(it, GLES20.GL_LINK_STATUS, linked, 0)
+            if (linked[0] == 0) {
+                Log.e("HologramRenderer", "Program link failed: " + GLES20.glGetProgramInfoLog(it))
+            }
         }
     }
 
