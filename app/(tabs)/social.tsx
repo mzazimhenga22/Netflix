@@ -111,10 +111,24 @@ function ScheduledPartyCard({ item, currentUid, onJoin }: { item: WatchParty; cu
     <View style={styles.premiumScheduledCardContainer}>
       <LiquidGlassPill borderRadius={18} style={styles.scheduledPartyCardPremium}>
         <LinearGradient
-          colors={['rgba(139, 92, 246, 0.18)', 'rgba(236, 72, 153, 0.06)', 'transparent']}
-          locations={[0, 0.5, 1]}
+          colors={['rgba(139, 92, 246, 0.22)', 'rgba(236, 72, 153, 0.08)', 'transparent']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
+        <LinearGradient
+          colors={['rgba(255, 255, 255, 0.16)', 'transparent']}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 0.22 }}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+        <View style={{
+          ...StyleSheet.absoluteFillObject,
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.06)',
+          borderRadius: 18,
+        }} pointerEvents="none" />
         <View style={styles.partyCardHeader}>
           <View style={styles.partyHost}>
             <ExpoImage source={AVATAR_MAP[item.hostAvatar] || AVATAR_MAP.avatar1} style={styles.partyHostAvatar} />
@@ -175,7 +189,7 @@ function SocialHeroCard({
   onShareCode: () => void;
 }) {
   const router = useRouter();
-  const cardHeight = 440;
+  const cardHeight = 360;
 
   const themeColors = useMemo(() => {
     switch (featured.type) {
@@ -404,6 +418,8 @@ function SocialHeroCard({
             </Pressable>
           </LiquidGlassCircle>
         </View>
+        {/* Bottom spacer to prevent friends row from overlapping action buttons */}
+        <View style={{ height: 36 }} />
       </View>
     </View>
   );
@@ -550,11 +566,24 @@ function BingeListRow({ list, onPress }: { list: CollaborativeWatchlist; onPress
       <Animated.View style={animatedStyle}>
         <LiquidGlassPill borderRadius={16} style={styles.watchlistRowPremium}>
           <LinearGradient
-            colors={['rgba(59, 130, 246, 0.12)', 'rgba(16, 185, 129, 0.05)', 'transparent']}
+            colors={['rgba(59, 130, 246, 0.16)', 'rgba(16, 185, 129, 0.08)', 'transparent']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
+          <LinearGradient
+            colors={['rgba(255, 255, 255, 0.14)', 'transparent']}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 0.22 }}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <View style={{
+            ...StyleSheet.absoluteFillObject,
+            borderWidth: 1,
+            borderColor: 'rgba(255,255,255,0.06)',
+            borderRadius: 16,
+          }} pointerEvents="none" />
           <View style={styles.watchlistRowHeader}>
             <View style={{ flex: 1, marginRight: 12 }}>
               <Text style={styles.watchlistRowTitle} numberOfLines={1}>{list.name}</Text>
@@ -623,6 +652,66 @@ export default function SocialScreen() {
   const scrollY = useSharedValue(0);
   const scrollHandler = useAnimatedScrollHandler((event) => {
     scrollY.value = event.contentOffset.y;
+  });
+
+  // continuous timer for lava lamp aura
+  const auraTime = useSharedValue(0);
+  useEffect(() => {
+    auraTime.value = withRepeat(
+      withTiming(1, { duration: 15000, easing: Easing.linear }),
+      -1,
+      true
+    );
+  }, [auraTime]);
+
+  // Shared values for drifting blobs
+  const blob1X = useSharedValue(0);
+  const blob1Y = useSharedValue(0);
+  const blob2X = useSharedValue(0);
+  const blob2Y = useSharedValue(0);
+  const blob3X = useSharedValue(0);
+  const blob3Y = useSharedValue(0);
+
+  useEffect(() => {
+    blob1X.value = withRepeat(withTiming(1, { duration: 18000, easing: Easing.inOut(Easing.ease) }), -1, true);
+    blob1Y.value = withRepeat(withTiming(1, { duration: 22000, easing: Easing.inOut(Easing.ease) }), -1, true);
+    blob2X.value = withRepeat(withTiming(1, { duration: 25000, easing: Easing.inOut(Easing.ease) }), -1, true);
+    blob2Y.value = withRepeat(withTiming(1, { duration: 19000, easing: Easing.inOut(Easing.ease) }), -1, true);
+    blob3X.value = withRepeat(withTiming(1, { duration: 21000, easing: Easing.inOut(Easing.ease) }), -1, true);
+    blob3Y.value = withRepeat(withTiming(1, { duration: 26000, easing: Easing.inOut(Easing.ease) }), -1, true);
+  }, []);
+
+  const blob1Style = useAnimatedStyle(() => {
+    const tx = interpolate(blob1X.value, [0, 1], [-width * 0.2, width * 0.3]);
+    const ty = interpolate(blob1Y.value, [0, 1], [-50, 200]);
+    const scale = interpolate(blob1X.value, [0, 1], [0.9, 1.25]);
+    const color = interpolateColor(auraTime.value, [0, 1], ['#4a0e17', '#2e050a']); // Deep burgundy to dark crimson
+    return {
+      transform: [{ translateX: tx }, { translateY: ty }, { scale }],
+      backgroundColor: color,
+    };
+  });
+
+  const blob2Style = useAnimatedStyle(() => {
+    const tx = interpolate(blob2X.value, [0, 1], [-width * 0.35, width * 0.2]);
+    const ty = interpolate(blob2Y.value, [0, 1], [150, 450]);
+    const scale = interpolate(blob2Y.value, [0, 1], [0.95, 1.2]);
+    const color = interpolateColor(auraTime.value, [0, 1], ['#1b052b', '#12032e']); // Deep purple to indigo
+    return {
+      transform: [{ translateX: tx }, { translateY: ty }, { scale }],
+      backgroundColor: color,
+    };
+  });
+
+  const blob3Style = useAnimatedStyle(() => {
+    const tx = interpolate(blob3X.value, [0, 1], [-width * 0.1, width * 0.25]);
+    const ty = interpolate(blob3Y.value, [0, 1], [300, 600]);
+    const scale = interpolate(blob3X.value, [0, 1], [0.85, 1.15]);
+    const color = interpolateColor(auraTime.value, [0, 1], ['#0e4a3b', '#032e23']); // Deep teal to forest green
+    return {
+      transform: [{ translateX: tx }, { translateY: ty }, { scale }],
+      backgroundColor: color,
+    };
   });
 
   // Color theme gradients based on featured item
@@ -1224,9 +1313,24 @@ export default function SocialScreen() {
       <View style={styles.partyCardPremiumContainer}>
         <LiquidGlassPill borderRadius={18} style={styles.partyCardPremium}>
           <LinearGradient
-            colors={['rgba(229, 9, 20, 0.12)', 'transparent']}
+            colors={['rgba(229, 9, 20, 0.16)', 'rgba(244, 63, 94, 0.06)', 'transparent']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
+          <LinearGradient
+            colors={['rgba(255, 255, 255, 0.16)', 'transparent']}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 0.22 }}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <View style={{
+            ...StyleSheet.absoluteFillObject,
+            borderWidth: 1,
+            borderColor: 'rgba(255,255,255,0.06)',
+            borderRadius: 18,
+          }} pointerEvents="none" />
           <View style={styles.partyCardHeader}>
             <View style={styles.partyHost}>
               <ExpoImage source={AVATAR_MAP[item.hostAvatar] || AVATAR_MAP.avatar1} style={styles.partyHostAvatar} />
@@ -1287,6 +1391,11 @@ export default function SocialScreen() {
 
   return (
     <Animated.View style={[styles.container, animatedAmbientBackground]}>
+      {/* Floating Animated Gradient Blurs */}
+      <Animated.View style={[styles.blurBlob1, blob1Style]} pointerEvents="none" />
+      <Animated.View style={[styles.blurBlob2, blob2Style]} pointerEvents="none" />
+      <Animated.View style={[styles.blurBlob3, blob3Style]} pointerEvents="none" />
+
       {/* Immersive ambient blurred aura bleed behind scrolling feed */}
       {featuredBackdrop && (
         <Animated.View style={[StyleSheet.absoluteFill, auraOpacityStyle, { zIndex: -1 }]}>
@@ -1371,7 +1480,7 @@ export default function SocialScreen() {
       <Animated.ScrollView
         onScroll={scrollHandler}
         scrollEventThrottle={16}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: Math.max(insets.top, 16) + 70 }]}
       >
         {/* Cinematic Parallax Social Hero Card */}
         <Animated.View style={heroParallaxStyle}>
@@ -1385,40 +1494,56 @@ export default function SocialScreen() {
           />
         </Animated.View>
 
-        {/* Content Wrapper */}
-        <View style={styles.sectionsWrapper}>
-          {/* Friends presence row */}
-          <View style={styles.sectionContainer}>
-            <View style={styles.sectionTitleRow}>
+        {/* Friends presence row (Active Cast overlay styling like Messaging) */}
+        {friends.length > 0 && (
+          <View style={styles.friendsPresenceOverlaySection}>
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.85)', '#000']}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            <View style={[styles.sectionTitleRow, { paddingHorizontal: SPACING.md, marginBottom: 8 }]}>
               <LinearGradient
                 colors={['#E50914', '#EC4899']}
                 style={styles.sectionAccentBar}
               />
               <Text style={styles.sectionTitle}>Friends</Text>
             </View>
-            {friends.length > 0 ? (
-              <FlatList
-                data={friends}
-                renderItem={({ item }) => (
-                  <FriendPresenceBubble
-                    item={item}
-                    onPress={() => handleFriendPress(item)}
-                    onWatchPress={() => {
-                      if (item.watchingTmdbId) {
-                        router.push({
-                          pathname: '/movie/[id]',
-                          params: { id: item.watchingTmdbId, type: 'movie' }
-                        });
-                      }
-                    }}
-                  />
-                )}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyExtractor={(item) => item.uid}
-                contentContainerStyle={styles.friendsList}
-              />
-            ) : (
+            <FlatList
+              data={friends}
+              renderItem={({ item }) => (
+                <FriendPresenceBubble
+                  item={item}
+                  onPress={() => handleFriendPress(item)}
+                  onWatchPress={() => {
+                    if (item.watchingTmdbId) {
+                      router.push({
+                        pathname: '/movie/[id]',
+                        params: { id: item.watchingTmdbId, type: 'movie' }
+                      });
+                    }
+                  }}
+                />
+              )}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(item) => item.uid}
+              contentContainerStyle={styles.friendsList}
+            />
+          </View>
+        )}
+
+        {/* Content Wrapper */}
+        <View style={styles.sectionsWrapper}>
+          {friends.length === 0 && (
+            <View style={styles.sectionContainer}>
+              <View style={styles.sectionTitleRow}>
+                <LinearGradient
+                  colors={['#E50914', '#EC4899']}
+                  style={styles.sectionAccentBar}
+                />
+                <Text style={styles.sectionTitle}>Friends</Text>
+              </View>
               <Animated.View entering={FadeInDown.duration(500).delay(100)}>
                 <View style={styles.emptyStateCard}>
                   <LinearGradient
@@ -1449,8 +1574,8 @@ export default function SocialScreen() {
                   </Pressable>
                 </View>
               </Animated.View>
-            )}
-          </View>
+            </View>
+          )}
 
           {/* Live Friend Buzz & Reaction Feed Row */}
           <View style={styles.sectionContainer}>
@@ -1478,9 +1603,24 @@ export default function SocialScreen() {
                   >
                     <LiquidGlassPill borderRadius={16} style={styles.buzzCardPremium}>
                       <LinearGradient
-                        colors={['rgba(255, 255, 255, 0.05)', 'transparent']}
+                        colors={[`${accentColor}1A`, `${accentColor}05`, 'transparent']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
                         style={StyleSheet.absoluteFill}
                       />
+                      <LinearGradient
+                        colors={['rgba(255, 255, 255, 0.12)', 'transparent']}
+                        start={{ x: 0.5, y: 0 }}
+                        end={{ x: 0.5, y: 0.22 }}
+                        style={StyleSheet.absoluteFill}
+                        pointerEvents="none"
+                      />
+                      <View style={{
+                        ...StyleSheet.absoluteFillObject,
+                        borderWidth: 1,
+                        borderColor: 'rgba(255,255,255,0.06)',
+                        borderRadius: 16,
+                      }} pointerEvents="none" />
                       {/* Colored accent strip on left edge */}
                       <View style={[styles.buzzAccentStrip, { backgroundColor: accentColor }]} />
                       <View style={styles.buzzHeader}>
@@ -3408,8 +3548,12 @@ const styles = StyleSheet.create({
   // New visual overlay styles for cinematic aesthetic
   heroCardContainer: {
     position: 'relative',
-    width: '100%',
+    marginHorizontal: SPACING.md,
+    borderRadius: 16,
     overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: '#110d1a',
   },
   heroRefractionBorder: {
     ...StyleSheet.absoluteFillObject,
@@ -4121,5 +4265,42 @@ const styles = StyleSheet.create({
     marginTop: 4,
     textAlign: 'center',
     width: '100%',
+  },
+  blurBlob1: {
+    position: 'absolute',
+    top: 50,
+    right: -50,
+    width: 250,
+    height: 250,
+    borderRadius: 125,
+    backgroundColor: 'rgba(139, 92, 246, 0.14)',
+    opacity: 0.8,
+  },
+  blurBlob2: {
+    position: 'absolute',
+    bottom: 200,
+    left: -80,
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    backgroundColor: 'rgba(229, 9, 20, 0.08)',
+    opacity: 0.6,
+  },
+  blurBlob3: {
+    position: 'absolute',
+    top: 350,
+    right: -100,
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: 'rgba(16, 185, 129, 0.06)',
+    opacity: 0.5,
+  },
+  friendsPresenceOverlaySection: {
+    marginTop: -54, // Pull up to overlay the bottom of the hero poster card
+    paddingTop: 16,
+    paddingBottom: 4,
+    marginBottom: 20,
+    zIndex: 20,
   },
 });

@@ -34,6 +34,10 @@ export interface Message {
   senderAvatar: string;
   text: string;
   timestamp: number;
+  replyToId?: string;
+  replyToText?: string;
+  replyToSenderId?: string;
+  replyToSenderName?: string;
 }
 
 // Memory cache for mock messages during offline/local testing
@@ -320,7 +324,11 @@ export const MessagingService = {
             senderName: data.senderName,
             senderAvatar: data.senderAvatar,
             text: data.text,
-            timestamp: data.timestamp?.toMillis?.() || Date.now()
+            timestamp: data.timestamp?.toMillis?.() || Date.now(),
+            replyToId: data.replyToId,
+            replyToText: data.replyToText,
+            replyToSenderId: data.replyToSenderId,
+            replyToSenderName: data.replyToSenderName,
           } as Message;
         });
         callback(messages);
@@ -338,7 +346,7 @@ export const MessagingService = {
   /**
    * Sends a text message to a chat room
    */
-  async sendMessage(chatId: string, text: string, currentProfile: any): Promise<void> {
+  async sendMessage(chatId: string, text: string, currentProfile: any, replyData?: { replyToId: string; replyToText: string; replyToSenderId: string; replyToSenderName: string }): Promise<void> {
     const currentUid = auth.currentUser?.uid || 'guest';
     const isMock = currentUid === 'guest' || chatId.includes('friend_');
 
@@ -350,7 +358,8 @@ export const MessagingService = {
         senderName: currentProfile?.name || 'You',
         senderAvatar: currentProfile?.avatarId || 'avatar1',
         text: text.trim(),
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        ...replyData
       };
 
       if (!LOCAL_MOCK_MESSAGES[chatId]) {
@@ -390,7 +399,8 @@ export const MessagingService = {
         senderName: currentProfile?.name || 'You',
         senderAvatar: currentProfile?.avatarId || 'avatar1',
         text: text.trim(),
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        ...replyData
       });
 
       // Update chat details
@@ -406,7 +416,7 @@ export const MessagingService = {
     } catch (e) {
       console.error('[MessagingService] Failed to send message to Firestore:', e);
       // Failover to local mock appending to keep the UI interactive and working
-      await this.sendMessage(chatId + '_local_failover', text, currentProfile);
+      await this.sendMessage(chatId + '_local_failover', text, currentProfile, replyData);
     }
   }
 };

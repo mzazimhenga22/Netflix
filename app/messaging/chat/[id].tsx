@@ -26,7 +26,7 @@ import { COLORS, SPACING } from '../../../constants/theme';
 
 // ── MEMOIZED MESSAGE ROW ──
 // As per project memory, we memoize ChatRow to avoid rendering overhead on fast inputs
-const ChatRow = React.memo(({ item, currentUid, friendAvatar }: { item: Message; currentUid: string; friendAvatar: string }) => {
+const ChatRow = React.memo(({ item, currentUid, friendAvatar, onReply }: { item: Message; currentUid: string; friendAvatar: string; onReply: (message: Message) => void }) => {
   const isMe = item.senderId === currentUid;
   const router = useRouter();
 
@@ -140,6 +140,24 @@ const ChatRow = React.memo(({ item, currentUid, friendAvatar }: { item: Message;
     );
   };
 
+  const renderReplyQuote = () => {
+    if (!item.replyToText) return null;
+    const isReplyToMe = item.replyToSenderId === currentUid;
+    return (
+      <View style={[
+        styles.replyQuoteBubble,
+        isMe ? styles.replyQuoteBubbleMe : styles.replyQuoteBubbleFriend
+      ]}>
+        <Text style={[styles.replyQuoteSenderText, isMe ? styles.replyQuoteSenderMe : styles.replyQuoteSenderFriend]} numberOfLines={1}>
+          {isReplyToMe ? 'You' : (item.replyToSenderName || 'Friend')}
+        </Text>
+        <Text style={styles.replyQuoteText} numberOfLines={1}>
+          {item.replyToText}
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <View style={[styles.chatRow, isMe ? styles.chatRowRight : styles.chatRowLeft]}>
       {!isMe && (
@@ -148,34 +166,57 @@ const ChatRow = React.memo(({ item, currentUid, friendAvatar }: { item: Message;
           style={styles.chatRowAvatar}
         />
       )}
+
+      {isMe && (
+        <Pressable 
+          onPress={() => onReply(item)} 
+          style={styles.replyActionBtnRight}
+        >
+          <Ionicons name="arrow-undo-outline" size={16} color="rgba(255,255,255,0.35)" />
+        </Pressable>
+      )}
+
       <View style={styles.bubbleContainer}>
-        {isMe ? (
-          (movieShareData || partyShareData) ? (
-            renderBubbleContent()
-          ) : (
-            <LinearGradient
-              colors={['#8B5CF6', '#EC4899']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.meBubble}
-            >
-              {renderBubbleContent()}
-            </LinearGradient>
-          )
-        ) : (
-          (movieShareData || partyShareData) ? (
-            renderBubbleContent()
-          ) : (
-            <LiquidGlassPill borderRadius={16} style={styles.friendBubble}>
+        <Pressable onLongPress={() => onReply(item)}>
+          {isMe ? (
+            (movieShareData || partyShareData) ? (
+              renderBubbleContent()
+            ) : (
               <LinearGradient
-                colors={['rgba(255,255,255,0.03)', 'transparent']}
-                style={StyleSheet.absoluteFill}
-              />
-              {renderBubbleContent()}
-            </LiquidGlassPill>
-          )
-        )}
+                colors={['#8B5CF6', '#EC4899']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.meBubble}
+              >
+                {renderReplyQuote()}
+                {renderBubbleContent()}
+              </LinearGradient>
+            )
+          ) : (
+            (movieShareData || partyShareData) ? (
+              renderBubbleContent()
+            ) : (
+              <LiquidGlassPill borderRadius={16} style={styles.friendBubble}>
+                <LinearGradient
+                  colors={['rgba(255,255,255,0.03)', 'transparent']}
+                  style={StyleSheet.absoluteFill}
+                />
+                {renderReplyQuote()}
+                {renderBubbleContent()}
+              </LiquidGlassPill>
+            )
+          )}
+        </Pressable>
       </View>
+
+      {!isMe && (
+        <Pressable 
+          onPress={() => onReply(item)} 
+          style={styles.replyActionBtnLeft}
+        >
+          <Ionicons name="arrow-undo-outline" size={16} color="rgba(255,255,255,0.35)" />
+        </Pressable>
+      )}
     </View>
   );
 });
@@ -189,6 +230,7 @@ export default function ChatScreen() {
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [friend, setFriend] = useState<Friend | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
   
   const flatListRef = useRef<FlatList>(null);
   const currentUid = selectedProfile?.id || 'guest';
@@ -222,8 +264,17 @@ export default function ChatScreen() {
     
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+    const replyData = replyingToMessage ? {
+      replyToId: replyingToMessage.id,
+      replyToText: replyingToMessage.text,
+      replyToSenderId: replyingToMessage.senderId,
+      replyToSenderName: replyingToMessage.senderName,
+    } : undefined;
+
+    setReplyingToMessage(null);
+
     // Call service to write message to Firestore/mock
-    await MessagingService.sendMessage(chatId, textToSend, selectedProfile);
+    await MessagingService.sendMessage(chatId, textToSend, selectedProfile, replyData);
   };
 
   const getFriendStatusText = () => {
@@ -306,6 +357,10 @@ export default function ChatScreen() {
               item={item}
               currentUid={currentUid}
               friendAvatar={friend?.avatarId || 'avatar1'}
+              onReply={(msg) => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setReplyingToMessage(msg);
+              }}
             />
           )}
           ListEmptyComponent={
@@ -319,6 +374,29 @@ export default function ChatScreen() {
 
         {/* Input area footer */}
         <View style={[styles.inputWrapper, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          {replyingToMessage && (
+            <Animated.View entering={FadeInUp.duration(200)} style={styles.replyPreviewBar}>
+              <View style={styles.replyPreviewLine} />
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={styles.replyPreviewSender} numberOfLines={1}>
+                  Replying to {replyingToMessage.senderId === currentUid ? 'You' : (replyingToMessage.senderName || 'Friend')}
+                </Text>
+                <Text style={styles.replyPreviewText} numberOfLines={1}>
+                  {replyingToMessage.text}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setReplyingToMessage(null);
+                }}
+                style={styles.closeReplyBtn}
+              >
+                <Ionicons name="close-circle" size={18} color="rgba(255,255,255,0.4)" />
+              </Pressable>
+            </Animated.View>
+          )}
+
           <LiquidGlassPill borderRadius={24} style={styles.glassInputContainer}>
             <View style={styles.innerInputRow}>
               <TextInput
@@ -672,5 +750,78 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     fontFamily: Platform.select({ ios: 'System', android: 'sans-serif-medium' }),
+  },
+  replyActionBtnRight: {
+    marginRight: 8,
+    alignSelf: 'center',
+    padding: 6,
+  },
+  replyActionBtnLeft: {
+    marginLeft: 8,
+    alignSelf: 'center',
+    padding: 6,
+  },
+  replyPreviewBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(25, 20, 35, 0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginBottom: 8,
+  },
+  replyPreviewLine: {
+    width: 3,
+    height: '100%',
+    backgroundColor: '#8B5CF6',
+    borderRadius: 1.5,
+  },
+  replyPreviewSender: {
+    color: '#8B5CF6',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  replyPreviewText: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  closeReplyBtn: {
+    padding: 4,
+  },
+  replyQuoteBubble: {
+    borderLeftWidth: 3,
+    paddingLeft: 8,
+    paddingVertical: 4,
+    marginBottom: 6,
+    borderRadius: 4,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+    width: '100%',
+  },
+  replyQuoteBubbleMe: {
+    borderLeftColor: '#EC4899',
+  },
+  replyQuoteBubbleFriend: {
+    borderLeftColor: '#8B5CF6',
+  },
+  replyQuoteSenderText: {
+    fontSize: 10,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  replyQuoteSenderMe: {
+    color: '#F43F5E',
+    fontFamily: Platform.select({ ios: 'System', android: 'sans-serif-medium' }),
+  },
+  replyQuoteSenderFriend: {
+    color: '#A78BFA',
+    fontFamily: Platform.select({ ios: 'System', android: 'sans-serif-medium' }),
+  },
+  replyQuoteText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+    fontFamily: Platform.select({ ios: 'System', android: 'sans-serif' }),
   }
 });

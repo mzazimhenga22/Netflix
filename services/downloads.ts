@@ -3,6 +3,7 @@ import { fetchStreamingLinks } from './streaming';
 import { NativeModules } from 'react-native';
 const DownloadServiceModule = NativeModules.DownloadService;
 import { NotificationService } from './NotificationService';
+import { Buffer } from 'buffer';
 
 export interface DownloadItem {
   id: string;
@@ -197,10 +198,27 @@ async function downloadSubtitlesLocally(
 }
 
 // ─── Core download logic ────────────────────────────────────────────
-
 export const isHlsUrl = async (url: string, headers?: Record<string, string>): Promise<boolean> => {
   const lowerUrl = url.toLowerCase();
   if (lowerUrl.includes('.m3u8') || lowerUrl.includes('type=hls') || lowerUrl.includes('/hls/')) return true;
+  if (lowerUrl.startsWith('data:')) {
+    if (lowerUrl.includes('mpegurl') || lowerUrl.includes('m3u8') || lowerUrl.includes('mpeg-url')) {
+      return true;
+    }
+    try {
+      const base64Match = url.match(/^data:[^;]+;base64,(.+)$/);
+      if (base64Match) {
+        const decodedSnippet = Buffer.from(base64Match[1].substring(0, 100), 'base64').toString('utf-8');
+        if (decodedSnippet.startsWith('#EXTM3U')) return true;
+      }
+    } catch (_) {}
+  }
+  if (url.startsWith('file://') || url.startsWith('/') || url.startsWith('content://')) {
+    try {
+      const text = await FileSystem.readAsStringAsync(url);
+      if (text.trimStart().startsWith('#EXTM3U')) return true;
+    } catch (_) {}
+  }
   try {
     const res = await fetch(url, { method: 'HEAD', headers });
     const contentType = res.headers.get('content-type')?.toLowerCase();
@@ -627,6 +645,24 @@ export const getPlaybackUri = (item: DownloadItem): { uri: string, type?: 'm3u8'
 /**
  * Handles multi-segment HLS downloading.
  * Fetches the m3u8, parses all .ts segments, and downloads them in parallel batches.
+async function readManifestContent(url: string, headers?: Record<string, string>): Promise<string> {
+  if (url.startsWith('data:')) {
+    const base64Match = url.match(/^data:[^;]+;base64,(.+)$/);
+    if (base64Match) {
+      return Buffer.from(base64Match[1], 'base64').toString('utf-8');
+    }
+    throw new Error('Invalid data URI format');
+  }
+  if (url.startsWith('file://') || url.startsWith('/') || url.startsWith('content://')) {
+    return await FileSystem.readAsStringAsync(url);
+  }
+  const response = await fetch(url, { headers });
+  return await response.text();
+}
+
+/**
+ * Handles multi-segment HLS downloading.
+ * Fetches the m3u8, parses all .ts segments, and downloads them in parallel batches.
  * Rewrites the playlist to point to local segment files for offline playback.
  */
 async function downloadHlsVideo(
@@ -652,8 +688,7 @@ async function downloadHlsVideo(
     await FileSystem.makeDirectoryAsync(segmentsDir, { intermediates: true });
 
     // 1. Fetch the master or media playlist
-    const response = await fetch(url, { headers });
-    let m3u8Content = await response.text();
+    let m3u8Content = await readManifestContent(url, headers);
 
     // Handle Master Playlist (pick best variant - 720p/1080p)
     if (m3u8Content.includes('#EXT-X-STREAM-INF')) {
@@ -674,9 +709,10 @@ async function downloadHlsVideo(
       }
       
       if (bestUrl) {
-          const resolvedBestUrl = bestUrl.startsWith('http') ? bestUrl : new URL(bestUrl, url).toString();
-          const res = await fetch(resolvedBestUrl, { headers });
-          m3u8Content = await res.text();
+          const resolvedBestUrl = (bestUrl.startsWith('http') || bestUrl.startsWith('data:'))
+              ? bestUrl
+              : new URL(bestUrl, url).toString();
+          m3u8Content = await readManifestContent(resolvedBestUrl, headers);
           url = resolvedBestUrl; // Update base URL for segments
       }
     }
