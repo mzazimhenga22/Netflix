@@ -42,13 +42,19 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import * as SplashScreen from 'expo-splash-screen';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { SplashAnimation } from '../components/SplashAnimation';
 import { ProfileProvider } from '../context/ProfileContext';
 import { useProfile } from '../context/ProfileContext';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { warmNetMirrorSession } from '../services/netmirrorResolver';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
+
+// Fire-and-forget: start the 38s NetMirror session nurture flow at app launch
+// so the session is ready before the user navigates to a movie and presses play.
+warmNetMirrorSession().catch(() => {});
 
 // Theme Context for dynamic app-wide color matching
 export const ThemeContext = createContext({
@@ -83,6 +89,14 @@ export default function RootLayout() {
     SplashScreen.hideAsync();
   }, []);
 
+  // app.json orientation is "default" so the video player can rotate to
+  // landscape natively (smooth, GPU-driven). Keep the rest of the app locked
+  // to portrait here; the player overrides to landscape while open and
+  // restores portrait on close.
+  useEffect(() => {
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+  }, []);
+
   const startProfileTransition = (profile: any, layout: any) => {
     setIsTransitioning(true);
     triggerNativeProfileTransition(profile, layout);
@@ -102,12 +116,20 @@ export default function RootLayout() {
             <BottomSheetModalProvider>
               <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
                 <NavigationGate>
-                  <Stack screenOptions={{ headerShown: false }}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="profiles" />
-                    <Stack.Screen name="edit-profile" options={{ presentation: 'modal' }} />
-                    <Stack.Screen name="(tabs)" />
-                    <Stack.Screen name="movie/[id]" />
+                  <Stack
+                    screenOptions={{
+                      headerShown: false,
+                      animation: 'slide_from_right',
+                      animationDuration: 280,
+                      freezeOnBlur: true,
+                      contentStyle: { backgroundColor: '#000000' },
+                    }}
+                  >
+                    <Stack.Screen name="index" options={{ animation: 'fade' }} />
+                    <Stack.Screen name="profiles" options={{ animation: 'fade' }} />
+                    <Stack.Screen name="edit-profile" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+                    <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+                    <Stack.Screen name="movie/[id]" options={{ animation: 'slide_from_bottom' }} />
                   </Stack>
                 </NavigationGate>
                 <StatusBar style="light" />

@@ -1,5 +1,4 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { fetchStreamingLinks } from './streaming';
 import { NativeModules } from 'react-native';
 const DownloadServiceModule = NativeModules.DownloadService;
 import { NotificationService } from './NotificationService';
@@ -139,9 +138,10 @@ export const getDownloadLink = async (
   year?: string
 ): Promise<{ url: string; headers: Record<string, string> } | null> => {
   try {
-    const data = await fetchStreamingLinks(id, type, season, episode);
-    if (data && data.sources.length > 0) {
-      return { url: data.sources[0].url, headers: {} };
+    const { resolveNet52 } = require('./netmirrorResolver');
+    const data = await resolveNet52(id, type, season || 0, episode || 0);
+    if (data && data.url) {
+      return { url: data.url, headers: data.headers || {} };
     }
   } catch (error) {
     console.error('[DownloadService] Error fetching link:', error);
@@ -645,6 +645,7 @@ export const getPlaybackUri = (item: DownloadItem): { uri: string, type?: 'm3u8'
 /**
  * Handles multi-segment HLS downloading.
  * Fetches the m3u8, parses all .ts segments, and downloads them in parallel batches.
+ */
 async function readManifestContent(url: string, headers?: Record<string, string>): Promise<string> {
   if (url.startsWith('data:')) {
     const base64Match = url.match(/^data:[^;]+;base64,(.+)$/);

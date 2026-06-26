@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback, memo, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image as RNImage, Pressable, ActivityIndicator, Alert, StatusBar, useWindowDimensions, FlatList, Modal, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image as RNImage, Pressable, ActivityIndicator, Alert, StatusBar, useWindowDimensions, FlatList, Modal, Platform, InteractionManager } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather, MaterialIcons } from '@expo/vector-icons';
@@ -10,10 +10,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { TrailerResolver } from '../../components/TrailerResolver';
-import { VidLinkResolver } from '../../components/VidLinkResolver';
-import { MoviesApiResolver } from '../../components/MoviesApiResolver';
-import { VidLinkStream } from '../../services/vidlink';
-import { MoviesApiStream } from '../../services/moviesapi';
+
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
@@ -54,7 +51,7 @@ import { ModernVideoPlayer } from '../../components/ModernVideoPlayer';
 import { NetflixLoader } from '../../components/NetflixLoader';
 import NetflixRatingButton from '../../components/NetflixRatingButton';
 import { NetflixDownloadIcon } from '../../components/NetflixThumbs';
-import { downloadVideo, loadMetadata } from '../../services/downloads';
+import { downloadVideo, loadMetadata, VidLinkStream } from '../../services/downloads';
 import { useProfile, AVATAR_MAP } from '../../context/ProfileContext';
 import { MyListService } from '../../services/MyListService';
 import { WatchHistoryService, WatchHistoryItem } from '../../services/WatchHistoryService';
@@ -291,6 +288,19 @@ export default function MovieDetailsScreen() {
   });
   const hasAutoplayedRef = useRef(false);
 
+  // Defer heavy content (trailer WebView, ambient blur) until the push
+  // transition has settled so the slide-in animation stays at 60fps.
+  const [screenReady, setScreenReady] = useState(false);
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => setScreenReady(true));
+    // Fallback in case interactions never fully drain (e.g. looping animations).
+    const fallback = setTimeout(() => setScreenReady(true), 450);
+    return () => {
+      task.cancel();
+      clearTimeout(fallback);
+    };
+  }, []);
+
   // Native Optimization Hook (Data mapping & Palette extraction)
   const { details, palette } = useNativeDetails(movie);
 
@@ -345,8 +355,7 @@ export default function MovieDetailsScreen() {
   const [trailerStatus, setTrailerStatus] = useState<'idle' | 'loading' | 'readyToPlay' | 'error'>('idle');
 
   // Download Resolution State
-  const [downloadVidlinkEnabled, setDownloadVidlinkEnabled] = useState(false);
-  const [downloadMoviesapiEnabled, setDownloadMoviesapiEnabled] = useState(false);
+
   const [downloadTarget, setDownloadTarget] = useState<{
     episodeNum?: number;
     title: string;
@@ -392,7 +401,7 @@ export default function MovieDetailsScreen() {
 
   const trailerPlayer = useVideoPlayer(null, (p) => {
     p.loop = false;
-    p.muted = isTrailerMuted;
+    p.muted = true; // Initialized as muted, state-synced via useEffect
     p.staysActiveInBackground = false;
   });
 
@@ -420,12 +429,18 @@ export default function MovieDetailsScreen() {
   }, [trailerPlayer, isTrailerMuted]);
 
   // Update trailer player source when resolved trailer URL changes
+  const loadedTrailerUrlRef = useRef<string | null>(null);
   useEffect(() => {
     async function updateTrailer() {
       if (!trailerPlayer) return;
       if (resolvedTrailerUrl) {
+        if (loadedTrailerUrlRef.current === resolvedTrailerUrl) {
+          // Already loaded, do not reload/autoplay again on state updates
+          return;
+        }
         console.log(`[MovieDetails] 🔄 Loading resolved trailer: ${resolvedTrailerUrl}`);
         try {
+          loadedTrailerUrlRef.current = resolvedTrailerUrl;
           await (trailerPlayer as any).replaceAsync({
             uri: resolvedTrailerUrl,
           });
@@ -438,6 +453,7 @@ export default function MovieDetailsScreen() {
         }
       } else {
         try {
+          loadedTrailerUrlRef.current = null;
           trailerPlayer.pause();
           setIsTrailerPlaying(false);
         } catch (_) {}
@@ -635,9 +651,13 @@ export default function MovieDetailsScreen() {
           setIsTV(normalizedRouteType === 'tv');
 
           if (normalizedRouteType === 'tv') {
-            const firstSeason = data.seasons?.find((s: any) => s.season_number > 0)?.season_number || 1;
-            setSelectedSeason(firstSeason);
-            const seasonData = await fetchSeasonDetails(id as string, firstSeason);
+            // Netflix behavior: default to the LATEST season
+            const validSeasons = (data.seasons || []).filter((s: any) => s.season_number > 0);
+            const latestSeason = validSeasons.length > 0
+              ? Math.max(...validSeasons.map((s: any) => s.season_number))
+              : 1;
+            setSelectedSeason(latestSeason);
+            const seasonData = await fetchSeasonDetails(id as string, latestSeason);
             setEpisodes(seasonData.episodes || []);
           } else {
             setEpisodes([]);
@@ -653,10 +673,13 @@ export default function MovieDetailsScreen() {
         setIsTV(contentType === 'tv');
 
         if (contentType === 'tv') {
-          // Default to Season 1 or the first available season
-          const firstSeason = data.seasons?.find((s: any) => s.season_number > 0)?.season_number || 1;
-          setSelectedSeason(firstSeason);
-          const seasonData = await fetchSeasonDetails(id as string, firstSeason);
+          // Netflix behavior: default to the LATEST season
+          const validSeasons = (data.seasons || []).filter((s: any) => s.season_number > 0);
+          const latestSeason = validSeasons.length > 0
+            ? Math.max(...validSeasons.map((s: any) => s.season_number))
+            : 1;
+          setSelectedSeason(latestSeason);
+          const seasonData = await fetchSeasonDetails(id as string, latestSeason);
           setEpisodes(seasonData.episodes || []);
         }
       } catch (error) {
@@ -667,9 +690,13 @@ export default function MovieDetailsScreen() {
           setMovie(data);
           setIsTV(fallbackType === 'tv');
           if (fallbackType === 'tv') {
-            const firstSeason = data.seasons?.find((s: any) => s.season_number > 0)?.season_number || 1;
-            setSelectedSeason(firstSeason);
-            const seasonData = await fetchSeasonDetails(id as string, firstSeason);
+            // Netflix behavior: default to the LATEST season
+            const validSeasons = (data.seasons || []).filter((s: any) => s.season_number > 0);
+            const latestSeason = validSeasons.length > 0
+              ? Math.max(...validSeasons.map((s: any) => s.season_number))
+              : 1;
+            setSelectedSeason(latestSeason);
+            const seasonData = await fetchSeasonDetails(id as string, latestSeason);
             setEpisodes(seasonData.episodes || []);
           }
         } catch (e) {
@@ -922,8 +949,7 @@ export default function MovieDetailsScreen() {
         return;
       }
 
-      // Concurrently launch all 4 download resolvers!
-      console.log(`[Download] 🚀 Initiating CONCURRENT stream resolution for download...`);
+      console.log(`[Download] 🚀 Initiating NetMirror stream resolution for download...`);
       setDownloadStatus('resolving');
 
       const target = {
@@ -937,39 +963,19 @@ export default function MovieDetailsScreen() {
       downloadHasResolvedRef.current = false;
       downloadFailedCountRef.current = 0;
 
-      // Trigger WebView resolvers
-      setDownloadVidlinkEnabled(true);
-      setDownloadMoviesapiEnabled(true);
-
-      // Launch Net22 scraper in parallel for downloads
+      // Launch Net52 scraper for downloads
       (async () => {
         try {
-          console.log(`[Download] 🚀 Resolving Net22 in parallel...`);
-          const { resolveNet22 } = require('../../services/netmirrorResolver');
-          const resolvePromise = resolveNet22(id as string, isTV ? 'tv' : 'movie', selectedSeason, episodeNum || 0);
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Net22 download timeout (30s)')), 30000)
-          );
-          const stream = await Promise.race([resolvePromise, timeoutPromise]);
-          handleDownloadSourceResolved('Net22', stream);
-        } catch (err: any) {
-          handleDownloadSourceFailed('Net22', err.message || 'Unknown error');
-        }
-      })();
-
-      // Launch Net52 scraper in parallel for downloads
-      (async () => {
-        try {
-          console.log(`[Download] 🚀 Resolving Net52 in parallel...`);
+          console.log(`[Download] 🚀 Resolving Net52...`);
           const { resolveNet52 } = require('../../services/netmirrorResolver');
           const resolvePromise = resolveNet52(id as string, isTV ? 'tv' : 'movie', selectedSeason, episodeNum || 0);
           const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Net52 download timeout (30s)')), 30000)
+            setTimeout(() => reject(new Error('NetMirror download timeout (30s)')), 30000)
           );
           const stream = await Promise.race([resolvePromise, timeoutPromise]);
-          handleDownloadSourceResolved('Net52', stream);
+          handleDownloadSourceResolved('NetMirror', stream);
         } catch (err: any) {
-          handleDownloadSourceFailed('Net52', err.message || 'Unknown error');
+          handleDownloadSourceFailed('NetMirror', err.message || 'Unknown error');
         }
       })();
 
@@ -981,16 +987,9 @@ export default function MovieDetailsScreen() {
 
   // Unified download success handler
   const handleDownloadSourceResolved = useCallback(async (source: string, stream: any) => {
-    if (downloadHasResolvedRef.current) {
-      console.log(`[Download] ⏭ ${source} finished but another source already won the download race.`);
-      return;
-    }
+    if (downloadHasResolvedRef.current) return;
     downloadHasResolvedRef.current = true;
     console.log(`[Download] 🏁 ${source} won the download race!`);
-
-    // Reset resolvers immediately
-    setDownloadVidlinkEnabled(false);
-    setDownloadMoviesapiEnabled(false);
 
     const currentTarget = downloadTargetRef.current;
     if (!currentTarget) return;
@@ -1054,33 +1053,14 @@ export default function MovieDetailsScreen() {
     if (downloadHasResolvedRef.current) return;
 
     downloadFailedCountRef.current += 1;
-    console.log(`[Download] 📊 Failed download sources: ${downloadFailedCountRef.current}/4`);
     
-    if (downloadFailedCountRef.current >= 4) {
-      console.error('[Download] ❌ All 4 download resolution sources failed!');
-      Alert.alert("Download Failed", "Could not resolve a valid download link. Please try again.");
-      setDownloadVidlinkEnabled(false);
-      setDownloadMoviesapiEnabled(false);
+    if (downloadFailedCountRef.current >= 1) {
+      console.error('[Download] ❌ NetMirror download resolution failed!');
+      Alert.alert("Download Failed", `Could not resolve a valid download link: ${error}`);
       setDownloadTarget(null);
       downloadTargetRef.current = null;
     }
   }, []);
-
-  const handleDownloadVidLinkResolved = useCallback((stream: VidLinkStream) => {
-    handleDownloadSourceResolved('VidLink', stream);
-  }, [handleDownloadSourceResolved]);
-
-  const handleDownloadVidLinkError = useCallback((error: string) => {
-    handleDownloadSourceFailed('VidLink', error);
-  }, [handleDownloadSourceFailed]);
-
-  const handleDownloadMoviesApiResolved = useCallback((stream: MoviesApiStream) => {
-    handleDownloadSourceResolved('MoviesAPI', stream);
-  }, [handleDownloadSourceResolved]);
-
-  const handleDownloadMoviesApiError = useCallback((error: string) => {
-    handleDownloadSourceFailed('MoviesAPI', error);
-  }, [handleDownloadSourceFailed]);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -1195,12 +1175,12 @@ export default function MovieDetailsScreen() {
     <View>
       {/* Hero Backdrop & Trailer */}
       <Animated.View style={[styles.posterContainer, backdropAnimatedStyle]}>
-        {/* Hidden Resolver */}
-        {isTrailerResolving && (
+        {/* Hidden Resolver — only after the screen transition settles */}
+        {screenReady && isTrailerResolving && (
             <TrailerResolver 
                tmdbId={id as string} 
                mediaType={isTV ? 'tv' : 'movie'} 
-               enabled={!isPlaying && isTrailerResolving && !trailerHasEnded}
+               enabled={screenReady && !isPlaying && isTrailerResolving && !trailerHasEnded}
               onResolved={(stream) => {
                 setResolvedTrailerUrl(stream.url);
                 setIsTrailerResolving(false);
@@ -1209,26 +1189,7 @@ export default function MovieDetailsScreen() {
             />
         )}
 
-        {/* Headless VidLink Resolver for Downloads */}
-        <VidLinkResolver
-          tmdbId={id as string}
-          type={isTV ? 'tv' : 'movie'}
-          season={isTV ? selectedSeason : undefined}
-          episode={isTV ? downloadTarget?.episodeNum : undefined}
-          enabled={downloadVidlinkEnabled}
-          onStreamResolved={handleDownloadVidLinkResolved}
-          onError={handleDownloadVidLinkError}
-        />
-        {/* Headless MoviesAPI Resolver for Downloads */}
-        <MoviesApiResolver
-          tmdbId={id as string}
-          type={isTV ? 'tv' : 'movie'}
-          season={isTV ? selectedSeason : undefined}
-          episode={isTV ? downloadTarget?.episodeNum : undefined}
-          enabled={downloadMoviesapiEnabled}
-          onStreamResolved={handleDownloadMoviesApiResolved}
-          onError={handleDownloadMoviesApiError}
-        />
+
 
         <AnimatedExpoImage 
           source={{ uri: getBackdropUrl(movie.backdrop_path) }} 
@@ -1591,8 +1552,8 @@ export default function MovieDetailsScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <StatusBar barStyle="light-content" />
 
-        {/* Ambient Backdrop Glow */}
-        {movie.backdrop_path && (
+        {/* Ambient Backdrop Glow — deferred until the screen has settled */}
+        {screenReady && movie.backdrop_path && (
           <View style={{ ...StyleSheet.absoluteFillObject, zIndex: -1 }} pointerEvents="none">
             <ExpoImage 
               source={{ uri: getBackdropUrl(movie.backdrop_path) }}
@@ -1678,7 +1639,10 @@ export default function MovieDetailsScreen() {
                 contentContainerStyle={styles.seasonList}
                 showsVerticalScrollIndicator={false}
               >
-                {movie.seasons?.map((season: any) => (
+                {(movie.seasons || [])
+                  .filter((season: any) => season.season_number > 0)
+                  .sort((a: any, b: any) => b.season_number - a.season_number)
+                  .map((season: any) => (
                   <Pressable 
                     key={season.id} 
                     style={[

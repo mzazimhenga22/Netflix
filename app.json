@@ -2,9 +2,9 @@
   "expo": {
     "name": "netflix-clone",
     "slug": "spotify",
-    "version": "1.0.11",
-    "versionCode": 9,
-    "orientation": "portrait",
+    "version": "1.6.26",
+    "versionCode": 1626,
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "netflixclone",
     "userInterfaceStyle": "automatic",

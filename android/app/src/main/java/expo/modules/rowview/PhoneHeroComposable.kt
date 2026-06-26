@@ -35,8 +35,54 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+
+class NetflixDomeShape(
+    private val topCornerRadius: Dp,
+    private val bottomCornerRadius: Dp,
+    private val domeHeight: Dp
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val topRadiusPx = with(density) { topCornerRadius.toPx() }
+        val bottomRadiusPx = with(density) { bottomCornerRadius.toPx() }
+        val domeHeightPx = with(density) { domeHeight.toPx() }
+
+        val path = Path().apply {
+            moveTo(0f, topRadiusPx)
+            quadraticBezierTo(0f, 0f, topRadiusPx, 0f)
+            lineTo(size.width - topRadiusPx, 0f)
+            quadraticBezierTo(size.width, 0f, size.width, topRadiusPx)
+            lineTo(size.width, size.height - bottomRadiusPx)
+            quadraticBezierTo(
+                size.width,
+                size.height,
+                size.width - bottomRadiusPx,
+                size.height
+            )
+            quadraticBezierTo(
+                size.width / 2f,
+                size.height - 2f * domeHeightPx,
+                bottomRadiusPx,
+                size.height
+            )
+            quadraticBezierTo(0f, size.height, 0f, size.height - bottomRadiusPx)
+            close()
+        }
+        return Outline.Generic(path)
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -151,13 +197,21 @@ fun PhoneHeroComposable(
         currentIndex = (currentIndex + 1) % items.size
     }
 
+    val netflixDomeShape = remember {
+        NetflixDomeShape(
+            topCornerRadius = 12.dp,
+            bottomCornerRadius = 16.dp,
+            domeHeight = 32.dp
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
             .shadow(
                 elevation = if (spatialEnabled) 22.dp else 12.dp,
-                shape = RoundedCornerShape(12.dp),
+                shape = netflixDomeShape,
                 ambientColor = Color.Black.copy(alpha = 0.65f),
                 spotColor = Color.Black.copy(alpha = 0.85f)
             )
@@ -168,7 +222,7 @@ fun PhoneHeroComposable(
                 scaleY = 1.01f
                 cameraDistance = if (spatialEnabled) 18f * density else 12f * density
             }
-            .clip(RoundedCornerShape(12.dp))
+            .clip(netflixDomeShape)
             .background(Color.Transparent)
     ) {
         Crossfade(
@@ -314,7 +368,7 @@ fun PhoneHeroComposable(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = 24.dp, start = 16.dp, end = 16.dp)
+                        .padding(bottom = 56.dp, start = 16.dp, end = 16.dp)
                         .graphicsLayer {
                             translationX = contentOffsetX
                             translationY = contentOffsetY

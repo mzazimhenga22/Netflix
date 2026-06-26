@@ -1163,10 +1163,11 @@ export default function HomeScreen() {
               scrollEventThrottle={16}
               contentContainerStyle={{ paddingTop: insets.top + 110 }}
               showsVerticalScrollIndicator={false}
-              removeClippedSubviews={false} 
+              removeClippedSubviews={Platform.OS === 'android'}
               initialNumToRender={4}
-              maxToRenderPerBatch={4}
-              windowSize={9}
+              maxToRenderPerBatch={3}
+              updateCellsBatchingPeriod={60}
+              windowSize={5}
               decelerationRate="normal"
             />
           </Animated.View>

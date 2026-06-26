@@ -313,12 +313,10 @@ export function ModernVideoPlayer({
   const hideTimeout = useRef<NodeJS.Timeout | null>(null);
   const currentUrlRef = useRef(videoUrl || '');
 
-  // Initialize player with a valid source only if available
-  const player = useVideoPlayer((internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') ? { 
-    uri: internalVideoUrl, 
-    headers: internalHeaders || undefined,
-    contentType: 'hls' as any,  // VidLink proxy URLs have no .m3u8 extension
-  } : null, (player) => {
+  // Initialize player with null source — replaceAsync handles loading after resolution.
+  // Previously this created the player with internalVideoUrl which caused double-loading:
+  // once from the initial source and again from replaceAsync in the update effect.
+  const player = useVideoPlayer(null, (player) => {
     player.loop = false;
     player.staysActiveInBackground = true;
     player.timeUpdateEventInterval = 0.25; // 250ms for performance
@@ -328,10 +326,6 @@ export function ModernVideoPlayer({
       preferredForwardBufferDuration: 180, // Buffer 3 minutes ahead
       maxBufferBytes: Platform.OS === 'android' ? 150 * 1024 * 1024 : undefined, // 150MB maximum cache size on Android
     };
-    
-    if (internalVideoUrl && internalVideoUrl !== 'ERROR' && internalVideoUrl !== '') {
-      player.play();
-    }
   });
 
   const videoViewRef = useRef<any>(null);
@@ -361,9 +355,9 @@ export function ModernVideoPlayer({
     }
     
     failedCountRef.current += 1;
-    console.log(`[Player] 📊 Failed sources: ${failedCountRef.current}/4`);
-    if (failedCountRef.current >= 4) {
-      console.error('[Player] ❌ All 4 resolution sources failed!');
+    console.log(`[Player] 📊 Failed sources: ${failedCountRef.current}/1`);
+    if (failedCountRef.current >= 1) {
+      console.error('[Player] ❌ All 1 resolution sources failed!');
       setFetchError(true);
       setStatus('error');
       cleanupResolvers();
@@ -480,7 +474,10 @@ export function ModernVideoPlayer({
     
     setFetchError(false);
     setIsRateLimited(false);
-    setStatus('readyToPlay');
+    // Don't set status to 'readyToPlay' here — let the player's native statusChange
+    // event drive that transition AFTER replaceAsync actually loads the source.
+    // Setting it prematurely caused the loading screen to fade out before video was ready
+    // (showing a red progress bar with no video) and triggered watch history resume too early.
     cleanupResolvers();
   }, [cleanupResolvers, handleSourceError]);
 
@@ -513,7 +510,8 @@ export function ModernVideoPlayer({
        setSelectedAudioTrackId(audioTracks[0]?.id || null);
        setFetchError(false);
        setIsRateLimited(false);
-       setStatus('readyToPlay');
+       // Don't set readyToPlay here — the native player statusChange event
+       // will transition to readyToPlay after replaceAsync loads the source
        return;
     }
 
@@ -547,32 +545,16 @@ export function ModernVideoPlayer({
     failedCountRef.current = 0;
     backupStreamsRef.current = [];
 
-    // Trigger WebView resolvers
-    setVidlinkEnabled(true);
-    setMoviesapiEnabled(true);
+    // Trigger WebView resolvers — TEMPORARILY DISABLED for NetMirror testing
+    // setVidlinkEnabled(true);
+    // setMoviesapiEnabled(true);
+    setVidlinkEnabled(false);
+    setMoviesapiEnabled(false);
     setActiveSource('all');
 
-    // Launch Net22 scraper in parallel (with 30s safety timeout)
-    const net22StartMs = Date.now();
-    (async () => {
-      try {
-        console.log(`[Player] 🚀 Resolving Net22 in parallel...`);
-        const { resolveNet22 } = require('../services/netmirrorResolver');
-        const resolvePromise = resolveNet22(tmdbId, contentType || 'movie', seasonNum || 0, episodeNum || 0);
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Net22 overall timeout (30s)')), 30000)
-        );
-        const stream = await Promise.race([resolvePromise, timeoutPromise]);
-        const elapsed = Date.now() - net22StartMs;
-        console.log(`[Player] 🏁 Net22 finished in ${elapsed}ms`);
-        handleSourceResolved('Net22', stream);
-      } catch (error: any) {
-        const elapsed = Date.now() - net22StartMs;
-        console.error(`[Player] 💥 Net22 crashed after ${elapsed}ms: ${error.message}`);
-        if (error.stack) console.error(`[Player] Net22 stack: ${error.stack.split('\n').slice(0, 3).join(' | ')}`);
-        handleSourceError('Net22', error.message || 'Unknown error');
-      }
-    })();
+    // Net22 — TEMPORARILY DISABLED (duplicate of Net52)
+    // (async () => { ... })();
+
 
     // Launch Net52 scraper in parallel (with 30s safety timeout)
     const net52StartMs = Date.now();
@@ -614,6 +596,7 @@ export function ModernVideoPlayer({
             console.log(`[Player] 🔄 Updating native player source | scheme: ${urlScheme} | length: ${finalUrl.length} | preview: ${finalUrl.substring(0, 80)}...`);
 
             currentUrlRef.current = internalVideoUrl; // Track for dedup
+            setStatus('loading'); // Ensure loading state while player loads new source
             try {
               if (player) {
                 // Auto-detect content type instead of always forcing HLS
@@ -632,9 +615,11 @@ export function ModernVideoPlayer({
                   ...(detectedContentType ? { contentType: detectedContentType } : {}),
                 });
                 player.play();
+                // Status transitions to 'readyToPlay' via the native statusChange listener
               }
             } catch (e: any) {
               console.error(`[Player] ❌ replaceAsync failed: ${e.message}`);
+              setStatus('error');
             }
          }
       }
@@ -782,18 +767,16 @@ export function ModernVideoPlayer({
   // already handles internalVideoUrl changes. Having two effects both calling
   // replaceAsync() caused double network requests on weak connections.
 
-  // Handle Orientation
+  // Handle Orientation — lock to the LANDSCAPE group so the OS rotates in the
+  // device's natural direction (smoother native rotation than forcing one
+  // side). app.json orientation is "default" so this is a GPU-driven rotation,
+  // not a JS-thread reflow. Restore portrait on close.
   useEffect(() => {
-    async function lockOrientation() {
-      try {
-        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      } catch {
-        console.warn("Orientation lock failed");
-      }
-    }
-    lockOrientation();
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {
+      console.warn('[Player] Orientation lock failed');
+    });
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT).catch(() => {});
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     };
   }, []);
   

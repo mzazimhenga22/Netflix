@@ -13,6 +13,17 @@ import { COLORS, SPACING } from '../constants/theme';
 
 const PLANS = [
   {
+    id: 'free',
+    name: 'Free',
+    price: 'KES 0 / mo',
+    resolution: '480p',
+    devices: 'Phone',
+    profiles: '1 profile',
+    amount: 0,
+    isFree: true,
+    note: 'Limited Library — some titles are locked',
+  },
+  {
     id: 'basic',
     name: 'Basic',
     price: 'KES 300 / mo',
@@ -43,7 +54,7 @@ const PLANS = [
 
 export default function SubscriptionScreen() {
   const router = useRouter();
-  const [selectedPlan, setSelectedPlan] = useState(PLANS[1]);
+  const [selectedPlan, setSelectedPlan] = useState(PLANS[2]); // Default to Standard
   const [isLoading, setIsLoading] = useState(false);
   const checkoutModalRef = useRef<PayHeroCheckoutModalRef>(null);
 
@@ -52,11 +63,20 @@ export default function SubscriptionScreen() {
     setSelectedPlan(plan);
   };
 
+  const isFreePlanSelected = (selectedPlan as any).isFree === true;
+
   const handleCheckout = async () => {
     try {
       const user = auth.currentUser;
       if (!user || !user.email) {
         Alert.alert('Sign In Required', 'You must be signed in with an email to subscribe.');
+        return;
+      }
+
+      // Free plan — no payment needed, go straight to profiles
+      if (isFreePlanSelected) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.replace('/profiles');
         return;
       }
 
@@ -155,26 +175,34 @@ export default function SubscriptionScreen() {
           <Animated.View entering={FadeInDown.duration(700).delay(350)} style={styles.cardsContainer}>
             {PLANS.map((plan, index) => {
               const isSelected = selectedPlan.id === plan.id;
+              const isFree = (plan as any).isFree === true;
               return (
                 <Pressable 
                   key={plan.id}
                   style={[
                     styles.planCard, 
+                    isFree && styles.planCardFree,
                     isSelected && styles.planCardSelected,
+                    isFree && isSelected && styles.planCardFreeSelected,
                     { transform: [{ scale: isSelected ? 1.01 : 1 }] }
                   ]}
                   onPress={() => handleSelectPlan(plan)}
                 >
                   <View style={styles.cardHeader}>
                     <View>
-                      <Text style={[styles.planName, isSelected && styles.planNameSelected]}>
+                      <Text style={[
+                        styles.planName, 
+                        isSelected && !isFree && styles.planNameSelected,
+                        isFree && { color: '#8C8C8C' },
+                        isFree && isSelected && { color: '#B3B3B3' },
+                      ]}>
                         {plan.name}
                       </Text>
                       <Text style={styles.planPrice}>{plan.price}</Text>
                     </View>
                     {isSelected && (
-                      <View style={styles.selectedBadge}>
-                        <Text style={styles.selectedBadgeText}>Active</Text>
+                      <View style={[styles.selectedBadge, isFree && { backgroundColor: '#555' }]}>
+                        <Text style={styles.selectedBadgeText}>{isFree ? 'Current' : 'Active'}</Text>
                       </View>
                     )}
                   </View>
@@ -189,10 +217,21 @@ export default function SubscriptionScreen() {
                     <Text style={styles.planDetailValue}>{plan.devices}</Text>
                   </View>
 
-                  <View style={[styles.planDetailRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                  <View style={[styles.planDetailRow, (plan as any).note ? {} : { borderBottomWidth: 0, paddingBottom: 0 }]}>
                     <Text style={styles.planDetailLabel}>Profiles</Text>
                     <Text style={styles.planDetailValue}>{plan.profiles}</Text>
                   </View>
+
+                  {(plan as any).note && (
+                    <View style={[styles.planDetailRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Ionicons name="lock-closed" size={13} color="#e57373" />
+                        <Text style={[styles.planDetailLabel, { color: '#e57373', fontSize: 13, fontStyle: 'italic' }]}>
+                          {(plan as any).note}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
                 </Pressable>
               );
             })}
@@ -201,15 +240,27 @@ export default function SubscriptionScreen() {
 
         <Animated.View entering={FadeInDown.duration(600).delay(500)} style={styles.footer}>
           <Text style={styles.termsText}>
-            By continuing, you agree to our Terms of Use and Privacy Statement. You will be billed securely via Pay Hero / M-Pesa.
+            {isFreePlanSelected 
+              ? 'Continue with limited access. Upgrade anytime to unlock the full library.'
+              : 'By continuing, you agree to our Terms of Use and Privacy Statement. You will be billed securely via Pay Hero / M-Pesa.'
+            }
           </Text>
           <Pressable 
-            style={[styles.payButton, isLoading && { opacity: 0.6 }]} 
+            style={[
+              styles.payButton, 
+              isLoading && { opacity: 0.6 },
+              isFreePlanSelected && { backgroundColor: '#333' },
+            ]} 
             onPress={handleCheckout}
             disabled={isLoading}
           >
             <Text style={styles.payButtonText}>
-              {isLoading ? 'Please wait...' : `Continue with ${selectedPlan.name}`}
+              {isLoading 
+                ? 'Please wait...' 
+                : isFreePlanSelected 
+                  ? 'Continue with Free Plan' 
+                  : `Continue with ${selectedPlan.name}`
+              }
             </Text>
           </Pressable>
         </Animated.View>
@@ -310,6 +361,14 @@ const styles = StyleSheet.create({
     borderColor: '#e50914',
     borderWidth: 2,
     backgroundColor: 'rgba(229, 9, 20, 0.06)',
+  },
+  planCardFree: {
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(15, 15, 15, 0.8)',
+  },
+  planCardFreeSelected: {
+    borderColor: '#555',
+    backgroundColor: 'rgba(40, 40, 40, 0.5)',
   },
   cardHeader: {
     flexDirection: 'row',

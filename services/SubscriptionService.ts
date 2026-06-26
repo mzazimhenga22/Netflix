@@ -10,6 +10,7 @@ export interface SubscriptionStatus {
 }
 
 export const PLAN_PROFILE_LIMITS: Record<string, number> = {
+  'free': 1,
   'basic': 2,
   'standard': 4,
   'premium': 5,

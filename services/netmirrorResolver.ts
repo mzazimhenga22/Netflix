@@ -1,54 +1,124 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
- * NetMirror Stream Resolver — Mobile API Only
+ * NetMirror Stream Resolver — Mobile API with Nurture Flow
  * ═══════════════════════════════════════════════════════════════════════════════
  *
- * Proven flow (MITM-verified + diagnostic-confirmed):
+ * Working flow (MITM-verified 2026-06-17):
  *
- *   1. GET /mobile/home?app=1        → addhash cookie (4-part: hash1::hash2::ts::ek)
- *   2. GET /search.php?s=...         → find series/movie ID
- *   3. GET /mobile/post.php?id=...   → episode list for TV shows
- *   4. GET /mobile/hls/{id}.m3u8     → master HLS manifest
- *   5. GET /mobile/playlist.php      → subtitles / captions
+ *   1. GET  /mobile/home?app=1           → addhash cookie (4-part, ::eb flag)
+ *   2. GET  userver.{domain}/?ffr455=... → trigger monetag ad chain
+ *   3. DWELL 38 seconds                  → wait for sftouch/qlog postback
+ *   4. POST /mobile/verify2.php          → t_hash_t cookie (5-part)
+ *   5. GET  /mobile/home?app=1           → returning-session refresh (with x-requested-with)
+ *   6. GET  /mobile/post.php?id={showId} → episode list (TV) or content metadata (movie)
+ *   7. GET  /mobile/playlist.php?id={id} → server-generated HLS URL with ?in= hash
+ *   8. POST /mobile/recentplay.php       → register content session (recentplay=SE{showId})
+ *   9. GET  /mobile/hls/{id}.m3u8?in=... → master HLS manifest (using server URL from step 7)
  *
- * CRITICAL RULES (from diagnostic):
- *   ✅ Use RAW 4-part token as-is for in= parameter
- *   ❌ Do NOT append ::m (5th part causes server rejection → in=unknown)
- *   ✅ ek tokens work perfectly (no need to filter for eb)
- *   ✅ CDN segments work without additional auth
+ * OTT Sections (discovered 2026-06-25):
+ *   NF (Netflix):      /search.php, /mobile/post.php, /mobile/episodes.php, /mobile/playlist.php
+ *   PV (Prime Video):  /mobile/pv/search.php, /mobile/pv/post.php, /mobile/pv/episodes.php, /mobile/pv/playlist.php
+ *   → PV IDs are alphanumeric (e.g. 0UABA3VF0B9O4BUEJ395QE759W)
+ *   → PV requires ott=pv cookie
+ *   → Resolver tries NF first, then PV if no NF match found
+ *
+ * CRITICAL RULES (from MITM + CDN verification):
+ *   ✅ The ?in= hash is SERVER-GENERATED in playlist.php — do NOT build it client-side
+ *   ✅ Server-issued variant URLs in manifests are CORRECT — pass verbatim
+ *   ❌ Do NOT rewrite contentId or regenerate ?in= hashes on variants
+ *   ✅ Only fix empty audio hosts: https:/// → https://{cdnHost}/
+ *   ✅ SE cookie: SE{showId}={contentId} (not SE{random}={contentId})
+ *   ✅ recentplay POST body: recentplay=SE{showId}
+ *   ✅ Single domain: net52.cc
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
 import axios from 'axios';
 import { Buffer } from 'buffer';
-import { getNetMirrorDomains, refreshNetMirrorDomains } from './netmirrorDomains';
+import { NativeModules, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const DownloadService = NativeModules.DownloadService;
+
+/**
+ * Native HTTP fetch via Android's HttpURLConnection.
+ * Bypasses React Native's JS bridge which strips Set-Cookie headers.
+ * Falls back to axios on non-Android platforms.
+ */
+async function nativeFetch(
+  url: string,
+  options: { method?: string; headers?: Record<string, string>; body?: string } = {}
+): Promise<{ status: number; body: string; headers: Record<string, string[]> }> {
+  if (Platform.OS === 'android' && DownloadService?.nativeFetch) {
+    try {
+      const result = await DownloadService.nativeFetch(url, {
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        body: options.body || '',
+      });
+      // Convert ReadableMap headers to Record<string, string[]>
+      const headers: Record<string, string[]> = {};
+      if (result.headers) {
+        const rawHeaders = result.headers as any;
+        // nativeFetch returns headers as { key: [val1, val2] }
+        for (const key of Object.keys(rawHeaders)) {
+          const val = rawHeaders[key];
+          headers[key] = Array.isArray(val) ? val : [String(val)];
+        }
+      }
+      return { status: result.status, body: result.body || '', headers };
+    } catch (err: any) {
+      console.log(`[NetMirror] ⚠️ nativeFetch failed, falling back to axios: ${err.message}`);
+    }
+  }
+  // Fallback: axios (won't have Set-Cookie but at least works)
+  const res = await axios({ url, method: options.method || 'GET', headers: options.headers, data: options.body, timeout: 15000, validateStatus: () => true });
+  const headers: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(res.headers)) {
+    headers[k] = Array.isArray(v) ? v : [String(v)];
+  }
+  return { status: res.status, body: typeof res.data === 'string' ? res.data : JSON.stringify(res.data), headers };
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+const DOMAIN = 'net52.cc';
+
 const TMDB_API_KEY = '8baba8ab6b8bbe247645bcae7df63d0d';
 
-/** Exact User-Agent from real NetMirror Android app (MITM line 3059) */
+/** Exact User-Agent from real NetMirror Android app (MITM-verified) */
 const MOBILE_UA =
-  'Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A.250526.006; wv) ' +
+  'Mozilla/5.0 (Linux; Android 16; sdk_gphone64_x86_64 Build/BE2A.250530.026.D1; wv) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/133.0.6943.137 ' +
   'Mobile Safari/537.36 /OS.Gatu v3.0';
 
-/** sec-ch-ua header from real app */
-const SEC_CH_UA = '"Not(A:Brand";v="99", "Android WebView";v="133", "Chromium";v="133"';
+const SEC_CH_UA =
+  '"Not(A:Brand";v="99", "Android WebView";v="133", "Chromium";v="133"';
 
-/** Domains known to serve the mobile API with addhash cookie */
-const MOBILE_API_DOMAINS = [
-  'net52.cc',       // Primary — confirmed working
-  'netfree.cc',     // Gateway
-  'netmirror.vip',  // Gateway
-  'net50.cc',
-  'net23.cc',
-  'net11.cc',
-];
+const X_REQUESTED_WITH = 'app.netmirror.netmirrornew';
 
-/** Poisoned file ID injected by CDN as a honeypot */
-const POISON_ID = '220884';
+// ─── OTT Section Types ───────────────────────────────────────────────────────
+
+/** Supported OTT content sections */
+type OttSection = 'nf' | 'pv';
+
+/** All OTT sections to try, in priority order */
+const OTT_SEARCH_ORDER: OttSection[] = ['nf', 'pv'];
+
+/**
+ * Get the URL path prefix for an OTT section.
+ * NF uses the default paths, PV uses /mobile/pv/ prefix.
+ */
+function ottPathPrefix(ott: OttSection): string {
+  switch (ott) {
+    case 'nf': return '/mobile';
+    case 'pv': return '/mobile/pv';
+    default: return '/mobile';
+  }
+}
+
+// Old ottSearchPath removed — replaced by ottSearchPaths (multi-endpoint resilience)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,29 +132,33 @@ export interface NetMirrorStream {
   isRateLimited?: boolean;
 }
 
-export interface NetMirrorCookies {
-  net22Cookie: string;
-  net52Cookie: string;
-}
+// ─── Session Types & Cache ────────────────────────────────────────────────────
 
-// ─── Session Cache ────────────────────────────────────────────────────────────
-
-interface MobileSession {
-  addhash: string;           // Raw 4-part token (hash1::hash2::ts::flag)
-  cookieHeader: string;      // Full cookie string for requests (includes t_hash_t, t_hash)
-  domain: string;            // Domain that issued this token
+interface WarmSession {
+  domain: string;
+  addhashRaw: string;       // decoded 4-part token (hash1::hash2::ts::eb)
+  addhashEncoded: string;    // URL-encoded for Cookie header
+  tHashTEncoded: string;     // URL-encoded 5-part t_hash_t
+  tHashTRaw: string;         // decoded t_hash_t (for playlist.php userhash param)
   fetchedAt: number;
 }
 
-let _session: MobileSession | null = null;
-let _sessionInFlight: Promise<MobileSession> | null = null;  // Dedup concurrent warm-ups
-const SESSION_TTL_MS = 20 * 60 * 1000; // 20 minutes
+let _session: WarmSession | null = null;
+let _sessionInFlight: Promise<WarmSession | null> | null = null;
+const SESSION_TTL_MS = 10 * 60 * 60 * 1000; // 10 hours (real app session lasts ~12hrs)
+const SESSION_STORAGE_KEY = 'netmirror_session';
 
-// ─── HTTP Helpers ─────────────────────────────────────────────────────────────
+// ─── Utility Helpers ──────────────────────────────────────────────────────────
 
-/** Standard headers for mobile API requests (matches MITM exactly) */
-function mobileHeaders(referer: string, xrw: 'app' | 'xhr' = 'app'): Record<string, string> {
-  return {
+function randomHex(bytes: number): string {
+  return Array.from({ length: bytes * 2 }, () =>
+    Math.floor(Math.random() * 16).toString(16)
+  ).join('');
+}
+
+/** Standard mobile headers matching the real NetMirror app */
+function mobileHeaders(referer: string, includeXRW: boolean = true): Record<string, string> {
+  const headers: Record<string, string> = {
     'User-Agent': MOBILE_UA,
     'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -95,164 +169,353 @@ function mobileHeaders(referer: string, xrw: 'app' | 'xhr' = 'app'): Record<stri
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Dest': 'empty',
     'Referer': referer,
-    'X-Requested-With': xrw === 'xhr' ? 'XMLHttpRequest' : 'app.netmirror.netmirrornew',
   };
+  if (includeXRW) {
+    headers['X-Requested-With'] = X_REQUESTED_WITH;
+  }
+  return headers;
 }
 
-/** Parse Set-Cookie headers into a cookie jar string */
-function parseCookies(setCookies: string | string[] | undefined, existing: string = ''): string {
-  const jar = new Map<string, string>();
+/** Extract a named cookie value from Set-Cookie response headers */
+function extractSetCookie(headers: any, name: string): string {
+  // Try 'set-cookie' key (nativeFetch returns lowercase keys with arrays)
+  const setCookies = headers?.['set-cookie'] || headers?.['Set-Cookie'];
+  if (!setCookies) return '';
+  const list = Array.isArray(setCookies) ? setCookies : [setCookies];
+  for (const h of list) {
+    const trimmed = String(h).trim();
+    if (trimmed.startsWith(`${name}=`)) {
+      return trimmed.substring(name.length + 1).split(';')[0].trim();
+    }
+  }
+  return '';
+}
 
-  // Parse existing cookies
-  if (existing) {
-    for (const part of existing.split(';')) {
-      const eq = part.indexOf('=');
-      if (eq > 0) jar.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+// ─── Session Warmup Steps ─────────────────────────────────────────────────────
+
+/**
+ * Step 1: GET /mobile/home?app=1 → addhash cookie
+ * MITM shows: first request has NO x-requested-with header, just sec-fetch-site: none
+ */
+async function fetchAddhash(
+  domain: string
+): Promise<{ raw: string; encoded: string } | null> {
+  const url = `https://${domain}/mobile/home?app=1`;
+  console.log(`[NetMirror] 🌐 Step 1: GET ${url} (using nativeFetch for Set-Cookie)`);
+
+  try {
+    const reqHeaders: Record<string, string> = {
+      'User-Agent': MOBILE_UA,
+      'Accept':
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'sec-ch-ua': SEC_CH_UA,
+      'sec-ch-ua-mobile': '?1',
+      'sec-ch-ua-platform': '"Android"',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      // MITM shows x-requested-with is EMPTY on first home request (line 116)
+      'x-requested-with': '',
+    };
+
+    const res = await nativeFetch(url, { method: 'GET', headers: reqHeaders });
+
+    // Extract addhash from Set-Cookie (nativeFetch gives us the REAL headers)
+    let encoded = extractSetCookie(res.headers, 'addhash');
+    let raw = '';
+
+    if (encoded) {
+      raw = decodeURIComponent(encoded);
+      console.log(
+        `[NetMirror] ✅ addhash from Set-Cookie: ${raw.substring(0, 20)}...`
+      );
+    } else {
+      // Fallback: extract from HTML body data-hash attribute (3-part, less reliable)
+      const body = res.body || '';
+      const m =
+        body.match(/data-hash=["']([^"']+)["']/i) ||
+        body.match(/data-addhash=["']([^"']+)["']/i);
+      if (m) {
+        raw = m[1];
+        encoded = encodeURIComponent(raw);
+        console.log(
+          `[NetMirror] ⚠️ addhash from HTML body (fallback, may be 3-part): ${raw.substring(0, 20)}...`
+        );
+      } else {
+        console.log(`[NetMirror] ❌ No addhash cookie or HTML attribute`);
+        return null;
+      }
+    }
+
+    const parts = raw.split('::');
+    if (parts.length < 3) {
+      console.log(
+        `[NetMirror] ❌ addhash only ${parts.length} parts: ${raw.substring(0, 30)}`
+      );
+      return null;
+    }
+
+    const flag = parts[parts.length - 1];
+    console.log(
+      `[NetMirror] ✅ addhash: ${parts[0].substring(0, 8)}...::${flag} (${parts.length} parts)`
+    );
+    return { raw, encoded };
+  } catch (err: any) {
+    console.log(`[NetMirror] ❌ fetchAddhash failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Step 2: Trigger monetag ad chain via userver subdomain
+ * MITM line 2775: ffr455={addhash_raw_decoded}
+ */
+async function triggerUserver(
+  domain: string,
+  addhashRaw: string
+): Promise<void> {
+  const ffr = encodeURIComponent(addhashRaw);
+  const t = Math.random().toString();
+  const url = `https://userver.${domain}/?ffr455=${ffr}&a=y&t=${t}`;
+  console.log(`[NetMirror] 📡 Step 2: Triggering userver monetag chain...`);
+
+  try {
+    await axios.get(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36',
+        'Referer': `https://${domain}/`,
+      },
+      timeout: 15000,
+      maxRedirects: 10,
+      validateStatus: () => true,
+    });
+    console.log(`[NetMirror] ✅ userver triggered`);
+  } catch (err: any) {
+    // Non-fatal — the redirect chain may have partially fired
+    console.log(`[NetMirror] ⚠️ userver error (non-fatal): ${err.message}`);
+  }
+}
+
+/**
+ * Step 3: Dwell for monetag sftouch/qlog postback
+ */
+function dwell(seconds: number): Promise<void> {
+  console.log(
+    `[NetMirror] ⏳ Step 3: Dwelling ${seconds}s for monetag postback...`
+  );
+  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+}
+
+/**
+ * Step 4: POST /mobile/verify2.php → t_hash_t cookie
+ * MITM line 12773-12812: body is verify={addhash_url_encoded}
+ * Content-length 101 confirms URL-encoded form.
+ */
+async function pollVerify2(
+  domain: string,
+  addhashEncoded: string,
+  maxAttempts: number = 60,
+  delayMs: number = 2500
+): Promise<{ encoded: string; raw: string } | null> {
+  console.log(
+    `[NetMirror] 🔑 Step 4: Polling verify2.php (up to ${maxAttempts} attempts, using nativeFetch)...`
+  );
+
+  const postHeaders: Record<string, string> = {
+    'User-Agent': MOBILE_UA,
+    'sec-ch-ua': SEC_CH_UA,
+    'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': '"Android"',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'Origin': `https://${domain}`,
+    'Referer': `https://${domain}/mobile/home?app=1`,
+    'Cookie': `addhash=${addhashEncoded}`,
+  };
+
+  for (let i = 1; i <= maxAttempts; i++) {
+    try {
+      const res = await nativeFetch(
+        `https://${domain}/mobile/verify2.php`,
+        {
+          method: 'POST',
+          headers: postHeaders,
+          body: `verify=${addhashEncoded}`,
+        }
+      );
+
+      const bodyText = res.body || '';
+      console.log(
+        `[NetMirror] 🔑 verify2 #${i}: HTTP ${res.status} [${bodyText.substring(0, 60)}]`
+      );
+
+      const tHashT = extractSetCookie(res.headers, 't_hash_t');
+      if (tHashT) {
+        const raw = decodeURIComponent(tHashT);
+        console.log(
+          `[NetMirror] ✅ t_hash_t received on attempt ${i}: ${raw.substring(0, 30)}...`
+        );
+        return { encoded: tHashT, raw };
+      }
+
+      if (i < maxAttempts) {
+        await new Promise<void>((r) => setTimeout(r, delayMs));
+      }
+    } catch (err: any) {
+      console.log(`[NetMirror] ⚠️ verify2 #${i} error: ${err.message}`);
+      if (i < maxAttempts) {
+        await new Promise<void>((r) => setTimeout(r, delayMs));
+      }
     }
   }
 
-  // Parse new Set-Cookie headers
-  const headers = !setCookies ? [] : Array.isArray(setCookies) ? setCookies : [setCookies];
-  for (const h of headers) {
-    const cookiePart = h.split(';')[0];
-    const eq = cookiePart.indexOf('=');
-    if (eq > 0) jar.set(cookiePart.slice(0, eq).trim(), cookiePart.slice(eq + 1).trim());
+  console.log(
+    `[NetMirror] ❌ verify2 exhausted ${maxAttempts} attempts — ads may not have postbacked`
+  );
+  return null;
+}
+
+/**
+ * Step 5: GET /mobile/home?app=1 — returning-session refresh
+ * MITM line 12858-12893: sends both cookies + x-requested-with: app.netmirror.netmirrornew
+ * This is important: the second home request upgrades the session to a full app session.
+ */
+async function refreshSession(
+  domain: string,
+  addhashEncoded: string,
+  tHashTEncoded: string
+): Promise<void> {
+  console.log(`[NetMirror] 🔄 Step 5: Refreshing session (returning-session home)...`);
+  try {
+    await axios.get(`https://${domain}/mobile/home?app=1`, {
+      headers: {
+        'Cache-Control': 'max-age=0',
+        'User-Agent': MOBILE_UA,
+        'Accept':
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'sec-ch-ua': SEC_CH_UA,
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
+        'Upgrade-Insecure-Requests': '1',
+        'X-Requested-With': X_REQUESTED_WITH,
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Dest': 'document',
+        'Referer': `https://${domain}/mobile/home?app=1`,
+        'Cookie': `addhash=${addhashEncoded}; t_hash_t=${tHashTEncoded}`,
+      },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    console.log(`[NetMirror] ✅ Session refreshed (returning-session)`);
+  } catch (err: any) {
+    console.log(`[NetMirror] ⚠️ Session refresh failed (non-fatal): ${err.message}`);
+  }
+}
+
+// ─── Session Management ───────────────────────────────────────────────────────
+
+/**
+ * Full session warmup: home → userver → dwell 38s → verify2 → refresh home
+ */
+async function warmSession(): Promise<WarmSession | null> {
+  const domain = DOMAIN;
+  const t0 = Date.now();
+  console.log(`[NetMirror] ━━━ Session warmup START on ${domain} ━━━`);
+
+  // Step 1: Fetch addhash
+  const addhash = await fetchAddhash(domain);
+  if (!addhash) return null;
+
+  // Step 2: Trigger userver monetag chain
+  await triggerUserver(domain, addhash.raw);
+
+  // Step 3: Dwell 38 seconds for monetag postback
+  await dwell(38);
+
+  // Step 4: Poll verify2.php for t_hash_t
+  const tHashT = await pollVerify2(domain, addhash.encoded, 60, 2500);
+  if (!tHashT) {
+    console.log(`[NetMirror] ❌ Session warmup FAILED — no t_hash_t`);
+    return null;
   }
 
-  return Array.from(jar.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
-}
+  // Step 5: Refresh session (returning-session home request)
+  await refreshSession(domain, addhash.encoded, tHashT.encoded);
 
-/** Extract a named cookie value from a cookie header string */
-function getCookieValue(cookieHeader: string, name: string): string {
-  const re = new RegExp(`(?:^|;\\s*)${name}=([^;]*)`);
-  const m = cookieHeader.match(re);
-  return m ? decodeURIComponent(m[1]) : '';
-}
+  const session: WarmSession = {
+    domain,
+    addhashRaw: addhash.raw,
+    addhashEncoded: addhash.encoded,
+    tHashTEncoded: tHashT.encoded,
+    tHashTRaw: tHashT.raw,
+    fetchedAt: Date.now(),
+  };
 
-// ─── Mobile Session Management ───────────────────────────────────────────────
+  console.log(
+    `[NetMirror] ━━━ Session warmup DONE in ${Math.round((Date.now() - t0) / 1000)}s ━━━`
+  );
 
-/**
- * Derive t_hash_t cookie from addhash token.
- * MITM shows post.php needs t_hash_t cookie for authentication.
- *
- * IMPORTANT: t_hash_t cookie uses 5-part format (hash1::hash2::ts::flag::m)
- * This is DIFFERENT from the HLS in= parameter which uses RAW 4-part token.
- * The ::m suffix only breaks HLS in= param, NOT the cookie.
- */
-function buildCookieHeader(addhash: string): string {
-  const parts = addhash.split('::');
-  if (parts.length < 4) return `addhash=${encodeURIComponent(addhash)}`;
+  // Persist session across app restarts
+  try {
+    await AsyncStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch (err) {
+    console.error(`[NetMirror] Failed to persist session:`, err);
+  }
 
-  const [hash1, hash2, timestamp, flag] = parts;
-
-  // t_hash_t: 5-part token (MITM line 3069: t_hash_t=hash1::hash2::ts::eb::m)
-  const tHashT = `${hash1}::${hash2}::${timestamp}::${flag}::m`;
-
-  // t_hash: 3-part token (MITM line 3072: t_hash=hash1::ts::flag)
-  const tHash = `${hash1}::${timestamp}::${flag}`;
-
-  return [
-    `addhash=${encodeURIComponent(addhash)}`,
-    `t_hash_t=${encodeURIComponent(tHashT)}`,
-    `t_hash=${encodeURIComponent(tHash)}`,
-  ].join('; ');
+  return session;
 }
 
 /**
- * Warm the mobile session by hitting /mobile/home?app=1.
- * Returns the raw 4-part addhash token and full cookie header.
- *
- * DIAGNOSTIC RESULTS:
- *   HLS in= parameter:  4-part (::ek) → ✅ | 5-part (::ek::m) → ❌ in=unknown
- *   Cookie t_hash_t:    5-part (::ek::m) → needed for post.php auth
- *
- * Concurrent calls are deduplicated so Net22+Net52 share one warm-up.
+ * Get or create a warm session. Cached for 10 minutes.
+ * Concurrent calls are deduplicated so only one warmup runs at a time.
  */
-async function warmMobileSession(forceDomain?: string): Promise<MobileSession> {
+async function getSession(): Promise<WarmSession | null> {
+  // Load from AsyncStorage on first call if memory is empty
+  if (!_session) {
+    try {
+      const storedStr = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+      if (storedStr) {
+        const storedSession = JSON.parse(storedStr) as WarmSession;
+        if (Date.now() - storedSession.fetchedAt < SESSION_TTL_MS) {
+          console.log(`[NetMirror] 💾 Restored session from storage (age: ${Math.round((Date.now() - storedSession.fetchedAt) / 1000)}s)`);
+          _session = storedSession;
+        } else {
+          console.log(`[NetMirror] 🗑️ Stored session expired, discarding...`);
+          await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+        }
+      }
+    } catch (err) {
+      console.error(`[NetMirror] Failed to read session from storage:`, err);
+    }
+  }
+
   // Return cached session if still valid
-  if (_session && (Date.now() - _session.fetchedAt) < SESSION_TTL_MS) {
-    console.log(`[MobileAPI] 🔑 Using cached session (age: ${Math.round((Date.now() - _session.fetchedAt) / 1000)}s, domain: ${_session.domain})`);
+  if (_session && Date.now() - _session.fetchedAt < SESSION_TTL_MS) {
+    console.log(
+      `[NetMirror] 🔑 Reusing cached session (age: ${Math.round((Date.now() - _session.fetchedAt) / 1000)}s)`
+    );
     return _session;
   }
 
-  // Deduplicate concurrent warm-up calls (Net22 + Net52 fire simultaneously)
+  // Deduplicate concurrent warmup calls
   if (_sessionInFlight) {
-    console.log(`[MobileAPI] ⏳ Session warm-up already in flight, waiting...`);
+    console.log(`[NetMirror] ⏳ Session warmup already in flight, waiting...`);
     return _sessionInFlight;
   }
 
   _sessionInFlight = (async () => {
     try {
-      const domainsToTry = forceDomain ? [forceDomain] : MOBILE_API_DOMAINS;
-
-      for (const domain of domainsToTry) {
-        try {
-          const base = `https://${domain}`;
-          console.log(`[MobileAPI] 🌐 Warming session on ${domain}...`);
-
-          const res = await axios.get(`${base}/mobile/home?app=1`, {
-            headers: {
-              'User-Agent': MOBILE_UA,
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-              'sec-ch-ua': SEC_CH_UA,
-              'sec-ch-ua-mobile': '?1',
-              'sec-ch-ua-platform': '"Android"',
-              'Sec-Fetch-Site': 'none',
-              'Sec-Fetch-Mode': 'navigate',
-              'Sec-Fetch-Dest': 'document',
-              'Sec-Fetch-User': '?1',
-              'Upgrade-Insecure-Requests': '1',
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache',
-            },
-            timeout: 10000,
-            maxRedirects: 5,
-            validateStatus: (s) => s >= 200 && s < 400,
-          });
-
-          const cookies = parseCookies(res.headers['set-cookie']);
-          const addhash = getCookieValue(cookies, 'addhash');
-
-          // Extract from data-addhash attribute in HTML body (backup/primary for React Native)
-          let bodyAddhash = '';
-          if (typeof res.data === 'string') {
-            const m = res.data.match(/data-addhash=["']([^"']+)["']/i) || res.data.match(/data-addhash="([^"]+)"/);
-            if (m) {
-              bodyAddhash = m[1];
-            } else {
-              const m2 = res.data.match(/data-hash=["']([^"']+)["']/i);
-              if (m2) bodyAddhash = m2[1];
-            }
-          }
-
-          const token = addhash || bodyAddhash;
-
-          if (!token || token.split('::').length < 4) {
-            console.log(`[MobileAPI] ⚠️ ${domain}: no valid token found (cookie addhash: ${addhash || 'none'}, body data-addhash: ${bodyAddhash || 'none'})`);
-            continue;
-          }
-
-          const parts = token.split('::');
-          console.log(`[MobileAPI] ✅ Got addhash from ${domain}: ${parts[0].substring(0, 8)}...::${parts[3]} (${parts.length} parts)`);
-
-          // Build full cookie header with t_hash_t and t_hash
-          const cookieHeader = buildCookieHeader(token);
-
-          _session = {
-            addhash: token,
-            cookieHeader,
-            domain,
-            fetchedAt: Date.now(),
-          };
-
-          return _session;
-        } catch (err: any) {
-          console.log(`[MobileAPI] ❌ ${domain} failed: ${err.message}`);
-        }
+      const session = await warmSession();
+      if (session) {
+        _session = session;
       }
-
-      throw new Error('MobileAPI: Could not warm session on any domain');
+      return session;
     } finally {
       _sessionInFlight = null;
     }
@@ -266,57 +529,19 @@ async function warmMobileSession(forceDomain?: string): Promise<MobileSession> {
 interface TmdbInfo {
   title: string;
   year: string;
-  tmdbEpisodeId?: string;   // TMDB episode ID — works directly as content ID on mirror!
-  episodeName?: string;
 }
 
-/**
- * Get TMDB metadata including the TMDB episode ID for TV shows.
- *
- * KEY INSIGHT (from serverless code + testing):
- *   TMDB episode IDs work directly as content IDs on the mirror!
- *   e.g. Stranger Things S1E6 → TMDB ep ID 1205905
- *        playlist.php?id=1205905 → returns episode-specific sources ✅
- *        /mobile/hls/1205905.m3u8 → returns episode-specific manifest ✅
- *   This completely bypasses post.php (which requires eb token).
- */
 async function getTmdbInfo(
   tmdbId: string,
-  type: 'movie' | 'tv',
-  season: number = 0,
-  episode: number = 0
+  type: 'movie' | 'tv'
 ): Promise<TmdbInfo> {
   try {
-    const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+    const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}`;
     const res = await axios.get(url, { timeout: 8000 });
     const data = res.data;
     const title = data.title || data.name || '';
     const year = (data.release_date || data.first_air_date || '').split('-')[0];
-
-    let tmdbEpisodeId: string | undefined;
-    let episodeName: string | undefined;
-
-    // For TV shows: resolve the TMDB episode ID
-    // This ID works directly as a content ID on the mirror (no post.php needed!)
-    if (type === 'tv' && season > 0 && episode > 0) {
-      try {
-        const seasonUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season}?api_key=${TMDB_API_KEY}`;
-        const seasonRes = await axios.get(seasonUrl, { timeout: 5000 });
-        const episodes = seasonRes.data?.episodes;
-        if (Array.isArray(episodes)) {
-          const ep = episodes.find((e: any) => e.episode_number === episode);
-          if (ep) {
-            tmdbEpisodeId = ep.id?.toString();
-            episodeName = ep.name;
-            console.log(`[TMDB] 🎯 Episode: S${season}E${episode} "${episodeName}" → TMDB ID ${tmdbEpisodeId}`);
-          }
-        }
-      } catch {
-        // Non-critical — will fall back to resolveEpisodeId
-      }
-    }
-
-    return { title, year, tmdbEpisodeId, episodeName };
+    return { title, year };
   } catch (err: any) {
     console.warn(`[TMDB] Failed to fetch info for ${tmdbId}: ${err.message}`);
     return { title: '', year: '' };
@@ -329,721 +554,870 @@ interface SearchResult {
   id: string;
   title: string;
   year: string;
+  ott: OttSection;   // Which OTT section this result came from
 }
 
 /**
- * Search for content on the mirror using the desktop search API.
- * Returns the best matching result ID.
+ * Normalize a title for comparison: lowercase, strip articles, strip ALL
+ * non-alphanumeric/space characters, collapse whitespace.
+ * This ensures "Avatar: The Last Airbender" == "Avatar The Last Airbender".
  */
-async function searchContent(
-  domain: string,
-  searchTitle: string,
-  searchYear: string,
-  primaryId?: string
-): Promise<SearchResult | null> {
-  const base = `https://${domain}`;
-  const ts = Math.floor(Date.now() / 1000);
+function normalizeTitle(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/^(the|a|an)\s+/i, '')
+    .replace(/[^a-z0-9\s]/g, '')     // strip everything except letters/digits/space
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
 
-  // Clean the title
-  const cleanTitle = searchTitle
+/**
+ * Calculate word-overlap score between two normalized titles.
+ * Returns a ratio 0..1 of how many words overlap relative to the shorter title.
+ */
+function wordOverlapScore(a: string, b: string): number {
+  const wordsA = new Set(a.split(' ').filter(w => w.length > 1));
+  const wordsB = new Set(b.split(' ').filter(w => w.length > 1));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let overlap = 0;
+  for (const w of wordsA) {
+    if (wordsB.has(w)) overlap++;
+  }
+  return overlap / Math.min(wordsA.size, wordsB.size);
+}
+
+/**
+ * Sanitize a title for the search query parameter.
+ * Strips all special characters that net52.cc backend chokes on.
+ */
+function sanitizeSearchQuery(title: string): string {
+  return title
     .replace(/Tyler Perry's\s+/gi, '')
     .replace(/\s+S\d+E\d+/gi, '')
     .replace(/\s+Season\s+\d+/gi, '')
     .replace(/\s+Episode\s+\d+/gi, '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')   // Kill ALL non-alphanumeric → spaces
+    .replace(/\s{2,}/g, ' ')
     .trim();
-
-  console.log(`[Search] 🔍 Searching "${cleanTitle}" on ${domain}...`);
-
-  const searchRes = await axios.get(`${base}/search.php`, {
-    params: { s: cleanTitle, t: ts },
-    headers: {
-      'User-Agent': MOBILE_UA,
-      'Cookie': `user_token=${randomHex(32)}; ott=nf;`,
-      'X-Requested-With': 'XMLHttpRequest',
-      'Referer': `${base}/`,
-    },
-    timeout: 10000,
-    validateStatus: (s) => s >= 200 && s < 500,
-  });
-
-  let results = searchRes.data?.searchResult || searchRes.data;
-  if (!Array.isArray(results) || results.length === 0) {
-    console.log(`[Search] ❌ No results for "${cleanTitle}"`);
-    return null;
-  }
-
-  // Prioritize primaryId match
-  if (primaryId) {
-    const primary = results.find((r: any) => r.id === primaryId);
-    if (primary) {
-      results = [primary, ...results.filter((r: any) => r.id !== primaryId)];
-    }
-  }
-
-  // Find best match
-  for (const r of results) {
-    const rTitle = (r.t || r.title || '').toLowerCase().trim();
-    const rYear = (r.y || r.year || '').toString();
-    const search = cleanTitle.toLowerCase().trim();
-    const isPrimary = primaryId && r.id === primaryId;
-
-    // Title match check
-    const stripArticle = (s: string) => s.replace(/^(the|a|an)\s+/i, '');
-    const rStripped = stripArticle(rTitle);
-    const sStripped = stripArticle(search);
-
-    const titleMatch = isPrimary ||
-      rTitle === search ||
-      rStripped === sStripped ||
-      rStripped.startsWith(sStripped + ' ') ||
-      rStripped.startsWith(sStripped + ':') ||
-      sStripped.startsWith(rStripped + ' ') ||
-      sStripped.startsWith(rStripped + ':');
-
-    if (!titleMatch) continue;
-
-    // Year match check (lenient — skip if no year info)
-    if (!isPrimary && searchYear && rYear && !rYear.includes(searchYear) && !searchYear.includes(rYear)) {
-      continue;
-    }
-
-    console.log(`[Search] ✅ Matched: "${r.t || r.title}" (${rYear}) ID: ${r.id}${isPrimary ? ' [PRIMARY]' : ''}`);
-    return { id: r.id, title: r.t || r.title || '', year: rYear };
-  }
-
-  console.log(`[Search] ❌ No title match found in ${results.length} results`);
-  return null;
 }
-
-// ─── Episode Resolution ───────────────────────────────────────────────────────
 
 /**
- * For TV shows: resolve the specific episode ID from the series ID.
- * Uses /mobile/post.php to get the episode list, then matches the target episode.
+ * Generate search query variants from a title, ordered by specificity.
+ * e.g. "Avatar The Last Airbender" → ["Avatar The Last Airbender", "Avatar The Last", "Avatar"]
  */
-async function resolveEpisodeId(
-  domain: string,
-  seriesId: string,
-  season: number,
-  episode: number,
-  session: MobileSession
-): Promise<string> {
-  const base = `https://${domain}`;
-  const ts = Math.floor(Date.now() / 1000);
+function searchVariants(cleanTitle: string): string[] {
+  const variants: string[] = [cleanTitle];
+  const words = cleanTitle.split(' ');
 
-  console.log(`[Episodes] 📺 Fetching episode list for series ${seriesId} (S${season}E${episode})...`);
-
-  try {
-    // Method 1: /mobile/post.php (MITM line 3056)
-    const postRes = await axios.get(`${base}/mobile/post.php`, {
-      params: { id: seriesId, t: ts },
-      headers: {
-        ...mobileHeaders(`${base}/mobile/home?app=1`, 'xhr'),
-        'Cookie': session.cookieHeader,
-      },
-      timeout: 10000,
-    });
-
-    const postData = postRes.data;
-
-    // Success: JSON with episode data
-    if (postData && typeof postData === 'object' && postData.status !== 'n') {
-      const episodes = extractEpisodeList(postData);
-      if (episodes.length > 0) {
-        const match = findEpisode(episodes, season, episode);
-        if (match) {
-          console.log(`[Episodes] ✅ Found episode ID: ${match} (from post.php)`);
-          return match;
-        }
-      }
-    }
-  } catch (err: any) {
-    console.log(`[Episodes] ⚠️ post.php failed: ${err.message}`);
+  // For multi-word titles, add progressively shorter prefixes
+  if (words.length >= 4) {
+    variants.push(words.slice(0, 3).join(' '));  // first 3 words
+  }
+  if (words.length >= 3) {
+    variants.push(words.slice(0, 2).join(' '));  // first 2 words
+  }
+  // Single keyword (only for long-enough first words to avoid false matches)
+  if (words[0] && words[0].length >= 4) {
+    variants.push(words[0]);
   }
 
-  try {
-    // Method 2: Desktop play.php → get h token → playlist.php with ep param
-    // The desktop playlist.php accepts ep= and returns episode-specific content
-    const sessionToken = randomHex(32);
-    const desktopCookie = `user_token=${sessionToken}; ott=nf; hd=on;`;
-
-    const playRes = await axios.post(`${base}/play.php`, `id=${seriesId}&ep=${episode}`, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': desktopCookie,
-        'X-Requested-With': 'XMLHttpRequest',
-        'User-Agent': MOBILE_UA,
-        'Referer': `${base}/`,
-      },
-      timeout: 10000,
-    });
-
-    const playData = playRes.data;
-    if (playData?.h && playData.h !== 'error') {
-      console.log(`[Episodes] 🔑 Got h-token from play.php`);
-
-      // Try desktop playlist.php with ep= param to get the episode-specific HLS URL
-      try {
-        const plRes = await axios.get(`${base}/playlist.php`, {
-          params: { id: seriesId, t: ts, h: playData.h, ott: 'nf', ep: episode },
-          headers: {
-            'Cookie': desktopCookie,
-            'X-Requested-With': 'XMLHttpRequest',
-            'User-Agent': MOBILE_UA,
-            'Referer': `${base}/`,
-          },
-          timeout: 10000,
-        });
-
-        const plData = Array.isArray(plRes.data) ? plRes.data[0] : plRes.data;
-        if (plData?.sources?.[0]?.file) {
-          const sourceUrl = plData.sources[0].file;
-          // Extract episode ID from HLS URL: /hls/{EPISODE_ID}.m3u8 or /files/{EPISODE_ID}/
-          const hlsMatch = sourceUrl.match(/\/hls\/(\d+)\.m3u8/) || sourceUrl.match(/\/files\/(\d+)\//);
-          if (hlsMatch && hlsMatch[1] !== seriesId && hlsMatch[1] !== POISON_ID) {
-            console.log(`[Episodes] ✅ Found episode ID: ${hlsMatch[1]} (from desktop playlist.php)`);
-            return hlsMatch[1];
-          }
-        }
-      } catch {
-        // Non-critical
-      }
-
-      // Try ep_list endpoint
-      try {
-        const epListRes = await axios.get(`${base}/ep_list.php`, {
-          params: { id: seriesId, t: ts },
-          headers: {
-            'Cookie': desktopCookie,
-            'X-Requested-With': 'XMLHttpRequest',
-            'User-Agent': MOBILE_UA,
-            'Referer': `${base}/`,
-          },
-          timeout: 10000,
-        });
-
-        if (typeof epListRes.data === 'string' && epListRes.data.includes('data-')) {
-          const ids = extractEpisodeIdsFromHtml(epListRes.data);
-          if (ids.length > 0) {
-            const targetIdx = episode - 1;
-            if (targetIdx >= 0 && targetIdx < ids.length) {
-              console.log(`[Episodes] ✅ Found episode ID: ${ids[targetIdx]} (from ep_list.php, index ${targetIdx})`);
-              return ids[targetIdx];
-            }
-            console.log(`[Episodes] ✅ Using first episode ID: ${ids[0]} (from ep_list.php)`);
-            return ids[0];
-          }
-        }
-      } catch {
-        // Non-critical
-      }
-    }
-  } catch (err: any) {
-    console.log(`[Episodes] ⚠️ Desktop fallback failed: ${err.message}`);
-  }
-
-  // Method 3: Use mobile playlist.php to extract episode ID from source URL
-  try {
-    const plRes = await axios.get(`${base}/mobile/playlist.php`, {
-      params: { id: seriesId, t: 'test', tm: ts },
-      headers: {
-        ...mobileHeaders(`${base}/mobile/home?app=1`, 'app'),
-        'Cookie': session.cookieHeader,
-      },
-      timeout: 8000,
-    });
-
-    const plData = Array.isArray(plRes.data) ? plRes.data[0] : plRes.data;
-    if (plData?.sources?.[0]?.file) {
-      const sourceUrl = plData.sources[0].file;
-      const hlsMatch = sourceUrl.match(/\/hls\/(\d+)\.m3u8/);
-      if (hlsMatch && hlsMatch[1] !== seriesId && hlsMatch[1] !== POISON_ID) {
-        console.log(`[Episodes] ✅ Found episode ID: ${hlsMatch[1]} (from mobile playlist.php)`);
-        return hlsMatch[1];
-      }
-    }
-  } catch {
-    // Non-critical
-  }
-
-  // Last resort: use series ID directly
-  console.warn(`[Episodes] ⚠️ Could not resolve episode ID, using series ID: ${seriesId}`);
-  return seriesId;
+  // Deduplicate
+  return [...new Set(variants)];
 }
 
-/** Extract episode list from various JSON structures */
-function extractEpisodeList(payload: any): any[] {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== 'object') return [];
+/**
+ * All search endpoint paths to try for an OTT section.
+ * Backends sometimes move endpoints; trying multiple ensures resilience.
+ */
+function ottSearchPaths(ott: OttSection): string[] {
+  switch (ott) {
+    case 'nf': return ['/search.php', '/mobile/search.php'];
+    case 'pv': return ['/mobile/pv/search.php'];
+    default: return ['/search.php', '/mobile/search.php'];
+  }
+}
 
-  for (const key of ['episodes', 'episode', 'eps', 'list', 'data', 'result', 'results']) {
-    const value = payload[key];
-    if (Array.isArray(value)) return value;
-    if (value && typeof value === 'object') {
-      const nested = extractEpisodeList(value);
-      if (nested.length > 0) return nested;
+/**
+ * Extract search results from various backend response formats.
+ * Handles: {searchResult:[...]}, raw [...], {status:"n",...,searchResult:[trending]},
+ * and {head:...,type:0} (empty response).
+ */
+function extractResults(parsed: any): any[] {
+  if (!parsed) return [];
+
+  // Direct array response
+  if (Array.isArray(parsed)) return parsed;
+
+  // Standard searchResult wrapper
+  if (Array.isArray(parsed.searchResult) && parsed.searchResult.length > 0) {
+    // status: "n" means the backend returned trending/popular, not actual matches
+    // Only use if status is not explicitly "n" (no-match indicator)
+    if (parsed.status === 'n') {
+      return []; // Trending results, not search matches
     }
+    return parsed.searchResult;
   }
 
-  for (const value of Object.values(payload)) {
-    if (Array.isArray(value)) {
-      const hasEpFields = (value as any[]).some((item: any) =>
-        item && typeof item === 'object' && 'id' in item &&
-        ('ep' in item || 'e' in item || 'episode' in item || 's' in item || 'season' in item || 'title' in item)
-      );
-      if (hasEpFields) return value as any[];
-    }
+  // {head:...,type:0} — empty response from newer API
+  if (parsed.type === 0 && !parsed.searchResult) {
+    return [];
   }
 
   return [];
 }
 
-/** Find a specific episode by season + episode number in an episode list */
-function findEpisode(episodes: any[], season: number, episode: number): string | null {
-  // Direct season+episode match
-  for (const ep of episodes) {
-    const epSeason = ep.s || ep.season || ep.season_number || 1;
-    const epNum = ep.ep || ep.e || ep.episode || ep.episode_number || 0;
-    if (Number(epSeason) === season && Number(epNum) === episode && ep.id) {
-      return String(ep.id);
+/**
+ * Match search results against the original title.
+ * Returns best match or null. Uses multiple strategies:
+ *   1. Exact normalized match
+ *   2. Prefix/contains match with length guard
+ *   3. High word-overlap score (≥70%)
+ *   4. Plausible first result (word overlap ≥50% for longer titles)
+ */
+function findBestMatch(
+  results: any[],
+  searchTitle: string,
+  searchYear: string,
+  ott: OttSection
+): SearchResult | null {
+  if (!results || results.length === 0) return null;
+
+  const searchNorm = normalizeTitle(searchTitle);
+  if (!searchNorm) return null;
+
+  // Score each result
+  interface ScoredResult { r: any; score: number; reason: string }
+  const scored: ScoredResult[] = [];
+
+  for (const r of results) {
+    if (!r || (!r.id && !r.Id)) continue;
+    const rTitle = r.t || r.title || r.T || r.Title || '';
+    const rYear = (r.y || r.year || r.Y || r.Year || '').toString();
+    const rId = (r.id || r.Id || '').toString();
+    const rNorm = normalizeTitle(rTitle);
+
+    // Year mismatch filter (lenient — only reject if both years exist and differ by >1)
+    if (searchYear && rYear && rYear.length === 4 && searchYear.length === 4) {
+      const yearDiff = Math.abs(parseInt(searchYear) - parseInt(rYear));
+      if (yearDiff > 1) continue;
+    }
+
+    // Score: exact match
+    if (rNorm === searchNorm) {
+      scored.push({ r, score: 100, reason: 'exact' });
+      continue;
+    }
+
+    // Score: prefix match (either direction)
+    if (rNorm.startsWith(searchNorm + ' ') || searchNorm.startsWith(rNorm + ' ') ||
+        rNorm.startsWith(searchNorm) || searchNorm.startsWith(rNorm)) {
+      const lenRatio = rNorm.length / Math.max(searchNorm.length, 1);
+      // Guard against short queries matching very long titles
+      if (searchNorm.length > 6 || lenRatio <= 2.0) {
+        scored.push({ r, score: 80, reason: 'prefix' });
+        continue;
+      }
+    }
+
+    // Score: word overlap
+    const overlap = wordOverlapScore(searchNorm, rNorm);
+    if (overlap >= 0.7) {
+      scored.push({ r, score: 60 + overlap * 20, reason: `overlap(${(overlap * 100).toFixed(0)}%)` });
+      continue;
+    }
+
+    // Score: contains (one inside the other)
+    if (searchNorm.length > 5 && (rNorm.includes(searchNorm) || searchNorm.includes(rNorm))) {
+      scored.push({ r, score: 50, reason: 'contains' });
+      continue;
+    }
+
+    // Low-confidence fallback: moderate word overlap for longer titles
+    if (overlap >= 0.5 && searchNorm.length > 8) {
+      scored.push({ r, score: 30 + overlap * 20, reason: `weak-overlap(${(overlap * 100).toFixed(0)}%)` });
     }
   }
 
-  // Episode-number-only match (some APIs don't include season)
-  for (const ep of episodes) {
-    const epNum = ep.ep || ep.e || ep.episode || ep.episode_number || 0;
-    if (Number(epNum) === episode && ep.id) {
-      return String(ep.id);
+  if (scored.length === 0) return null;
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  const bestTitle = best.r.t || best.r.title || best.r.T || best.r.Title || '';
+  const bestYear = (best.r.y || best.r.year || best.r.Y || best.r.Year || '').toString();
+  const bestId = (best.r.id || best.r.Id || '').toString();
+
+  // Require minimum score of 30 to avoid wild mismatches
+  if (best.score < 30) return null;
+
+  console.log(
+    `[NetMirror] ✅ Search match [${ott.toUpperCase()}]: "${bestTitle}" (${bestYear}) ID: ${bestId} [${best.reason}, score=${best.score.toFixed(0)}]`
+  );
+  return { id: bestId, title: bestTitle, year: bestYear, ott };
+}
+
+/**
+ * Search for content on the mirror using the search API.
+ * Returns the best matching result — this is the SHOW id for TV series.
+ *
+ * RESILIENCE STRATEGY (2026-06-26):
+ *   1. Sanitize title: strip ALL special chars (backend rejects colons, &, etc.)
+ *   2. Generate query variants: full title → first 3 words → first 2 → first word
+ *   3. Try multiple endpoints per OTT section (/search.php, /mobile/search.php)
+ *   4. Handle all response formats (arrays, wrapped objects, "no match" indicators)
+ *   5. Normalized fuzzy matching with word-overlap scoring
+ *
+ * @param ott - Which OTT section to search (nf, pv). Defaults to 'nf'.
+ */
+async function searchContent(
+  domain: string,
+  searchTitle: string,
+  searchYear: string,
+  cookie: string,
+  ott: OttSection = 'nf'
+): Promise<SearchResult | null> {
+  const base = `https://${domain}`;
+  const cleanTitle = sanitizeSearchQuery(searchTitle);
+  const variants = searchVariants(cleanTitle);
+  const paths = ottSearchPaths(ott);
+
+  console.log(`[NetMirror] 🔍 Searching "${cleanTitle}" on ${domain} [${ott.toUpperCase()}] (${variants.length} variants, ${paths.length} endpoints)...`);
+
+  // Try each variant against each endpoint — stop on first good match
+  for (const query of variants) {
+    for (const searchPath of paths) {
+      try {
+        const ts = Math.floor(Date.now() / 1000);
+        const searchUrl = `${base}${searchPath}?s=${encodeURIComponent(query)}&t=${ts}`;
+        console.log(`[NetMirror]   → trying "${query}" via ${searchPath}`);
+
+        const res = await nativeFetch(searchUrl, {
+          method: 'GET',
+          headers: {
+            'User-Agent': MOBILE_UA,
+            'Cookie': cookie,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': `${base}/`,
+          },
+        });
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(res.body);
+        } catch {
+          console.log(`[NetMirror]     ❌ non-JSON response: ${res.body.substring(0, 80)}`);
+          continue; // Try next endpoint
+        }
+
+        const results = extractResults(parsed);
+        if (results.length === 0) {
+          console.log(`[NetMirror]     ❌ empty results`);
+          continue; // Try next endpoint, or next variant
+        }
+
+        console.log(`[NetMirror]     📦 ${results.length} results from ${searchPath}`);
+
+        // Try to match against the ORIGINAL full title (not the shortened variant)
+        const match = findBestMatch(results, searchTitle, searchYear, ott);
+        if (match) return match;
+
+        console.log(`[NetMirror]     ❌ no match in ${results.length} results`);
+      } catch (err: any) {
+        console.log(`[NetMirror]     ❌ ${searchPath} error: ${err.message}`);
+      }
     }
   }
 
-  // Index-based fallback
-  const idx = episode - 1;
-  if (idx >= 0 && idx < episodes.length && episodes[idx]?.id) {
-    return String(episodes[idx].id);
-  }
-
+  console.log(`[NetMirror] ❌ No results for "${cleanTitle}" across ${variants.length} variants × ${paths.length} endpoints`);
   return null;
 }
 
-/** Extract episode IDs from HTML episode list */
-function extractEpisodeIdsFromHtml(html: string): string[] {
-  const ids: string[] = [];
-  const patterns = [
-    /\/epimg\/(?:\d+)\/(\d+)\.(?:jpg|jpeg|png|webp)/gi,
-    /mobile\/playlist\.php\?id=(\d+)/gi,
-    /mobile\/hls\/(\d+)\.m3u8/gi,
-    /data-(?:id|post|episode)=["'](\d+)["']/gi,
-  ];
+// ─── Content Detail (post.php) ────────────────────────────────────────────────
 
-  for (const pattern of patterns) {
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(html)) !== null) {
-      if (match[1] && !ids.includes(match[1])) ids.push(match[1]);
+/**
+ * GET /mobile/post.php?id={showId}&t={ts} → episode list (TV) or metadata (movie)
+ * For PV: GET /mobile/pv/post.php?id={showId}&t={ts}
+ * MITM line 16800: returns episodes array with { id, s, ep, t, time }
+ */
+async function fetchPostDetail(
+  domain: string,
+  showId: string,
+  cookie: string,
+  ott: OttSection = 'nf'
+): Promise<any> {
+  const ts = Math.floor(Date.now() / 1000);
+  const prefix = ottPathPrefix(ott);
+  const url = `https://${domain}${prefix}/post.php?id=${showId}&t=${ts}`;
+  console.log(`[NetMirror] 📋 Fetching post.php [${ott.toUpperCase()}] for showId: ${showId}`);
+
+  try {
+    const res = await nativeFetch(url, {
+      method: 'GET',
+      headers: {
+        ...mobileHeaders(`https://${domain}/mobile/home?app=1`),
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookie,
+      },
+    });
+
+    let data: any;
+    try {
+      data = JSON.parse(res.body);
+    } catch {
+      console.log(`[NetMirror] ⚠️ post.php returned non-JSON: ${res.body.substring(0, 100)}`);
+      return null;
+    }
+
+    // Debug: log response structure
+    if (data && typeof data === 'object') {
+      const keys = Object.keys(data);
+      const seasonCount = Array.isArray(data.season) ? data.season.length : (data.season ? 'non-array' : 'missing');
+      const epCount = Array.isArray(data.episodes) ? data.episodes.length : (data.episodes ? 'non-array' : 'missing');
+      console.log(
+        `[NetMirror] 📋 post.php response: status=${data.status}, keys=[${keys.join(',')}], seasons=${seasonCount}, episodes=${epCount}`
+      );
+    } else {
+      console.log(`[NetMirror] ⚠️ post.php returned non-object: ${typeof data}`);
+    }
+
+    return data;
+  } catch (err: any) {
+    console.log(`[NetMirror] ⚠️ post.php failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Find the episode content ID from an episodes array.
+ * The array has items like { id, s: "S1", ep: "E1", t: "Episode Title" }
+ */
+function findEpisodeId(episodes: any[], season: number, episode: number): string | null {
+  if (!Array.isArray(episodes) || episodes.length === 0) {
+    return null;
+  }
+
+  const targetS = `S${season}`;
+  const targetE = `E${episode}`;
+
+  for (const ep of episodes) {
+    if (!ep || typeof ep !== 'object') continue;
+    if (ep.s === targetS && ep.ep === targetE) {
+      console.log(
+        `[NetMirror] 🎯 Found episode: ${ep.s}${ep.ep} "${ep.t}" → ID ${ep.id}`
+      );
+      return ep.id;
     }
   }
 
-  return ids;
+  console.log(
+    `[NetMirror] ⚠️ Episode S${season}E${episode} not found in ${episodes.length} episodes`
+  );
+  return null;
 }
 
-// ─── HLS Manifest Handling ────────────────────────────────────────────────────
-
 /**
- * Fetch the master HLS manifest from /mobile/hls/{id}.m3u8
- *
- * CRITICAL: Use the RAW 4-part addhash token. The diagnostic proved:
- *   hash1::hash2::timestamp::ek → ✅ valid manifest, CDN works
- *   hash1::hash2::timestamp::ek::m → ❌ in=unknown, CDN blocked
+ * GET /mobile/episodes.php?s={seasonId}&series={showId}&t={ts}
+ * For PV: GET /mobile/pv/episodes.php?s={seasonId}&series={showId}&t={ts}
+ * Used to fetch episodes for a specific season (post.php only returns the latest).
+ * The season ID comes from the post.php response's `season` array.
  */
-async function fetchMasterManifest(
+async function fetchSeasonEpisodes(
   domain: string,
-  contentId: string,
-  session: MobileSession
-): Promise<{ manifest: string; url: string } | null> {
-  const base = `https://${domain}`;
-  const token = session.addhash; // RAW 4-part token — DO NOT modify
+  seasonId: string,
+  showId: string,
+  cookie: string,
+  ott: OttSection = 'nf'
+): Promise<any[] | null> {
+  const ts = Math.floor(Date.now() / 1000);
+  const prefix = ottPathPrefix(ott);
+  const url = `https://${domain}${prefix}/episodes.php?s=${seasonId}&series=${showId}&t=${ts}`;
+  console.log(`[NetMirror] 📋 Fetching episodes.php [${ott.toUpperCase()}] for seasonId: ${seasonId}, showId: ${showId}`);
 
-  const hlsUrl = `${base}/mobile/hls/${contentId}.m3u8?in=${encodeURIComponent(token)}&hd=off&lang=eng`;
-  console.log(`[HLS] 🎬 Fetching: ${hlsUrl.substring(0, 100)}...`);
+  try {
+    const res = await nativeFetch(url, {
+      method: 'GET',
+      headers: {
+        ...mobileHeaders(`https://${domain}/mobile/home?app=1`),
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookie,
+      },
+    });
 
-  const res = await axios.get(hlsUrl, {
-    headers: {
-      ...mobileHeaders(`${base}/mobile/home?app=1`, 'app'),
-      'Cookie': session.cookieHeader,
-    },
-    timeout: 12000,
-    responseType: 'text',
-  });
+    let data: any;
+    try {
+      data = JSON.parse(res.body);
+    } catch {
+      console.log(`[NetMirror] ⚠️ episodes.php returned non-JSON`);
+      return null;
+    }
 
-  const body = typeof res.data === 'string' ? res.data : String(res.data);
+    if (data?.episodes && Array.isArray(data.episodes)) {
+      console.log(
+        `[NetMirror] ✅ episodes.php returned ${data.episodes.length} episodes for season ${seasonId}`
+      );
+      return data.episodes;
+    }
 
-  if (!body.includes('#EXTM3U')) {
-    console.warn(`[HLS] ❌ Response is not a valid HLS manifest (${body.length} bytes)`);
+    console.log(`[NetMirror] ⚠️ episodes.php returned no episodes`);
+    return null;
+  } catch (err: any) {
+    console.log(`[NetMirror] ⚠️ episodes.php failed: ${err.message}`);
     return null;
   }
+}
 
-  if (body.includes('in=unknown')) {
-    console.warn(`[HLS] ⚠️ Manifest contains in=unknown — token was rejected`);
-    return null;
-  }
+// ─── Playlist (server-generated HLS URL) ──────────────────────────────────────
 
-  console.log(`[HLS] ✅ Valid master manifest (${body.length} bytes)`);
-  return { manifest: body, url: hlsUrl };
+interface PlaylistResult {
+  hlsUrl: string;          // Full path like /mobile/hls/81635392.m3u8?in=...&hd=off&lang=eng
+  captions: any[];
+  title: string;
 }
 
 /**
- * Fetch captions/subtitles from /mobile/playlist.php
+ * GET /mobile/playlist.php?id={contentId}&t={title}&tm={ts}
+ * For PV: GET /mobile/pv/playlist.php?id={contentId}&t={title}&tm={ts}
+ * MITM line 18079-18131: returns the SERVER-GENERATED ?in= hash in sources[].file
+ * This is the KEY step — the ?in= hash MUST come from the server, not be built client-side.
  */
-async function fetchCaptions(
+async function fetchPlaylist(
   domain: string,
   contentId: string,
   title: string,
-  session: MobileSession
-): Promise<any[]> {
-  const base = `https://${domain}`;
+  cookie: string,
+  ott: OttSection = 'nf'
+): Promise<PlaylistResult | null> {
   const ts = Math.floor(Date.now() / 1000);
+  const prefix = ottPathPrefix(ott);
+  const params = `id=${encodeURIComponent(contentId)}&t=${encodeURIComponent(title)}&tm=${ts}`;
+  const url = `https://${domain}${prefix}/playlist.php?${params}`;
+  console.log(`[NetMirror] 📼 Fetching playlist.php [${ott.toUpperCase()}] for contentId: ${contentId}`);
 
   try {
-    const plRes = await axios.get(`${base}/mobile/playlist.php`, {
-      params: { id: contentId, t: encodeURIComponent(title), tm: ts },
+    const res = await nativeFetch(url, {
+      method: 'GET',
       headers: {
-        ...mobileHeaders(`${base}/mobile/home?app=1`, 'app'),
-        'Cookie': session.cookieHeader,
+        ...mobileHeaders(`https://${domain}/mobile/home?app=1`),
+        'X-Requested-With': X_REQUESTED_WITH,
+        'Cookie': cookie,
       },
-      timeout: 8000,
     });
 
-    const plData = Array.isArray(plRes.data) ? plRes.data[0] : plRes.data;
-    if (!plData?.tracks) return [];
+    let parsed: any;
+    try {
+      parsed = JSON.parse(res.body);
+    } catch {
+      console.log(`[NetMirror] ❌ playlist.php returned non-JSON: ${res.body.substring(0, 100)}`);
+      return null;
+    }
 
-    return plData.tracks
+    // Response is an array: [{ sources: [...], tracks: [...], title: "..." }]
+    const data = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!data) {
+      console.log(`[NetMirror] ❌ playlist.php returned empty response`);
+      return null;
+    }
+
+    // Extract HLS URL from sources — prefer "Auto" label, fallback to first
+    let hlsFile = '';
+    if (data.sources && Array.isArray(data.sources)) {
+      const autoSource = data.sources.find((s: any) => s.label === 'Auto');
+      const defaultSource = data.sources.find((s: any) => s.default === 'true');
+      const source = autoSource || defaultSource || data.sources[0];
+      hlsFile = source?.file || '';
+    }
+
+    if (!hlsFile) {
+      console.log(`[NetMirror] ❌ playlist.php has no HLS source`);
+      return null;
+    }
+
+    console.log(
+      `[NetMirror] ✅ playlist.php HLS: ${hlsFile.substring(0, 80)}...`
+    );
+
+    // Extract captions
+    const captions = (data.tracks || [])
       .filter((t: any) => t.kind === 'captions' && t.file)
       .map((t: any) => ({
         url: t.file.startsWith('//') ? `https:${t.file}` : t.file,
         language: t.label || 'Unknown',
         type: 'vtt',
       }));
+
+    return {
+      hlsUrl: hlsFile,
+      captions,
+      title: data.title || title,
+    };
   } catch (err: any) {
-    console.log(`[Captions] ⚠️ Failed to fetch: ${err.message}`);
-    return [];
+    console.log(`[NetMirror] ❌ playlist.php failed: ${err.message}`);
+    return null;
   }
 }
 
-// ─── Manifest Rewriting ───────────────────────────────────────────────────────
+// ─── Manifest Handling ────────────────────────────────────────────────────────
 
 /**
- * Rewrite the master manifest to fix known issues:
- *  1. Replace dead CDN domains (nm-cdn → freecdn)
- *  2. Unpoison /files/220884/ references with the real content ID
- *  3. Fix CDN domain mismatch: video stream URIs often point to a dead/wrong CDN
- *     while audio URIs have the correct CDN domain. Extract working CDN from audio
- *     and apply it to video stream lines.
- *  4. Remove BOM and trailing \r
+ * Extract CDN hostname from the manifest.
+ * Looks at AUDIO URI lines and video variant lines.
  */
-function rewriteManifest(manifest: string, contentId: string): string {
+function extractCdnHost(manifest: string): string | null {
+  // Audio URI with real host
+  const audioMatch = manifest.match(/URI="https:\/\/([^"/]+)\/files\//);
+  if (audioMatch) return audioMatch[1];
+
+  // Video variant lines
+  const videoMatch = manifest.match(/^https:\/\/([^/]+)\/files\/\d+\//m);
+  if (videoMatch) return videoMatch[1];
+
+  return null;
+}
+
+/**
+ * Rewrite the master manifest — MINIMAL fixes only.
+ *
+ *  1. Fix empty audio hosts: https:/// → https://{cdnHost}/
+ *     Some manifests return audio URIs with no hostname.
+ *
+ *  DO NOT touch variant URLs — they are server-issued with session-bound ?in= hashes.
+ */
+function rewriteManifest(
+  manifest: string,
+  cdnHost: string | null
+): string {
   let content = manifest;
 
   // Remove BOM
   content = content.replace(/^\uFEFF/, '');
 
-  // Remove trailing \r from lines (Windows-style line endings from server)
+  // Normalize line endings
   content = content.replace(/\r\n/g, '\n').replace(/\r/g, '');
 
-  // Fix dead CDN domains: nm-cdn1.top → freecdn1.top, nm-cdn.top → freecdn2.top
-  content = content.replace(/nm-cdn(\d+)?\.top/gi, (_match: string, p1?: string) => {
-    return p1 ? `freecdn${p1}.top` : 'freecdn2.top';
-  });
-
-  // ── CDN Domain Fix ──
-  // The manifest often has audio URIs pointing to the correct CDN (e.g. s24.freecdn3.top)
-  // with the real file ID, while video stream URIs point to a different/dead CDN
-  // (e.g. s21.freecdn4.top) with a poisoned file ID (220884).
-  //
-  // IMPORTANT: Audio URIs can be HOSTLESS: URI="https:///files/{id}/a/0/0.m3u8"
-  // (triple-slash, no hostname). We must handle both formats.
-  //
-  // Strategy:
-  //   1. Try extracting CDN host from audio URIs (full URL format)
-  //   2. Extract CDN host from video variant lines (they always have a host)
-  //   3. Fix hostless audio URIs with the discovered host
-  //   4. Fix video lines pointing to wrong CDN
-
-  let workingCdnHost = '';
-
-  // Strategy A: Extract CDN host from audio URIs with full hostname
-  const audioHostMatch = content.match(/URI="https?:\/\/([^"\/]+)\/files\/(\d+)\//);
-  if (audioHostMatch) {
-    workingCdnHost = audioHostMatch[1];
-    const audioContentId = audioHostMatch[2];
-    console.log(`[HLS] 🔍 Audio CDN host: ${workingCdnHost}, audio content ID: ${audioContentId}`);
-  }
-
-  // Strategy B: If audio URIs are hostless (https:///files/...), extract CDN host
-  // from the video variant lines instead. Video lines always have a hostname.
-  if (!workingCdnHost) {
-    const videoHostMatch = content.match(/^https:\/\/([^\/]+)\/files\/\d+\//m);
-    if (videoHostMatch) {
-      workingCdnHost = videoHostMatch[1];
-      console.log(`[HLS] 🔍 CDN host from video lines: ${workingCdnHost}`);
-    }
-  }
-
-  // ── Fix hostless audio URIs ──
-  // Replace https:///files/... (triple-slash) with https://{cdnHost}/files/...
-  if (content.includes('https:///')) {
-    if (workingCdnHost) {
-      content = content.replace(/https:\/\/\//g, `https://${workingCdnHost}/`);
-      console.log(`[HLS] 🔧 Resolved hostless URIs → https://${workingCdnHost}/`);
-    } else {
-      console.warn(`[HLS] ⚠️ Hostless URIs found but no CDN host to resolve them`);
-    }
-  }
-
-  // Unpoison: replace /files/220884/ with /files/{realId}/
-  if (content.includes(`/files/${POISON_ID}/`)) {
-    content = content.replace(
-      new RegExp(`/files/${POISON_ID}/`, 'g'),
-      `/files/${contentId}/`
+  // Fix empty audio hosts
+  if (cdnHost && content.includes('https:///')) {
+    content = content.replace(/https:\/\/\//g, `https://${cdnHost}/`);
+    console.log(
+      `[NetMirror] 🔧 Fixed empty audio hosts → https://${cdnHost}/`
     );
-    console.log(`[HLS] 🔧 Unpoisoned /files/${POISON_ID}/ → /files/${contentId}/`);
-  }
-
-  // ── Re-extract working CDN host after unpoisoning ──
-  // Now that audio URIs have real IDs, re-check if audio host differs from video host
-  if (!audioHostMatch) {
-    // Audio was hostless and now resolved — re-extract
-    const fixedAudioMatch = content.match(/URI="https?:\/\/([^"\/]+)\/files\/(\d+)\//);
-    if (fixedAudioMatch && fixedAudioMatch[1]) {
-      workingCdnHost = fixedAudioMatch[1];
-    }
-  }
-
-  // Fix CDN domain on video stream lines:
-  // If we found a working CDN host from audio, replace any different CDN hosts
-  // on video stream lines (lines that are URLs with .m3u8 and have /files/)
-  if (workingCdnHost) {
-    const lines = content.split('\n');
-    const rewrittenLines = lines.map(line => {
-      const trimmed = line.trim();
-      // Only rewrite lines that are video variant URLs (not audio, not comments)
-      if (trimmed.startsWith('https://') && trimmed.includes('.m3u8') && trimmed.includes('/files/')) {
-        const lineHostMatch = trimmed.match(/^https?:\/\/([^\/]+)\//);
-        if (lineHostMatch && lineHostMatch[1] !== workingCdnHost) {
-          const oldHost = lineHostMatch[1];
-          const rewritten = trimmed.replace(`https://${oldHost}/`, `https://${workingCdnHost}/`);
-          console.log(`[HLS] 🔧 CDN fix: ${oldHost} → ${workingCdnHost}`);
-          return rewritten;
-        }
-      }
-      return line;
-    });
-    content = rewrittenLines.join('\n');
   }
 
   return content;
 }
 
-/**
- * Validate the CDN stream to detect rate limiting.
- * Rate-limited CDN serves .jpg slideshow instead of real .ts segments.
- */
-async function validateCdnStream(manifest: string): Promise<{ valid: boolean; rateLimited: boolean }> {
-  // Extract first CDN URL from manifest
-  const lines = manifest.split('\n');
-  const cdnUrl = lines.find(l => l.trim().startsWith('http') && l.includes('.m3u8'));
-
-  if (!cdnUrl) {
-    return { valid: true, rateLimited: false }; // No CDN URLs to validate
-  }
-
-  try {
-    const res = await axios.get(cdnUrl.trim(), {
-      headers: { 'User-Agent': MOBILE_UA },
-      timeout: 8000,
-    });
-
-    const body = res.data.toString();
-    const hasJpg = body.includes('.jpg') || body.includes('.jpeg') || body.includes('.png');
-    const hasTs = body.includes('.ts');
-
-    if (hasJpg && !hasTs) {
-      console.warn(`[CDN] 🚨 RATE LIMITED — CDN serving .jpg slideshow instead of .ts segments`);
-      return { valid: false, rateLimited: true };
-    }
-
-    if (hasTs || body.includes('#EXTM3U')) {
-      console.log(`[CDN] ✅ Stream validated — real video segments`);
-    }
-
-    return { valid: true, rateLimited: false };
-  } catch (err: any) {
-    console.log(`[CDN] ⚠️ Validation failed: ${err.message} — proceeding anyway`);
-    return { valid: true, rateLimited: false };
-  }
-}
-
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
-function randomHex(length: number): string {
-  return Array.from({ length }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-}
-
-// ─── Main Resolver ────────────────────────────────────────────────────────────
+// ─── Recentplay ───────────────────────────────────────────────────────────────
 
 /**
- * Resolve a stream using the mobile API.
- * This is the single unified flow for both Net22 and Net52.
+ * POST /mobile/recentplay.php to register the content session.
+ * MITM line 25217-25257:
+ *   - POST body: recentplay=SE{showId}
+ *   - Cookie includes: SE{showId}={contentId}
+ *   - Response sets cookie: recentplay=SE{showId}
  */
-async function resolveViaMobileApi(
+async function postRecentplay(
   domain: string,
-  label: string,
+  showId: string,
+  cookie: string
+): Promise<void> {
+  const seKey = `SE${showId}`;
+  try {
+    await axios.post(
+      `https://${domain}/mobile/recentplay.php`,
+      `recentplay=${seKey}`,
+      {
+        headers: {
+          ...mobileHeaders(`https://${domain}/mobile/home?app=1`),
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Origin': `https://${domain}`,
+          'Cookie': cookie,
+        },
+        timeout: 10000,
+        validateStatus: () => true,
+      }
+    );
+    console.log(`[NetMirror] ✅ recentplay registered: ${seKey}`);
+  } catch (err: any) {
+    // Non-critical — stream may still work
+    console.log(
+      `[NetMirror] ⚠️ recentplay failed (non-fatal): ${err.message}`
+    );
+  }
+}
+
+// ─── Stream Resolution ────────────────────────────────────────────────────────
+
+/**
+ * Build the cookie string for content requests.
+ * MITM line 25233-25235 shows the exact format:
+ *   addhash={encoded}; t_hash_t={encoded}; SE{showId}={contentId}
+ * For PV: adds ott=pv cookie
+ */
+function buildCookieString(
+  session: WarmSession,
+  showId: string,
+  contentId: string,
+  ott: OttSection = 'nf'
+): string {
+  const parts = [
+    `addhash=${session.addhashEncoded}`,
+    `t_hash_t=${session.tHashTEncoded}`,
+    `SE${showId}=${contentId}`,
+  ];
+  // PV (and future OTT sections) require the ott cookie
+  if (ott !== 'nf') {
+    parts.push(`ott=${ott}`);
+  }
+  return parts.join('; ');
+}
+
+/**
+ * Full resolve flow:
+ *   TMDB lookup → search (NF, then PV fallback) → post.php (TV episodes) → playlist.php (server HLS URL)
+ *   → recentplay → fetch HLS manifest → minimal rewrite → data: URI
+ */
+async function resolveStream(
   tmdbId: string,
   type: 'movie' | 'tv',
   season: number,
   episode: number,
+  label: string
 ): Promise<NetMirrorStream> {
   const t0 = Date.now();
-  console.log(`[${label}] ▶️ Resolving: TMDB ${tmdbId} (${type}) S${season}E${episode} on ${domain}`);
+  console.log(
+    `[${label}] ▶️ resolveStream: TMDB ${tmdbId} (${type}) S${season}E${episode}`
+  );
 
-  // Step 1: Get TMDB metadata
-  const tmdbInfo = await getTmdbInfo(tmdbId, type, season, episode);
+  // 1. Get TMDB metadata (title, year)
+  const tmdbInfo = await getTmdbInfo(tmdbId, type);
   if (!tmdbInfo.title) {
     throw new Error(`${label}: Could not get title from TMDB for ${tmdbId}`);
   }
-  console.log(`[${label}] 📋 TMDB: "${tmdbInfo.title}" (${tmdbInfo.year})`);
+  console.log(
+    `[${label}] 📋 TMDB: "${tmdbInfo.title}" (${tmdbInfo.year})`
+  );
 
-  // Step 2: Warm mobile session (get addhash token)
-  const session = await warmMobileSession();
-  const sessionDomain = session.domain;
-  console.log(`[${label}] 🔑 Session: ${session.addhash.substring(0, 12)}... from ${sessionDomain} (${Date.now() - t0}ms)`);
+  // 2. Get or create warm session
+  const session = await getSession();
+  if (!session) {
+    throw new Error(`${label}: Session warmup failed`);
+  }
 
-  // Step 3: Search for content
-  // Try session domain first (has mobile API), then the requested domain
-  const domainsToSearch = [sessionDomain];
-  if (domain !== sessionDomain) domainsToSearch.push(domain);
+  const domain = session.domain;
+  const sessionCookie = `addhash=${session.addhashEncoded}; t_hash_t=${session.tHashTEncoded}`;
 
+  // 3. Search for content across OTT sections (NF first, then PV)
   let match: SearchResult | null = null;
-  for (const d of domainsToSearch) {
-    match = await searchContent(d, tmdbInfo.title, tmdbInfo.year);
-    if (match) break;
+  for (const ott of OTT_SEARCH_ORDER) {
+    const searchCookie = `user_token=${randomHex(16)}; ott=${ott}`;
+    match = await searchContent(
+      domain,
+      tmdbInfo.title,
+      tmdbInfo.year,
+      searchCookie,
+      ott
+    );
+    if (match) {
+      console.log(
+        `[${label}] ✅ Found on ${ott.toUpperCase()} section: "${match.title}" (ID: ${match.id})`
+      );
+      break;
+    }
+    console.log(
+      `[${label}] ⚠️ Not found on ${ott.toUpperCase()}, trying next section...`
+    );
   }
 
   if (!match) {
-    throw new Error(`${label}: No search results for "${tmdbInfo.title}" (${tmdbInfo.year})`);
+    throw new Error(
+      `${label}: No search results for "${tmdbInfo.title}" (${tmdbInfo.year}) across all OTT sections`
+    );
   }
 
-  // Step 4: For TV shows, resolve the specific episode content ID
-  //
-  // PRIMARY: Use TMDB episode ID directly (bypasses post.php, no eb needed!)
-  // FALLBACK: Try resolveEpisodeId (post.php — needs eb, usually fails with ek)
-  let contentId = match.id;
+  const matchOtt = match.ott;    // Which OTT section this was found in
+  const showId = match.id;       // For TV: this is the SHOW id, not episode id
+  let contentId = showId;        // For movies: showId IS the contentId
+
+  // 4. For TV: resolve the episode ID via post.php + episodes.php
+  //    Use the OTT-specific endpoints (e.g. /mobile/pv/post.php for PV content)
   if (type === 'tv' && season > 0 && episode > 0) {
-    if (tmdbInfo.tmdbEpisodeId) {
-      // TMDB episode IDs work directly as content IDs on the mirror
-      // Tested & confirmed: playlist.php?id={tmdbEpId} returns episode sources
-      contentId = tmdbInfo.tmdbEpisodeId;
-      console.log(`[${label}] 🎯 Using TMDB episode ID: ${contentId} (bypasses post.php)`);
-    } else {
-      // Fallback to post.php-based resolution (needs eb token, may fail)
-      console.log(`[${label}] ⚠️ No TMDB episode ID, trying post.php fallback...`);
-      contentId = await resolveEpisodeId(sessionDomain, match.id, season, episode, session);
+    console.log(`[${label}] 📺 TV show detected — fetching episodes via post.php [${matchOtt.toUpperCase()}]...`);
+    const postData = await fetchPostDetail(domain, showId, sessionCookie, matchOtt);
+
+    if (postData && typeof postData === 'object') {
+      try {
+        // First try: look in post.php's episodes array (latest season only)
+        const epId = findEpisodeId(postData.episodes || [], season, episode);
+        if (epId) {
+          contentId = epId;
+        } else {
+          // post.php only returns latest season episodes.
+          // Use the season array to find the NetMirror season ID, then call episodes.php
+          const rawSeasonList = Array.isArray(postData.season) ? postData.season : [];
+          const seasonList = rawSeasonList.filter((s: any) => s && typeof s === 'object' && s.s && s.id);
+          const targetSeason = seasonList.find((s: any) => String(s.s) === String(season));
+
+          if (targetSeason) {
+            console.log(
+              `[${label}] 📋 Season ${season} found in season list → NetMirror ID: ${targetSeason.id}`
+            );
+            const seasonEps = await fetchSeasonEpisodes(
+              domain,
+              targetSeason.id,
+              showId,
+              sessionCookie,
+              matchOtt
+            );
+            if (seasonEps) {
+              const seasonEpId = findEpisodeId(seasonEps, season, episode);
+              if (seasonEpId) {
+                contentId = seasonEpId;
+              }
+            }
+          } else {
+            console.log(
+              `[${label}] ⚠️ Season ${season} not in season list (${seasonList.map((s: any) => s.s).join(',')})`
+            );
+          }
+
+          // Final fallback: try TMDB episode ID (unlikely to work but harmless)
+          if (contentId === showId) {
+            console.log(`[${label}] ⚠️ Episode not resolved — trying TMDB episode ID as last resort`);
+            try {
+              const seasonUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season}?api_key=${TMDB_API_KEY}`;
+              const seasonRes = await axios.get(seasonUrl, { timeout: 5000 });
+              const episodes = seasonRes.data?.episodes;
+              if (Array.isArray(episodes)) {
+                const ep = episodes.find((e: any) => e.episode_number === episode);
+                if (ep?.id) {
+                  contentId = ep.id.toString();
+                  console.log(`[${label}] 🎯 TMDB episode ID fallback: ${contentId}`);
+                }
+              }
+            } catch {
+              // Non-critical
+            }
+          }
+        }
+      } catch (epErr: any) {
+        console.log(`[${label}] ⚠️ Episode resolution error (non-fatal): ${epErr?.message}`);
+      }
     }
   }
-  console.log(`[${label}] 🎯 Content ID: ${contentId} (${Date.now() - t0}ms)`);
 
-  // Step 5: Fetch master HLS manifest
-  let hlsResult = await fetchMasterManifest(sessionDomain, contentId, session);
-  if (!hlsResult) {
-    // If session domain failed, try refreshing session
-    console.log(`[${label}] 🔄 Manifest failed, refreshing session...`);
-    _session = null;
-    const freshSession = await warmMobileSession();
-    hlsResult = await fetchMasterManifest(freshSession.domain, contentId, freshSession);
-    if (!hlsResult) {
-      throw new Error(`${label}: Could not get valid HLS manifest for ${contentId}`);
+  console.log(
+    `[${label}] 🎯 showId: ${showId}, contentId: ${contentId}, ott: ${matchOtt.toUpperCase()}`
+  );
+
+  // 5. Build the full cookie string with SE{showId}={contentId} (+ ott cookie for PV)
+  const cookie = buildCookieString(session, showId, contentId, matchOtt);
+
+  // 6. Fetch playlist.php to get server-generated HLS URL (OTT-aware path)
+  const playlist = await fetchPlaylist(domain, contentId, tmdbInfo.title, cookie, matchOtt);
+  if (!playlist || !playlist.hlsUrl) {
+    throw new Error(`${label}: playlist.php returned no HLS URL`);
+  }
+
+  // 7. POST recentplay to register the content session
+  await postRecentplay(domain, showId, cookie);
+
+  // 8. Build full HLS URL from playlist.php response
+  //    playlist.php returns a path like: /mobile/hls/81635392.m3u8?in=...&hd=off&lang=eng
+  //    or for PV: /mobile/pv/hls/0KZ3TMDAPFNW34BQTV0AVK8XA9.m3u8?in=...&hd=off&lang=eng
+  //    We need to prepend the domain
+  let hlsUrl = playlist.hlsUrl;
+  if (hlsUrl.startsWith('/')) {
+    hlsUrl = `https://${domain}${hlsUrl}`;
+  }
+  console.log(`[${label}] 🎬 HLS URL: ${hlsUrl.substring(0, 100)}...`);
+
+  // 9. Quick validation: fetch the manifest to verify it's valid HLS
+  //    IMPORTANT: We return the HTTPS URL directly to ExoPlayer instead of encoding
+  //    as data: URI → file://. This is critical because the CDN (freecdn32z.top)
+  //    requires the Referer header (https://net52.cc/) on ALL sub-resource requests.
+  //    When we used data: → file://, ExoPlayer didn't propagate the Referer to CDN
+  //    requests, causing 404 errors on variant and audio manifest fetches.
+  const validationHeaders = {
+    ...mobileHeaders(`https://${domain}/mobile/home?app=1`),
+    'X-Requested-With': X_REQUESTED_WITH,
+    'Origin': `https://${domain}`,
+    'Referer': `https://${domain}/`,
+    'Cookie': cookie,
+  };
+
+  try {
+    const res = await axios.get(hlsUrl, {
+      headers: validationHeaders,
+      timeout: 15000,
+      responseType: 'text',
+      validateStatus: () => true,
+    });
+
+    const body = typeof res.data === 'string' ? res.data : String(res.data);
+    console.log(
+      `[${label}] 📡 HLS validation: HTTP ${res.status}, ${body.length} bytes`
+    );
+
+    if (!body.includes('#EXTM3U')) {
+      console.log(
+        `[${label}] ❌ Not a valid manifest. Preview: ${body.substring(0, 200)}`
+      );
+      throw new Error(
+        `${label}: Invalid HLS manifest (${body.length}B, HTTP ${res.status})`
+      );
     }
+
+    const cdnHost = extractCdnHost(body);
+    console.log(
+      `[${label}] ✅ Manifest validated: ${body.length}B, CDN host: ${cdnHost || 'unknown'}`
+    );
+  } catch (valErr: any) {
+    if (valErr.message?.includes('Invalid HLS manifest')) throw valErr;
+    console.warn(`[${label}] ⚠️ Manifest validation failed (non-fatal): ${valErr.message}`);
+    // Continue anyway — the URL might still work for the player
   }
-
-  // Step 6: Rewrite manifest (fix CDN domains, unpoison)
-  const rewritten = rewriteManifest(hlsResult.manifest, contentId);
-
-  // Step 7: Validate CDN stream
-  const validation = await validateCdnStream(rewritten);
-  if (validation.rateLimited) {
-    console.warn(`[${label}] 🚨 CDN rate limited — returning empty stream`);
-    return {
-      url: '',
-      headers: {},
-      captions: [],
-      sourceId: label,
-      expiresAt: Date.now() + 30000,
-      title: tmdbInfo.title,
-      isRateLimited: true,
-    };
-  }
-
-  // Step 8: Fetch captions (use resolved contentId, not series ID)
-  const captions = await fetchCaptions(sessionDomain, contentId, tmdbInfo.title, session);
-  console.log(`[${label}] 📝 Captions: ${captions.length} tracks`);
-
-  // Step 9: Build data URI from the rewritten manifest
-  const base64 = Buffer.from(rewritten).toString('base64');
-  const dataUri = `data:application/x-mpegURL;base64,${base64}`;
 
   const elapsed = Date.now() - t0;
-  console.log(`[${label}] ✅ Done in ${elapsed}ms | manifest: ${rewritten.length} bytes | captions: ${captions.length}`);
+  console.log(`[${label}] ✅ Done in ${elapsed}ms [${matchOtt.toUpperCase()}]`);
 
+  // 10. Return the DIRECT HTTPS URL — ExoPlayer will fetch manifest + CDN sub-resources
+  //     with the headers we provide, ensuring Referer is sent to the CDN.
   return {
-    url: dataUri,
+    url: hlsUrl,
     headers: {
       'User-Agent': MOBILE_UA,
-      'Origin': `https://${sessionDomain}`,
-      'Referer': `https://${sessionDomain}/`,
+      'Origin': `https://${domain}`,
+      'Referer': `https://${domain}/`,
+      'sec-ch-ua': SEC_CH_UA,
+      'sec-ch-ua-mobile': '?1',
+      'sec-ch-ua-platform': '"Android"',
+      'X-Requested-With': X_REQUESTED_WITH,
+      'Cookie': cookie,
     },
-    captions,
-    sourceId: label,
+    captions: playlist.captions,
+    sourceId: `${label} [${matchOtt.toUpperCase()}]`,
     expiresAt: Date.now() + 3600000, // 1 hour
-    title: tmdbInfo.title,
+    title: tmdbInfo.title || `NetMirror ${contentId}`,
     isRateLimited: false,
   };
 }
 
-// ─── Firestore Cookie Fetch (kept for compatibility) ──────────────────────────
-
-let _cookieCache: { cookies: NetMirrorCookies; fetchedAt: number } | null = null;
-const COOKIE_CACHE_TTL_MS = 5 * 60 * 1000;
-
-export async function fetchNetMirrorCookies(): Promise<NetMirrorCookies> {
-  if (_cookieCache && (Date.now() - _cookieCache.fetchedAt) < COOKIE_CACHE_TTL_MS) {
-    return _cookieCache.cookies;
-  }
-
-  try {
-    const { doc, getDoc } = require('firebase/firestore');
-    const { db } = require('./firebase');
-    const docRef = doc(db, 'config', 'netmirror');
-    const docSnap = await getDoc(docRef);
-
-    if (docSnap.exists()) {
-      const data = docSnap.data();
-      const cookies: NetMirrorCookies = {
-        net22Cookie: data.net22Cookie || data.cookie || '',
-        net52Cookie: data.net52Cookie || data.net52cookie || '',
-      };
-      _cookieCache = { cookies, fetchedAt: Date.now() };
-      return cookies;
-    }
-  } catch (err: any) {
-    console.warn(`[Cookies] Firestore fetch failed: ${err.message}`);
-  }
-
-  return { net22Cookie: '', net52Cookie: '' };
-}
-
-// ─── Public Exports ───────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Resolve Net22 stream via mobile API.
+ * Pre-warm the NetMirror session.
+ * Call eagerly (e.g. when user opens a movie detail page) so the ~38s
+ * nurture flow completes before they press play.
+ * Returns immediately if a valid session is already cached.
+ */
+export async function warmNetMirrorSession(): Promise<void> {
+  console.log(`[NetMirror] 🚀 Pre-warming session...`);
+  await getSession();
+}
+
+/**
+ * Resolve Net22 stream via net52.cc mobile API.
+ * Backward-compatible export — consumers don't need to change.
  */
 export async function resolveNet22(
   tmdbId: string,
@@ -1052,24 +1426,32 @@ export async function resolveNet22(
   episode: number = 0
 ): Promise<NetMirrorStream> {
   const t0 = Date.now();
-  console.log(`[Net22] ▶️ resolveNet22 called: TMDB ${tmdbId} (${type}) S${season}E${episode}`);
+  console.log(
+    `[Net22] ▶️ resolveNet22: TMDB ${tmdbId} (${type}) S${season}E${episode}`
+  );
   try {
-    const { net22Domain } = await getNetMirrorDomains();
-    console.log(`[Net22] 🌐 Using domain: ${net22Domain}`);
-    const result = await resolveViaMobileApi(net22Domain, 'Net22', tmdbId, type, season, episode);
-    console.log(`[Net22] ✅ Total: ${Date.now() - t0}ms | url: ${result.url ? result.url.substring(0, 60) + '...' : 'EMPTY'}`);
+    const result = await resolveStream(
+      tmdbId,
+      type,
+      season,
+      episode,
+      'Net22'
+    );
+    console.log(
+      `[Net22] ✅ Total: ${Date.now() - t0}ms | url: ${result.url ? result.url.substring(0, 60) + '...' : 'EMPTY'}`
+    );
     return result;
   } catch (err: any) {
-    console.error(`[Net22] ❌ FAILED after ${Date.now() - t0}ms: ${err.message}`);
-    if (err.message?.includes('ENOTFOUND') || err.message?.includes('ECONNREFUSED')) {
-      refreshNetMirrorDomains().catch(() => {});
-    }
+    console.error(
+      `[Net22] ❌ FAILED after ${Date.now() - t0}ms: ${err.message}`
+    );
     throw err;
   }
 }
 
 /**
- * Resolve Net52 stream via mobile API.
+ * Resolve Net52 stream via net52.cc mobile API.
+ * Backward-compatible export — consumers don't need to change.
  */
 export async function resolveNet52(
   tmdbId: string,
@@ -1078,18 +1460,37 @@ export async function resolveNet52(
   episode: number = 0
 ): Promise<NetMirrorStream> {
   const t0 = Date.now();
-  console.log(`[Net52] ▶️ resolveNet52 called: TMDB ${tmdbId} (${type}) S${season}E${episode}`);
+  console.log(
+    `[Net52] ▶️ resolveNet52: TMDB ${tmdbId} (${type}) S${season}E${episode}`
+  );
   try {
-    const { net52Domain } = await getNetMirrorDomains();
-    console.log(`[Net52] 🌐 Using domain: ${net52Domain}`);
-    const result = await resolveViaMobileApi(net52Domain, 'Net52', tmdbId, type, season, episode);
-    console.log(`[Net52] ✅ Total: ${Date.now() - t0}ms | url: ${result.url ? result.url.substring(0, 60) + '...' : 'EMPTY'}`);
+    const result = await resolveStream(
+      tmdbId,
+      type,
+      season,
+      episode,
+      'Net52'
+    );
+    console.log(
+      `[Net52] ✅ Total: ${Date.now() - t0}ms | url: ${result.url ? result.url.substring(0, 60) + '...' : 'EMPTY'}`
+    );
     return result;
   } catch (err: any) {
-    console.error(`[Net52] ❌ FAILED after ${Date.now() - t0}ms: ${err.message}`);
-    if (err.message?.includes('ENOTFOUND') || err.message?.includes('ECONNREFUSED')) {
-      refreshNetMirrorDomains().catch(() => {});
-    }
+    console.error(
+      `[Net52] ❌ FAILED after ${Date.now() - t0}ms: ${err.message}`
+    );
     throw err;
   }
 }
+
+// ─── Auto-Warmup on Module Load ──────────────────────────────────────────────
+// Fire-and-forget: start the 38s nurture flow as soon as the app imports this
+// module, so the session is ready before the user presses play.
+// Errors are silently swallowed — the session will be retried on demand.
+
+(() => {
+  console.log(`[NetMirror] 🔥 Auto-warming session on module load...`);
+  getSession().catch((err) => {
+    console.log(`[NetMirror] ⚠️ Auto-warmup failed (will retry on demand): ${err?.message || err}`);
+  });
+})();

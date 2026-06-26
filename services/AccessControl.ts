@@ -18,6 +18,7 @@ export function normalizePlanKey(planId?: string | null): keyof typeof PLAN_PROF
   if (normalized.includes('premium')) return 'premium';
   if (normalized.includes('standard')) return 'standard';
   if (normalized.includes('basic')) return 'basic';
+  if (normalized.includes('free')) return 'free';
   return 'none';
 }
 
